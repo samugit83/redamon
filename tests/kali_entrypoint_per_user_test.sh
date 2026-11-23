@@ -4,12 +4,14 @@
 # Metasploit modules in one cheap layer (TD-14).
 # Run:  bash tests/kali_entrypoint_per_user_test.sh
 #
-# A per-user sandbox (REDAMON_SANDBOX_MODE=per_user, which the orchestrator sets
-# from CONTAINER_ENV_FIXED in recon_orchestrator/sandbox_contract.py) must never
-# ask the webapp for the instance-wide tunnel config: the agent pushes that
-# person's own config. The shared container, where the variable is unset, keeps
-# today's boot sync. The entrypoint's deferred_init is cut out and run with curl,
-# msfconsole, nuclei and sleep stubbed, so what each mode sends is observed.
+# A sandbox never asks the webapp for a tunnel config, whatever its environment:
+# the agent pushes each person's own config to the tunnel manager on 8015, and the
+# webapp route an older image called (/api/global/tunnel-config/sync) is gone with
+# the shared sandbox (S20). The orchestrator still starts every sandbox with
+# REDAMON_SANDBOX_MODE=per_user (CONTAINER_ENV_FIXED in
+# recon_orchestrator/sandbox_contract.py), which the servers inside read. The
+# entrypoint's deferred_init is cut out and run with curl, msfconsole, nuclei and
+# sleep stubbed, so what it sends is observed.
 #
 # The Dockerfile: ARG MSF_REFRESH_STAMP in the final stage, before `msfdb init`;
 # the stamp is only tested for emptiness and copied into the redamon.msf_refresh
@@ -91,10 +93,14 @@ LIVE="$(grep -v '^[[:space:]]*#' "$ENTRYPOINT")"
 eq "msfdb init still runs before the servers" "$(grep -cxF 'msfdb init 2>/dev/null || true' <<<"$LIVE")" "1"
 eq "deferred_init still runs in the background" "$(grep -cxF 'deferred_init &' <<<"$LIVE")" "1"
 
+eq "the entrypoint names no webapp tunnel route" "$(grep -c 'tunnel-config' <<<"$LIVE")" "0"
+eq "the entrypoint reads no webapp address" "$(grep -c 'WEBAPP_API_URL\|WEBAPP_URL\|webapp:3000' <<<"$LIVE")" "0"
+eq "the entrypoint handles no tunnel token" "$(grep -c 'TUNNEL_AUTH_TOKEN' <<<"$LIVE")" "0"
+
 BLOCK="$(awk '/^deferred_init\(\) \{$/{on=1} on{print} on && /^\}$/{exit}' "$ENTRYPOINT")"
 case "$BLOCK" in
-    *'/api/global/tunnel-config/sync'*'Initialization complete'*) ok "cut deferred_init out of the entrypoint" ;;
-    *) bad "cut deferred_init out of the entrypoint" "${BLOCK:0:60}" "the function with the tunnel sync"
+    *'NUCLEI_AUTO_UPDATE'*'Initialization complete'*) ok "cut deferred_init out of the entrypoint" ;;
+    *) bad "cut deferred_init out of the entrypoint" "${BLOCK:0:60}" "the function with the updates"
        finish ;;
 esac
 
@@ -108,50 +114,38 @@ run_init() {
         bash -c 'set -e; eval "$1"; deferred_init' _ "$BLOCK" </dev/null 2>&1
 }
 
-echo "== a per-user sandbox never asks the webapp for tunnels =="
-out="$(run_init REDAMON_SANDBOX_MODE="$PER_USER" TUNNEL_AUTH_TOKEN="$TOKEN")"; rc=$?
-eq "per-user: deferred_init succeeds" "$rc" "0"
-eq "per-user: no call to the webapp" "$(calls curl)" "0"
-eq "per-user: one line says the agent pushes the tunnels" "$(grep -c 'tunnels are pushed by the agent' <<<"$out")" "1"
-eq "per-user: no sync is requested" "$(grep -c 'Requesting tunnel config sync' <<<"$out")" "0"
-eq "per-user: the deferred init completes" "$(grep -c 'Initialization complete' <<<"$out")" "1"
-eq "per-user: auto-updates off run neither msfconsole nor nuclei" "$(grep -cE '^(msfconsole|nuclei)' "$CALLS")" "0"
-eq "per-user: the token is printed nowhere" "$(grep -cF "$TOKEN" <<<"$out")" "0"
-
-out="$(run_init REDAMON_SANDBOX_MODE="$PER_USER")"
-eq "per-user without a token: no call to the webapp" "$(calls curl)" "0"
-eq "per-user without a token: the same single line" "$(grep -c 'tunnels are pushed by the agent' <<<"$out")" "1"
+echo "== a sandbox never asks the webapp for tunnels, whatever its environment =="
+for mode in per_user unset shared empty; do
+    for token in with without; do
+        for url in default named; do
+            args=(); case "$mode" in
+                per_user) args+=(REDAMON_SANDBOX_MODE="$PER_USER") ;;
+                shared) args+=(REDAMON_SANDBOX_MODE=shared) ;;
+                empty) args+=(REDAMON_SANDBOX_MODE=) ;;
+            esac
+            [[ $token == with ]] && args+=(TUNNEL_AUTH_TOKEN="$TOKEN")
+            [[ $url == named ]] && args+=(WEBAPP_API_URL=http://webapp.test:3999)
+            what="$mode, $token token, $url webapp URL"
+            out="$(run_init "${args[@]}")"; rc=$?
+            eq "$what: deferred_init succeeds" "$rc" "0"
+            eq "$what: no call to the webapp" "$(calls curl)" "0"
+            eq "$what: nothing on curl's stdin" "$(wc -c < "$CALLS.stdin")" "0"
+            eq "$what: the deferred init completes" "$(grep -c 'Initialization complete' <<<"$out")" "1"
+            eq "$what: the token is printed nowhere" "$(grep -cF "$TOKEN" <<<"$out"; grep -cF "$TOKEN" "$CALLS")" "$(printf '0\n0')"
+            eq "$what: no sync is requested" "$(grep -ci 'tunnel config sync' <<<"$out")" "0"
+        done
+    done
+done
+eq "auto-updates off run neither msfconsole nor nuclei" "$(run_init >/dev/null; grep -cE '^(msfconsole|nuclei)' "$CALLS")" "0"
 
 out="$(run_init REDAMON_SANDBOX_MODE="$PER_USER" TUNNEL_AUTH_TOKEN="$TOKEN" MSF_AUTO_UPDATE=true NUCLEI_AUTO_UPDATE=true)"
-eq "per-user, auto-updates on: msfconsole still updates the modules" "$(calls msfconsole)" "1"
-eq "per-user, auto-updates on: nuclei still updates the templates" "$(calls 'nuclei \[-update-templates\]')" "1"
-eq "per-user, auto-updates on: still no call to the webapp" "$(calls curl)" "0"
-
-echo "== the shared container keeps today's boot sync =="
-SYNC_CALL="curl [-sf] [-X] [POST] [-H] [@-] [http://webapp:3000/api/global/tunnel-config/sync]"
-for mode in unset shared empty; do
-    case "$mode" in
-        unset) out="$(run_init TUNNEL_AUTH_TOKEN="$TOKEN")" ;;
-        shared) out="$(run_init REDAMON_SANDBOX_MODE=shared TUNNEL_AUTH_TOKEN="$TOKEN")" ;;
-        empty) out="$(run_init REDAMON_SANDBOX_MODE= TUNNEL_AUTH_TOKEN="$TOKEN")" ;;
-    esac
-    eq "shared ($mode): one sync call to the webapp" "$(grep '^curl' "$CALLS")" "$SYNC_CALL"
-    eq "shared ($mode): the bearer goes through stdin" "$(cat "$CALLS.stdin")" "Authorization: Bearer $TOKEN"
-    eq "shared ($mode): the token is on no command line" "$(grep -cF "$TOKEN" "$CALLS")" "0"
-    eq "shared ($mode): the sync is requested" "$(grep -c 'Tunnel config sync requested' <<<"$out")" "1"
-    eq "shared ($mode): no per-user line" "$(grep -c 'pushed by the agent' <<<"$out")" "0"
-done
-
-out="$(run_init TUNNEL_AUTH_TOKEN="$TOKEN" WEBAPP_API_URL=http://webapp.test:3999)"
-eq "shared: WEBAPP_API_URL still names the webapp" "$(grep -c '\[http://webapp.test:3999/api/global/tunnel-config/sync\]$' "$CALLS")" "1"
-
-out="$(run_init)"
-eq "shared without a token: no call" "$(calls curl)" "0"
-eq "shared without a token: says why" "$(grep -c 'TUNNEL_AUTH_TOKEN not set: no tunnel sync' <<<"$out")" "1"
+eq "auto-updates on: msfconsole still updates the modules" "$(calls msfconsole)" "1"
+eq "auto-updates on: nuclei still updates the templates" "$(calls 'nuclei \[-update-templates\]')" "1"
+eq "auto-updates on: still no call to the webapp" "$(calls curl)" "0"
 
 out="$(STUB_CURL_RC=7 run_init TUNNEL_AUTH_TOKEN="$TOKEN")"
-eq "shared, webapp down: 30 attempts" "$(calls curl)" "30"
-eq "shared, webapp down: gives up with the usual line" "$(grep -c 'Webapp not reachable for tunnel sync' <<<"$out")" "1"
+eq "a webapp that would not answer is never tried" "$(calls curl)" "0"
+eq "and never waited for" "$(calls sleep)" "0"
 
 echo "== the Dockerfile's Metasploit refresh layer =="
 # Prints one tab-separated "ok name" or "FAIL name got want" line per check (a

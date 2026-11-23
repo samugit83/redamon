@@ -135,8 +135,8 @@ export default function InstancePage() {
         return <QuotasPanel key={id} settings={settings!} onSaved={onSaved} />
       case 'tunnels':
         return (
-          <Panel key={id} id={id} title={TITLES[id]} lead="The ngrok or chisel tunnel every user's reverse shells share (port 4444).">
-            <InstanceTunnelSection placement="instance" />
+          <Panel key={id} id={id} title={TITLES[id]} lead="Reverse-shell tunnels (ngrok or chisel) are per person: each runs in its person's own Kali sandbox.">
+            <InstanceTunnelSection />
           </Panel>
         )
       case 'traffic':

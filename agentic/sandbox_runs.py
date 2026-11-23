@@ -12,14 +12,13 @@ The tag goes only to a tool that advertises RUN_ARG in its schema, on a system
 server: a sandbox started before this change never sees an argument it would
 reject, and no user MCP server learns a session id.
 
-With per-user sandboxes (group 1) a run's calls go to its person's sandbox, so the
-executor notes each per-user sandbox a run used (`note_run_sandbox`) and stopping the
-run asks those, each with its own bearer; a run key is never sent to another person's
-sandbox. In shared mode the stop goes to today's address, as before.
+A run's calls go to its person's sandbox (group 1), so the executor notes each
+sandbox a run used (`note_run_sandbox`) and stopping the run asks those, each with its
+own bearer; a run key is never sent to another person's sandbox, and a run that used
+none asks nothing.
 """
 import asyncio
 import logging
-import os
 import re
 import weakref
 from collections import OrderedDict
@@ -28,7 +27,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 import sandbox_contract as contract
 import sandbox_router
 from agent_context import current_log_session_id, current_session_id
-from kali_auth import kali_auth_headers, note_kali_refusal
+from kali_auth import note_kali_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -84,17 +83,10 @@ class RunTagInterceptor:
         return await handler(request.override(args=args))
 
 
-def stop_url() -> str:
-    base = os.environ.get("MCP_NETWORK_RECON_URL", "http://host.docker.internal:8000/sse")
-    base = base[:-len("/sse")] if base.endswith("/sse") else base.rstrip("/")
-    return base + STOP_PATH
-
-
 def note_run_sandbox(run_key: str, handle) -> None:
-    """Record that run `run_key` called the per-user sandbox of `handle` (the executor
-    calls it on every routed call; a shared handle is not recorded)."""
-    if (not _RUN_KEY_RE.match(run_key or "") or handle is None
-            or getattr(handle, "mode", None) != contract.MODE_PER_USER):
+    """Record that run `run_key` called the sandbox of `handle` (the executor calls it on
+    every routed call)."""
+    if not _RUN_KEY_RE.match(run_key or "") or handle is None:
         return
     held = _run_sandboxes.get(run_key)
     if held is None:
@@ -105,7 +97,7 @@ def note_run_sandbox(run_key: str, handle) -> None:
 
 
 def _run_handles(run_key: str) -> list:
-    """The run's per-user handles, one per sandbox instance."""
+    """The run's handles, one per sandbox instance."""
     by_instance = {}
     for handle in list(_run_sandboxes.get(run_key, ())):
         by_instance.setdefault(handle.key, handle)
@@ -118,9 +110,8 @@ Target = Tuple[str, str, dict]   # (what, url, headers)
 
 
 def _stop_targets(run_key: str) -> List[Target]:
-    """Where to send the stop of `run_key`: each per-user sandbox the run used, with its
-    own bearer; with none, today's sandbox in shared mode, and nowhere in per-user mode
-    (the run called no sandbox)."""
+    """Where to send the stop of `run_key`: each sandbox the run used, with its own
+    bearer; nowhere when the run called no sandbox."""
     targets = []
     for handle in _run_handles(run_key):
         try:
@@ -128,8 +119,6 @@ def _stop_targets(run_key: str) -> List[Target]:
                             sandbox_router.headers_for(handle)))
         except Exception as exc:  # noqa: BLE001 - one bad handle never stops the others
             logger.warning(f"[stop] no stop address for a sandbox of run {run_key}: {type(exc).__name__}")
-    if not targets and sandbox_router.current_mode() == contract.MODE_SHARED:
-        targets.append(("shared", stop_url(), kali_auth_headers()))
     return targets
 
 
@@ -191,14 +180,13 @@ def schedule_sandbox_stop(run_key: str) -> Optional[asyncio.Task]:
 
 
 async def stop_all_runs() -> Dict[str, object]:
-    """The emergency stop's half in the sandboxes: every running per-user sandbox is
-    asked at once to kill the agent's runs known to use it, each sandbox bounded by
+    """The emergency stop's half in the sandboxes: every running sandbox is asked at
+    once to kill the agent's runs known to use it, each sandbox bounded by
     FANOUT_TIMEOUT_S, so a hung one never holds the stop (the webapp stops the
     containers themselves). Call it before cancelling the runs: a run's handles go when
     its scope closes.
 
-    Answers ``{"sandboxes", "asked", "answered", "unavailable": [instance]}``; shared
-    mode asks nothing here (each run's own stop reaches today's sandbox)."""
+    Answers ``{"sandboxes", "asked", "answered", "unavailable": [instance]}``."""
     result: Dict[str, object] = {"sandboxes": 0, "asked": 0, "answered": 0, "unavailable": []}
     try:
         running = await sandbox_router.running_sandboxes()

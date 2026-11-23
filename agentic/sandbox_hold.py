@@ -6,8 +6,8 @@ A per-user sandbox stops after its idle minutes without a lease. A Metasploit se
 it, so this watcher holds such an instance with one `hold` lease. A hold is not use: the
 orchestrator still stops a sandbox held only by it after HOLD_MAX_NO_USE_S without use.
 
-Every HOLD_WATCH_S it lists the live instances (`running_sandboxes()`; in shared mode the
-list is empty and nothing else is done) and reads every one at once, each read bounded by
+Every HOLD_WATCH_S it lists the live instances (`running_sandboxes()`) and reads every
+one at once, each read bounded by
 READ_TIMEOUT_S so a hung sandbox never delays another's hold, and by sandbox_http's size and
 encoding rules, since whoever is root in a sandbox writes its answers: the session manager with the
 instance's MCP token, and the tunnel manager with the instance's tunnel token once the tunnel
@@ -112,8 +112,7 @@ class HoldWatcher:
     def note_tunnel(self, handle: Optional[sandbox_router.SandboxHandle]) -> None:
         """Remember the instance's tunnel token, from a handle an `ensure` answered (the tunnel
         push holds one), so the watcher can read its tunnel manager."""
-        if (handle is None or handle.mode != contract.MODE_PER_USER
-                or not kali_auth_headers_for(handle.tunnel_token)):
+        if handle is None or not kali_auth_headers_for(handle.tunnel_token):
             return
         self._tunnel_tokens[handle.key] = handle.tunnel_token
 
@@ -126,7 +125,7 @@ class HoldWatcher:
             logger.info("[sandbox-hold] the sandbox list could not be read (%s); "
                         "holds are renewed only while their last read is fresh", exc.reason)
             return
-        live = {h.key: h for h in handles if h.mode == contract.MODE_PER_USER}
+        live = {h.key: h for h in handles}
         # A listed instance is gone once it is not listed: its leases went with it.
         for key in [k for k in self._holds if k not in live]:
             del self._holds[key]

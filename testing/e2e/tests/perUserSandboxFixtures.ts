@@ -24,11 +24,6 @@ export const REPO = join(__dirname, '..', '..', '..')
 const SCRIPTS = join(__dirname, '..', 'scripts')
 export const SEED = join(REPO, 'tests', 'kali_sandbox_seed_live.py')
 
-/** The orchestrator's sandbox mode for this run, named by the wrapper. Everything the spec asserts is
- *  the same in both; only setup steps that need a per-user sandbox (stopping one, joining its network)
- *  are left out in shared mode, where the "fails before" evidence is collected. */
-export const MODE: 'shared' | 'per_user' = process.env.G1_E2E_MODE === 'shared' ? 'shared' : 'per_user'
-
 export const STATE_PATH = process.env.G1_STATE || join(process.env.TMPDIR || '/tmp', 'g1-live-state.json')
 const RESTORE_PATH = `${STATE_PATH}.s23-restore.json`
 
@@ -175,12 +170,8 @@ export function sandboxContainers(filter: { user?: string; view?: View } = {}): 
   return rows
 }
 
-/**
- * The person's healthy sandbox of `view`, waiting for one to come up; null when none does in time.
- * Shared mode has no per-user sandbox and answers null at once.
- */
+/** The person's healthy sandbox of `view`, waiting for one to come up; null when none does in time. */
 export async function sandboxOf(userId: string, view: View = 'own', timeoutMs = 120_000): Promise<SandboxContainer | null> {
-  if (MODE === 'shared') return null
   const until = Date.now() + timeoutMs
   for (;;) {
     const healthy = sandboxContainers({ user: userId, view }).filter(c => c.healthy)
@@ -370,7 +361,7 @@ function settleHostLinks(name: string, networks: string[] = []): void {
 
 /**
  * A throwaway lab: busybox serving two pages on 8080 and a shell bound on 5555 (`nc -lk -e`), on the
- * compose pentest network, where the capture proxy and the shared sandbox reach it.
+ * compose pentest network, where the capture proxy reaches it.
  */
 export function startLab(n: string): Lab {
   const name = `g1e2e-lab-${n}`
@@ -388,12 +379,8 @@ export function startLab(n: string): Lab {
   return { name, proxyIp: ipOn(name, pentestNetwork()), nonce: n }
 }
 
-/**
- * The lab's address as the person's sandbox reaches it: joined to that sandbox's network in per-user
- * mode (OQ-G1-3), its pentest-net address in shared mode (the shared container is on that network).
- */
+/** The lab's address as the person's sandbox reaches it, once joined to that sandbox's network (OQ-G1-3). */
 export function connectLab(lab: Lab, userId: string, view: View = 'own'): string {
-  if (MODE === 'shared') return lab.proxyIp
   const network = sandboxNetwork(userId, view)
   const nets = Object.keys(JSON.parse(docker(['inspect', '-f', '{{json .NetworkSettings.Networks}}', lab.name])) as object)
   if (!nets.includes(network)) {
@@ -465,8 +452,55 @@ export function seedAndRead(): SeedState {
 }
 
 /** Signs a browser context in through the login route (notices are handed over there, never a modal). */
+// --- Secrets in what a failure prints -----------------------------------------------
+
+/** A Playwright API call's failure prints its call log: the request's headers (the account's
+ *  session cookie, `redamon-auth`), each line wrapped in ANSI dim codes inside the runner. */
+const ANSI = /\u001b\[[0-9;]*m/g
+const SECRET_HEADER = /^(\s*(?:-\s*)?(?:cookie|set-cookie|authorization|proxy-authorization|x-internal-key|x-orchestrator-key)\s*:\s*).+$/gim
+const SECRET_VALUE = /(\bBearer\s+|\bredamon-[\w-]*=|\b[\w.-]*(?:session-token|csrf-token|token|ticket|secret|password|api[-_]?key|internal[-_]?key)=)[^\s;,"'&]+/gi
+
+/** `text` without ANSI codes, with every cookie, Authorization or key header and every token
+ *  value replaced by `[redacted]`. */
+export function redactSecrets(text: string): string {
+  return text.replace(ANSI, '').replace(SECRET_HEADER, '$1[redacted]').replace(SECRET_VALUE, '$1[redacted]')
+}
+
+/** `err` as an Error whose message, stack and call log are redacted (the same object when it is one). */
+export function redactedError(err: unknown): Error {
+  const e = err instanceof Error ? err : new Error(String(err))
+  e.message = redactSecrets(e.message)
+  if (e.stack) e.stack = redactSecrets(e.stack)
+  const withLog = e as Error & { log?: unknown }
+  if (Array.isArray(withLog.log)) withLog.log = withLog.log.map((line) => redactSecrets(String(line)))
+  return e
+}
+
+const GUARDED = new WeakSet<object>()
+const REQUEST_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head', 'fetch'] as const
+
+/** Makes every call of `api` (the context's, which is also each of its pages') fail with a
+ *  redacted error, so a test failure never prints the session cookie. */
+export function redactRequestErrors(api: APIRequestContext): APIRequestContext {
+  if (GUARDED.has(api)) return api
+  GUARDED.add(api)
+  const calls = api as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>
+  for (const name of REQUEST_METHODS) {
+    const call = calls[name].bind(api)
+    calls[name] = async (...a: unknown[]) => {
+      try {
+        return await call(...a)
+      } catch (err) {
+        throw redactedError(err)
+      }
+    }
+  }
+  return api
+}
+
 export async function signIn(browser: Browser, baseURL: string, email: string, password: string): Promise<BrowserContext> {
   const context = await browser.newContext({ baseURL })
+  redactRequestErrors(context.request)
   await context.addInitScript(ACCEPT_OVERLAYS)
   await context.addInitScript(FORGET_OPEN_CONVERSATIONS)
   const res = await context.request.post('/api/auth/login', {
@@ -814,7 +848,7 @@ async function drawerEvidence(page: Page, watch: DrawerWatch): Promise<string> {
     await page.screenshot({ path: shot })
     parts.push(`screenshot: ${shot}`)
   } catch (err) {
-    parts.push(`evidence incomplete: ${String(err).slice(0, 200)}`)
+    parts.push(`evidence incomplete: ${redactSecrets(String(err)).slice(0, 200)}`)
   }
   parts.push(`steps:\n  ${watch.events.join('\n  ') || 'none'}`)
   return parts.join('; ')
@@ -874,7 +908,7 @@ export async function openChat(page: Page, projectId: string): Promise<string> {
       const read = / request failed: GET \/api\/(auth\/me|projects\/[^/: ]+): /.exec(e)?.[1]
       return read ? [read === 'auth/me' ? 'its session (GET /api/auth/me)' : 'its project (GET /api/projects/<id>)'] : []
     }))]
-    throw new Error(`${err instanceof Error ? err.message : String(err)}`
+    throw new Error(`${redactSecrets(err instanceof Error ? err.message : String(err))}`
       + (mintLost ? `\n${MINT_LOST}` : '')
       + (lostReads.length ? `\n${PAGE_LOST} The read that failed: ${lostReads.join(', ')}.` : '')
       + `\nthe drawer then: ${await drawerEvidence(page, watch)}`)
@@ -1036,7 +1070,12 @@ export interface SessionList {
 
 /** The person's shell sessions, jobs and listeners as the Reverse Shell tab reads them (-1 sandboxes left out on a failure). */
 export async function sessionsOf(api: APIRequestContext): Promise<SessionList> {
-  const res = await api.get('/api/agent/sessions')
+  // A kept-alive connection the server has just closed fails the GET with "socket hang up";
+  // a second GET opens a new one.
+  const res = await api.get('/api/agent/sessions').catch((err: unknown) => {
+    if (!/socket hang up|ECONNRESET/.test(String(err))) throw err
+    return api.get('/api/agent/sessions')
+  })
   if (!res.ok()) return { sessions: [], jobs: [], non_msf_sessions: [], unavailable_count: -1 }
   const body = await res.json() as Partial<SessionList>
   return { sessions: body.sessions ?? [], jobs: body.jobs ?? [], non_msf_sessions: body.non_msf_sessions ?? [], unavailable_count: body.unavailable_count }
@@ -1137,7 +1176,7 @@ export async function stopPersonSandbox(admin: APIRequestContext, baseURL: strin
 
 /**
  * Opens the chat on `projectId` until the drawer's warm-up has started the person's own sandbox, and
- * answers it once healthy (null when none came within `timeoutMs`, or in shared mode). A warm-up within
+ * answers it once healthy (null when none came within `timeoutMs`). A warm-up within
  * 30 s of the person's last one is coalesced away (WARM_UP_COOLDOWN_MS, webapp/src/lib/sandbox/
  * lifecycle.ts) and the open socket mints no new ticket, so right after a stop one opening may start
  * nothing: each opening mints a ticket again, the first one past the cool-down starts the sandbox.
@@ -1147,7 +1186,6 @@ export async function openChatUntilSandbox(page: Page, userId: string, projectId
   const until = Date.now() + timeoutMs
   for (;;) {
     await openChat(page, projectId)
-    if (MODE === 'shared') return null
     const looked = Date.now() + 10_000
     while (!sandboxContainers({ user: userId, view: 'own' }).length && Date.now() < looked) await sleep(1_000)
     if (sandboxContainers({ user: userId, view: 'own' }).length) return sandboxOf(userId, 'own', Math.max(until - Date.now(), 120_000))

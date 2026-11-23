@@ -60,7 +60,7 @@ function opsView(over: Partial<OperationsView> = {}): OperationsView {
     scans: { orchestrator: { ok: true }, running: [], queued: [], queuedTotal: 0 },
     triageRuns: [],
     shells: { state: { ok: true }, sessions: [], jobs: 0, unavailable: 0 },
-    sandboxes: { state: { ok: true }, mode: 'per_user', list: [] },
+    sandboxes: { state: { ok: true }, list: [] },
     ...over,
   }
 }
@@ -306,6 +306,8 @@ describe('the global emergency stop', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Stop every agent run' }))
     const dialog = await screen.findByRole('dialog')
     expect(dialog).toHaveTextContent('Every running agent run of every user stops now')
+    // The emergency stop also stops the Kali sandboxes (group 1, S14): the dialog says so.
+    expect(dialog).toHaveTextContent('every Kali sandbox stops with its shells, sessions and tunnels')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Stop every run' }))
     expect(await screen.findByText('Emergency stop: stopped 3 agent runs.')).toBeInTheDocument()
     expect(calls('/api/agent/emergency-stop-all')[0][1]).toMatchObject({ method: 'POST' })
@@ -352,7 +354,7 @@ describe('Kali sandboxes (group 1, WI-S16-6)', () => {
   test('listed with person, view, state and times; never a host, token or project list', async () => {
     viewAnswer = () => json(opsView({
       sandboxes: {
-        state: { ok: true }, mode: 'per_user',
+        state: { ok: true },
         list: [sandbox(), sandbox({ key: 'mem-c:ccccc1', instance: 'ccccc1', person: { id: 'mem-c', name: null }, view: 'act_as', state: 'draining', stopAt: null })],
       },
     }))
@@ -371,7 +373,7 @@ describe('Kali sandboxes (group 1, WI-S16-6)', () => {
     const confirmSpy = vi.spyOn(window, 'confirm')
     let sent: Record<string, unknown> | null = null
     stopSandboxAnswer = (b) => { sent = b; return json({ stopped: 1 }) }
-    viewAnswer = () => json(opsView({ sandboxes: { state: { ok: true }, mode: 'per_user', list: [sandbox()] } }))
+    viewAnswer = () => json(opsView({ sandboxes: { state: { ok: true }, list: [sandbox()] } }))
     renderPage()
     fireEvent.click(await screen.findByRole('button', { name: "Stop Member B's Kali sandbox" }))
     const dialog = await screen.findByRole('dialog')
@@ -384,7 +386,7 @@ describe('Kali sandboxes (group 1, WI-S16-6)', () => {
   })
 
   test('already stopped, and a refusal shown with its code', async () => {
-    viewAnswer = () => json(opsView({ sandboxes: { state: { ok: true }, mode: 'per_user', list: [sandbox()] } }))
+    viewAnswer = () => json(opsView({ sandboxes: { state: { ok: true }, list: [sandbox()] } }))
     stopSandboxAnswer = () => json({ stopped: 0 })
     renderPage()
     fireEvent.click(await screen.findByRole('button', { name: "Stop Member B's Kali sandbox" }))
@@ -399,22 +401,19 @@ describe('Kali sandboxes (group 1, WI-S16-6)', () => {
   })
 
   test('without the stop permission: the sandboxes are listed with no Stop', async () => {
-    viewAnswer = () => json(opsView({ actions: { stopRuns: false }, sandboxes: { state: { ok: true }, mode: 'per_user', list: [sandbox()] } }))
+    viewAnswer = () => json(opsView({ actions: { stopRuns: false }, sandboxes: { state: { ok: true }, list: [sandbox()] } }))
     renderPage()
     await screen.findByRole('table', { name: 'Kali sandboxes' })
     expect(screen.queryByRole('button', { name: /Kali sandbox/ })).toBeNull()
   })
 
-  test('shared mode, none running, and a source that does not answer', async () => {
-    viewAnswer = () => json(opsView({ sandboxes: { state: { ok: true }, mode: 'shared', list: [] } }))
-    const { unmount } = renderPage()
-    expect(await screen.findByText(/every Kali tool runs in the shared container/)).toBeInTheDocument()
-    unmount()
-    viewAnswer = () => json(opsView({ sandboxes: { state: { ok: true }, mode: 'per_user', list: [] } }))
+  test('none running, and a source that does not answer', async () => {
+    viewAnswer = () => json(opsView({ sandboxes: { state: { ok: true }, list: [] } }))
     const second = renderPage()
     expect(await screen.findByText('No Kali sandbox is running.')).toBeInTheDocument()
+    expect(screen.queryByText(/shared container/)).toBeNull()
     second.unmount()
-    viewAnswer = () => json(opsView({ sandboxes: { state: { ok: false, code: 'orchestrator_timeout' }, mode: null, list: [] } }))
+    viewAnswer = () => json(opsView({ sandboxes: { state: { ok: false, code: 'orchestrator_timeout' }, list: [] } }))
     renderPage()
     expect(await screen.findByText('orchestrator_timeout')).toBeInTheDocument()
   })
@@ -438,7 +437,7 @@ describe('shells across sandboxes (group 1)', () => {
     const table = await screen.findByRole('table', { name: 'Shell sessions' })
     expect(within(table).getByText('Session 1 · shell · sandbox aaaaa1')).toBeInTheDocument()
     expect(within(table).getByText('Session 1 · meterpreter · sandbox bbbbb1')).toBeInTheDocument()
-    expect(screen.getByText('2 sandboxes did not answer; their sessions are not shown')).toBeInTheDocument()
+    expect(screen.getByText('2 sandboxes did not answer; their sessions may be out of date or missing')).toBeInTheDocument()
     expect(errors.mock.calls.some((c) => String(c[0]).includes('same key'))).toBe(false)
   })
 

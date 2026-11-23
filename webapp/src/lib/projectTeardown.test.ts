@@ -100,8 +100,8 @@ beforeEach(() => {
   h.purge.mockImplementation(async (pid: string) => { h.events.push(`purge ${pid}`) })
   h.gc.mockImplementation(async () => { h.events.push('gc bodies'); return { deleted: 0 } })
   h.graphRun.mockImplementation(async () => { h.events.push('clear graph'); return { records: [] } })
-  h.sandboxProjectDeleted.mockReset().mockImplementation(async (pid: string) => { h.events.push(`stop sandboxes ${pid}`); return { mode: 'per_user', stopped: 1 } })
-  h.sandboxAccessChanged.mockReset().mockImplementation(async (ids: string[]) => { h.events.push(`reconcile sandboxes ${ids.join(',')}`); return { mode: 'per_user', stopped: 0 } })
+  h.sandboxProjectDeleted.mockReset().mockImplementation(async (pid: string) => { h.events.push(`stop sandboxes ${pid}`); return { stopped: 1 } })
+  h.sandboxAccessChanged.mockReset().mockImplementation(async (ids: string[]) => { h.events.push(`reconcile sandboxes ${ids.join(',')}`); return { stopped: 0 } })
 })
 
 describe('the steps of the project delete, in its order', () => {
@@ -259,15 +259,15 @@ describe('the Kali sandboxes (group 1, TD-27): no instance mounts the project wh
 
   test('the second pass failing marks stop_sandboxes failed; the purge still runs', async () => {
     h.sandboxProjectDeleted
-      .mockResolvedValueOnce({ mode: 'per_user', stopped: 0 })
+      .mockResolvedValueOnce({ stopped: 0 })
       .mockResolvedValueOnce({ error: 'orchestrator_unreachable', stopped: 0 })
     const result = await teardownProject(PROJECT, ACTOR)
     expect(result.steps.find(s => s.step === 'stop_sandboxes')?.outcome).toBe('failed')
     expect(h.purge).toHaveBeenCalledWith('p1')
   })
 
-  test('shared mode (nothing asked) records ok', async () => {
-    h.sandboxProjectDeleted.mockResolvedValue({ mode: 'shared' })
+  test('nothing mounted the project (none stopped) records ok', async () => {
+    h.sandboxProjectDeleted.mockResolvedValue({ stopped: 0 })
     const result = await teardownProject(PROJECT, ACTOR)
     expect(result.steps.find(s => s.step === 'stop_sandboxes')?.outcome).toBe('ok')
   })

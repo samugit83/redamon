@@ -621,13 +621,13 @@ class TheAgentApi(unittest.TestCase):
         cls.client = TestClient(api_module.app)
 
     def setUp(self):
-        import sandbox_contract
         import sandbox_router
+        from one_sandbox import route_to
 
-        # The shared sandbox's path: shared mode is named, since the default is
-        # per_user and no gateway answers here.
-        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
+        # The terminal opens on its person's own sandbox (one_sandbox's handle).
+        sandbox_router._reset()
         self.addCleanup(sandbox_router._reset)
+        route_to(self, {})
 
         self._e = mock.patch.dict(os.environ, {
             "INTERNAL_API_KEY": MASTER, "AGENT_WS_TICKET_SECRET": SECRET, "MCP_AUTH_TOKEN": "mcp-token-for-test",

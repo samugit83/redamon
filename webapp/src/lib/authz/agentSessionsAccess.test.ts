@@ -1,16 +1,18 @@
 /**
  * Which shell sessions a person sees and drives (HD-01, HD-02, SH-49 map).
  *
- * The Kali sandbox has one msfconsole for the whole instance, so its session list holds
- * every user's sessions. A session belongs to the chat whose run opened it (the
- * manager's session-to-chat map), the chat to its conversation (`Conversation.sessionId`,
- * unique) and the conversation to its project. A member sees the sessions of the
- * projects the effective user owns; untagged sessions, other projects' sessions and the
- * background jobs only with `shell_sessions_all` (admins, the legacy grant, the escape
- * hatch for pre-upgrade accounts), judged on the signed-in account.
+ * The agent's session list gathers every person's Kali sandbox, each row tagged with its sandbox
+ * instance and that sandbox's person (group 1). A session belongs to the chat whose run opened it
+ * (the manager's session-to-chat map), the chat to its conversation (`Conversation.sessionId`,
+ * unique) and the conversation to its project. A member sees the sessions of the projects the
+ * effective user owns; unattributed sessions, other projects' sessions and the background jobs
+ * only with `shell_sessions_all` (admins, the legacy grant, the escape hatch for pre-upgrade
+ * accounts), judged on the signed-in account. The per-sandbox attribution rules are
+ * agentSessionsAccess.sandbox.test.ts.
  *
- * The session, the account read and Prisma are mocked; sharedToolAccess, visibleProjects and
- * projectAccess() are the real ones (sharing off) unless a step 5.10 test answers for the policy.
+ * The session, the account read, Prisma and the sandbox mount lists are mocked; sharedToolAccess,
+ * visibleProjects and projectAccess() are the real ones (sharing off) unless a step 5.10 test
+ * answers for the policy.
  *
  * @vitest-environment node
  */
@@ -41,6 +43,11 @@ vi.mock('@/lib/prisma', () => ({
     $transaction: async (fn: (tx: unknown) => unknown) => fn({}),
     auditLog: { findFirst: (...a: unknown[]) => mockCutoff(...a) },
   },
+}))
+/** What each person's own sandbox mounts (the gateway's sandboxProjectsFor). */
+let mounts: Record<string, string[]> = {}
+vi.mock('@/lib/sandbox/gateway', () => ({
+  sandboxProjectsFor: async (userId: string) => mounts[userId] ?? [],
 }))
 vi.mock('./projectAccess', async (orig) => {
   const actual = await orig<typeof import('./projectAccess')>()
@@ -77,25 +84,33 @@ function signedIn(real: ReturnType<typeof principal>, actingAs?: string) {
   mockEffectiveUser.mockResolvedValue({ userId: actingAs ?? real.id })
 }
 
-// chat-a in project-a (member-a's), chat-b in project-b (member-b's); chat-gone has no conversation.
+// chat-a in project-a (member-a's, written by member-a), chat-b in project-b (member-b's, by
+// member-b); chat-gone has no conversation.
 const CONVERSATIONS = [
-  { sessionId: 'chat-a', projectId: 'project-a', project: { userId: 'member-a' } },
-  { sessionId: 'chat-b', projectId: 'project-b', project: { userId: 'member-b' } },
+  { sessionId: 'chat-a', projectId: 'project-a', userId: 'member-a', project: { userId: 'member-a' } },
+  { sessionId: 'chat-b', projectId: 'project-b', userId: 'member-b', project: { userId: 'member-b' } },
 ]
+
+/** member-a's own sandbox is `aaaaa1`, member-b's `bbbbb1`; the agent adds the person tags. */
+const IN_A = { sandbox: 'aaaaa1', sandbox_user: 'member-a', sandbox_view: 'own' }
+const IN_B = { sandbox: 'bbbbb1', sandbox_user: 'member-b', sandbox_view: 'own' }
+const SANDBOX_OF: Record<string, string> = { '2': 'bbbbb1' }
+/** The instance a drive of this number names (the row's own). */
+const sandboxOf = (id: string) => SANDBOX_OF[id] ?? 'aaaaa1'
 
 function agentList() {
   return {
     sessions: [
-      { id: 1, type: 'meterpreter', info: 'uid=0', connection: 'c1', target_ip: '10.0.0.1', chat_session_id: 'chat-a' },
-      { id: 2, type: 'shell', info: '', connection: 'c2', target_ip: '10.0.0.2', chat_session_id: 'chat-b' },
-      { id: 3, type: 'shell', info: '', connection: 'c3', target_ip: '10.0.0.3', chat_session_id: null },
-      { id: 4, type: 'shell', info: '', connection: 'c4', target_ip: '10.0.0.4', chat_session_id: 'chat-gone' },
+      { id: 1, type: 'meterpreter', info: 'uid=0', connection: 'c1', target_ip: '10.0.0.1', chat_session_id: 'chat-a', ...IN_A },
+      { id: 2, type: 'shell', info: '', connection: 'c2', target_ip: '10.0.0.2', chat_session_id: 'chat-b', ...IN_B },
+      { id: 3, type: 'shell', info: '', connection: 'c3', target_ip: '10.0.0.3', chat_session_id: null, ...IN_A },
+      { id: 4, type: 'shell', info: '', connection: 'c4', target_ip: '10.0.0.4', chat_session_id: 'chat-gone', ...IN_A },
     ],
-    jobs: [{ id: 0, name: 'Exploit: multi/handler', payload: 'linux/x64/meterpreter/reverse_tcp', port: 4444 }],
+    jobs: [{ id: 0, name: 'Exploit: multi/handler', payload: 'linux/x64/meterpreter/reverse_tcp', port: 4444, ...IN_A }],
     non_msf_sessions: [
-      { id: 'raw-1', type: 'listener', tool: 'netcat', command: 'nc -lvnp 4445', chat_session_id: 'chat-a' },
-      { id: 'raw-2', type: 'listener', tool: 'netcat', command: 'nc -lvnp 4446', chat_session_id: 'chat-b' },
-      { id: 'raw-3', type: 'listener', tool: 'netcat', command: 'nc -lvnp 4447' },
+      { id: 'raw-1', type: 'listener', tool: 'netcat', command: 'nc -lvnp 4445', chat_session_id: 'chat-a', ...IN_A },
+      { id: 'raw-2', type: 'listener', tool: 'netcat', command: 'nc -lvnp 4446', chat_session_id: 'chat-b', ...IN_B },
+      { id: 'raw-3', type: 'listener', tool: 'netcat', command: 'nc -lvnp 4447', ...IN_A },
     ],
     cache_age_seconds: 1.5,
     agent_busy: false,
@@ -121,6 +136,7 @@ beforeEach(() => {
     CONVERSATIONS.filter(c => args.where.sessionId.in.includes(c.sessionId)))
   mockCutoff.mockReset().mockResolvedValue({ createdAt: CUTOFF })
   mockWriteAudit.mockReset().mockResolvedValue(undefined)
+  mounts = { 'member-a': ['project-a'], 'member-b': ['project-b'] }
   resetSharedToolsForTests()
   setFlagsForTests({})
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -147,7 +163,7 @@ describe('the sessions list', () => {
     expect(ids(b.non_msf_sessions)).toEqual(['raw-2'])
   })
 
-  test('untagged hidden for a member', async () => {
+  test('unattributed hidden for a member', async () => {
     // No chat, or a chat with no conversation (deleted, or another instance's).
     const out = await visibleSessions(agentList(), await viewerFor(principal('member-a')))
     expect(ids(out.sessions)).toEqual([1])
@@ -159,7 +175,7 @@ describe('the sessions list', () => {
     expect(out.jobs).toEqual([])
   })
 
-  test('untagged visible to a legacy holder and an admin', async () => {
+  test('every row visible to a legacy holder and an admin', async () => {
     for (const who of [principal('holder', 'standard', ['shell_sessions']), principal('admin-a', 'admin')]) {
       const out = await visibleSessions(agentList(), await viewerFor(who))
       expect(ids(out.sessions)).toEqual([1, 2, 3, 4])
@@ -183,8 +199,10 @@ describe('the sessions list', () => {
   })
 
   test('the project is the one the effective user owns, not the conversation author', async () => {
-    // A conversation in member-a's project is member-a's, whoever wrote in it.
-    mockConversations.mockResolvedValue([{ sessionId: 'chat-b', projectId: 'project-a', project: { userId: 'member-a' } }])
+    // A conversation in member-a's project is member-a's, whoever wrote in it: here member-b, whose
+    // sandbox mounts project-a (shared with him).
+    mounts['member-b'] = ['project-a', 'project-b']
+    mockConversations.mockResolvedValue([{ sessionId: 'chat-b', projectId: 'project-a', userId: 'member-b', project: { userId: 'member-a' } }])
     const out = await visibleSessions(agentList(), await viewerFor(principal('member-a')))
     expect(ids(out.sessions)).toEqual([2])
   })
@@ -251,33 +269,33 @@ describe('the viewer', () => {
 
 describe('a target to drive', () => {
   test("a member drives their own project's session", async () => {
-    const t = await authorizeSessionTarget(agentList(), await viewerFor(principal('member-a')), 'session', '1')
-    expect(t).toEqual({ projectId: 'project-a', via: 'owner' })
+    const t = await authorizeSessionTarget(agentList(), await viewerFor(principal('member-a')), 'session', '1', sandboxOf('1'))
+    expect(t).toEqual({ projectId: 'project-a', via: 'owner', sandboxUser: 'member-a' })
   })
 
-  test('kill of a hidden session 404: no target for another project, an untagged session, a job or a missing id', async () => {
+  test('kill of a hidden session 404: no target for another project, an unattributed session, a job or a missing id', async () => {
     const v = await viewerFor(principal('member-a'))
     for (const [kind, id] of [['session', '2'], ['session', '3'], ['session', '4'], ['job', '0'], ['session', '99'], ['session', 'x']] as const) {
-      expect(await authorizeSessionTarget(agentList(), v, kind, id)).toBeNull()
+      expect(await authorizeSessionTarget(agentList(), v, kind, id, sandboxOf(id))).toBeNull()
     }
   })
 
   test('a holder or an admin drives any session and job', async () => {
     const holder = await viewerFor(principal('holder', 'standard', ['shell_sessions']))
-    expect(await authorizeSessionTarget(agentList(), holder, 'session', '2')).toEqual({ projectId: 'project-b', via: 'legacy' })
-    expect(await authorizeSessionTarget(agentList(), holder, 'session', '3')).toEqual({ projectId: null, via: 'legacy' })
-    expect(await authorizeSessionTarget(agentList(), holder, 'job', '0')).toEqual({ projectId: null, via: 'legacy' })
+    expect(await authorizeSessionTarget(agentList(), holder, 'session', '2', sandboxOf('2'))).toEqual({ projectId: 'project-b', via: 'legacy', sandboxUser: 'member-b' })
+    expect(await authorizeSessionTarget(agentList(), holder, 'session', '3', sandboxOf('3'))).toEqual({ projectId: null, via: 'legacy', sandboxUser: 'member-a' })
+    expect(await authorizeSessionTarget(agentList(), holder, 'job', '0', sandboxOf('0'))).toEqual({ projectId: null, via: 'legacy', sandboxUser: 'member-a' })
     const admin = await viewerFor(principal('admin-a', 'admin'))
-    expect(await authorizeSessionTarget(agentList(), admin, 'session', '4')).toEqual({ projectId: null, via: 'admin' })
-    expect(await authorizeSessionTarget(agentList(), admin, 'job', '7')).toBeNull()
+    expect(await authorizeSessionTarget(agentList(), admin, 'session', '4', sandboxOf('4'))).toEqual({ projectId: null, via: 'admin', sandboxUser: 'member-a' })
+    expect(await authorizeSessionTarget(agentList(), admin, 'job', '7', sandboxOf('7'))).toBeNull()
   })
 
   test("driving another's session under the escape hatch is a recorded use; one's own is not", async () => {
     setFlagsForTests({ sharedToolsCompat: true })
     const v = await viewerFor(principal('member-a', 'standard', [], BEFORE_CUTOFF))
-    expect(await authorizeSessionTarget(agentList(), v, 'session', '1')).toEqual({ projectId: 'project-a', via: 'owner' })
+    expect(await authorizeSessionTarget(agentList(), v, 'session', '1', sandboxOf('1'))).toEqual({ projectId: 'project-a', via: 'owner', sandboxUser: 'member-a' })
     expect(compatRows()).toEqual([])
-    expect(await authorizeSessionTarget(agentList(), v, 'session', '2')).toEqual({ projectId: 'project-b', via: 'compat' })
+    expect(await authorizeSessionTarget(agentList(), v, 'session', '2', sandboxOf('2'))).toEqual({ projectId: 'project-b', via: 'compat', sandboxUser: 'member-b' })
     expect(compatRows()).toHaveLength(1)
     expect(compatRows()[0]).toMatchObject({ actorId: 'member-a', targetId: 'shell_sessions_all' })
   })
@@ -325,9 +343,9 @@ describe('a project shared with the viewer (step 5.10)', () => {
     expect(out.sessions.find(s => s.id === 2)).toMatchObject({ project_id: 'project-b' })
     expect(ids(out.non_msf_sessions)).toEqual(['raw-1', 'raw-2'])
     expect(out.jobs).toEqual([])
-    expect(await authorizeSessionTarget(agentList(), v, 'session', '2')).toEqual({ projectId: 'project-b', via: 'share' })
-    expect(await authorizeSessionTarget(agentList(), v, 'job', '0')).toBeNull()
-    expect(await authorizeSessionTarget(agentList(), v, 'session', '3')).toBeNull()
+    expect(await authorizeSessionTarget(agentList(), v, 'session', '2', sandboxOf('2'))).toEqual({ projectId: 'project-b', via: 'share', sandboxUser: 'member-b' })
+    expect(await authorizeSessionTarget(agentList(), v, 'job', '0', sandboxOf('0'))).toBeNull()
+    expect(await authorizeSessionTarget(agentList(), v, 'session', '3', sandboxOf('3'))).toBeNull()
     expect(policy).toHaveBeenCalledWith({ userId: 'member-a' }, 'project-b')
   })
 
@@ -349,27 +367,27 @@ describe('a project shared with the viewer (step 5.10)', () => {
     const out = await visibleSessions(agentList(), v)
     expect(ids(out.sessions)).toEqual([1])
     expect(ids(out.non_msf_sessions)).toEqual(['raw-1'])
-    expect(await authorizeSessionTarget(agentList(), v, 'session', '2')).toBeNull()
+    expect(await authorizeSessionTarget(agentList(), v, 'session', '2', sandboxOf('2'))).toBeNull()
   })
 
   test('an admin acting as the collaborator: the share is asked as acted (read at most), and the admin\'s own view stays', async () => {
     answering(toProjectB('read'))
     const v = await viewerFor(principal('admin-a', 'admin'), 'member-a')
-    expect(await authorizeSessionTarget(agentList(), v, 'session', '2')).toEqual({ projectId: 'project-b', via: 'admin' })
+    expect(await authorizeSessionTarget(agentList(), v, 'session', '2', sandboxOf('2'))).toEqual({ projectId: 'project-b', via: 'admin', sandboxUser: 'member-b' })
     expect(policy).toHaveBeenCalledWith({ userId: 'member-a' }, 'project-b', { actingAs: true })
   })
 
   test('a shared session driven is audited with via share', async () => {
     answering(toProjectB('write', { exploit: true }))
     const v = await viewerFor(principal('member-a'))
-    const target = await authorizeSessionTarget(agentList(), v, 'session', '2')
+    const target = await authorizeSessionTarget(agentList(), v, 'session', '2', sandboxOf('2'))
     const { beginDriveAudit } = await import('@/app/api/agent/sessions/sessionDrive')
-    // Group 1 (TD-11): an untagged row is the shared container's, named `shared:<number>`. The row is
-    // written before the drive is forwarded (S16b), so it carries `outcome: 'attempted'`.
-    await beginDriveAudit('agent.session_kill', 'session', '2', null, v, target!)
+    // Group 1 (TD-11): a drive is named `<instance>:<number>`. The row is written before the drive
+    // is forwarded (S16b), so it carries `outcome: 'attempted'`.
+    await beginDriveAudit('agent.session_kill', 'session', '2', 'bbbbb1', v, target!)
     expect(mockWriteAudit).toHaveBeenCalledWith(expect.objectContaining({
-      action: 'agent.session_kill', actorId: 'member-a', targetId: 'shared:2',
-      after: expect.objectContaining({ projectId: 'project-b', via: 'share', sandbox: 'shared', outcome: 'attempted' }),
+      action: 'agent.session_kill', actorId: 'member-a', targetId: 'bbbbb1:2',
+      after: expect.objectContaining({ projectId: 'project-b', via: 'share', sandbox: 'bbbbb1', sandboxUser: 'member-b', outcome: 'attempted' }),
     }))
   })
 })

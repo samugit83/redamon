@@ -308,11 +308,13 @@ def validate_servers(
 
 
 def _resolve_auth_header(srv: MCPServer) -> Tuple[Dict[str, str], List[str]]:
-    """Build auth + custom headers, resolving env vars. Returns (headers, missing_vars).
+    """Build auth + custom headers. Returns (headers, missing_vars); nothing is read from the
+    environment, so missing_vars stays empty.
 
     Token resolution order:
     1. ``auth.token`` literal — used verbatim.
-    2. ``auth.token_env_var`` resolved via os.getenv, for a system server only.
+    ``auth.token_env_var`` is never resolved: no server reads the agent's environment
+    for its bearer (the system servers carry their sandbox instance's own token).
     """
     headers: Dict[str, str] = {}
     missing: List[str] = []
@@ -326,15 +328,12 @@ def _resolve_auth_header(srv: MCPServer) -> Tuple[Dict[str, str], List[str]]:
         if srv.auth.token:
             # Literal bearer token — used as-is.
             token = srv.auth.token
-        elif srv.auth.token_env_var and srv.id not in SYSTEM_SERVER_IDS:
-            # Only the operator's own servers read the agent's environment (OQ-R1): a
-            # user's server naming INTERNAL_API_KEY would carry it to its own URL.
-            # parse_user_servers strips it first; this holds for any other path.
-            logger.warning(f"[rbac] mcp token_env_var refused server={srv.id}")
         elif srv.auth.token_env_var:
-            token = os.environ.get(srv.auth.token_env_var)
-            if not token:
-                missing.append(srv.auth.token_env_var)
+            # A user's server naming INTERNAL_API_KEY would carry it to its own URL (OQ-R1),
+            # and a system id naming MCP_AUTH_TOKEN would send the shared container's token:
+            # no server reads the agent's environment. parse_user_servers strips it first;
+            # this holds for any other path.
+            logger.warning(f"[rbac] mcp token_env_var refused server={srv.id}")
         if token:
             # Defensive: HTTP headers must be ASCII. If the token still
             # contains the mask placeholder (••••) or any other non-ASCII
@@ -497,7 +496,7 @@ def set_current(
 
 
 def current() -> List[MCPServer]:
-    """Snapshot of currently-registered servers (system + user)."""
+    """Snapshot of the registered user MCP servers (the system servers are per sandbox)."""
     with _state_lock:
         return list(_current_servers)
 

@@ -141,7 +141,7 @@ def test_a_read_in_a_plan_wave_takes_the_notice_away():
     async def work():
         return await plan_node.execute_plan_node(
             {**st, "_current_plan": plan}, config, tool_executor=PhaseAwareToolExecutor(None, graph_tool=None),
-            streaming_callbacks={}, session_manager_base="")
+            streaming_callbacks={})
 
     st["_decision"] = {**st["_decision"], "action": "plan_tools", "tool_name": None}
     assert UNREAD in block(lib, st)[0]

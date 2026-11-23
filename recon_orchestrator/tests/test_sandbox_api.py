@@ -6,11 +6,12 @@ The image has no httpx (so no TestClient): requests are driven straight through
 the ASGI app (`asgi` below), so the key middleware and the route order are the
 real ones. The manager behind the routes is either a stub that records its calls
 or the real SandboxManager on the in-memory FakeDocker of
-test_sandbox_manager_lifecycle.py. Every test sets KALI_SANDBOX_MODE explicitly.
+test_sandbox_manager_lifecycle.py.
 """
 import asyncio
 import json
 import logging
+import os
 import uuid
 from types import SimpleNamespace
 from unittest import mock
@@ -89,14 +90,10 @@ async def asgi(method, path, body=None, key=KEY):
 class StubManager:
     """Records every call; answers what a test sets."""
 
-    def __init__(self, mode=sc.MODE_PER_USER):
-        self._mode = mode
+    def __init__(self):
         self.calls = []
         self.raises = None
         self.answer = None
-
-    def mode(self):
-        return self._mode
 
     async def _do(self, name, *args, **kw):
         self.calls.append((name, args, kw))
@@ -105,9 +102,6 @@ class StubManager:
         return self.answer
 
     async def ensure(self, *a, **kw):
-        if self._mode == sc.MODE_SHARED and self.raises is None:
-            self.calls.append(("ensure", a, kw))
-            return {"mode": sc.MODE_SHARED}
         return await self._do("ensure", *a, **kw)
 
     async def lease(self, *a, **kw):
@@ -130,7 +124,7 @@ class StubManager:
 
     def status(self, user_id):
         self.calls.append(("status", (user_id,), {}))
-        return {"mode": self._mode, "instances": []}
+        return {"instances": []}
 
     def list_running(self):
         self.calls.append(("list_running", (), {}))
@@ -141,7 +135,6 @@ ENSURE_BODY = {"user_id": ALICE, "view": "own", "projects": ["projA"], "need_pro
                "wait": True, "touch": False}
 # Every sandbox route of B.9, and a path under /sandboxes/ that no route matches.
 ROUTES = [
-    ("GET", "/sandboxes/mode", None),
     ("GET", "/sandboxes", None),
     ("POST", "/sandboxes/ensure", ENSURE_BODY),
     ("POST", "/sandboxes/stop-project", {"project_id": "projA", "reason": "project_deleted"}),
@@ -167,41 +160,32 @@ async def test_every_sandbox_route_refuses_without_the_orchestrator_key(served, 
     assert stub.calls == []
 
 
-def test_every_contract_route_is_declared_and_mode_before_status():
+def test_every_contract_route_is_declared():
     declared = [(r.path, sorted(r.methods or ())) for r in api.app.routes if hasattr(r, "methods")]
-    paths = [p for p, _ in declared]
     expected = {
         sc.ROUTE_ENSURE: ["POST"], sc.ROUTE_LEASES: ["POST"], sc.ROUTE_LEASE: ["DELETE"],
         sc.ROUTE_RECONCILE: ["POST"], sc.ROUTE_STOP_USER: ["POST"], sc.ROUTE_STOP_PROJECT: ["POST"],
         sc.ROUTE_STOP_ALL: ["POST"], sc.ROUTE_STATUS: ["GET"], sc.ROUTE_LIST: ["GET"],
-        sc.ROUTE_MODE: ["GET"],
     }
     for route, methods in expected.items():
         assert any(p == route and set(methods) <= set(m) for p, m in declared), route
-    # GET /sandboxes/mode would otherwise be GET /sandboxes/{user_id} with user_id "mode".
-    assert paths.index(sc.ROUTE_MODE) < paths.index(sc.ROUTE_STATUS)
+    # One mode only: no route names one.
+    assert "/sandboxes/mode" not in [p for p, _ in declared]
 
 
-@pytest.mark.parametrize("mode", [sc.MODE_SHARED, sc.MODE_PER_USER])
-async def test_mode_route_answers_only_the_mode(served, env, mode):
-    env.setenv(sc.MODE_ENV, mode)
-    stub = served(StubManager(mode))
-    status, answer = await asgi("GET", "/sandboxes/mode")
-    assert (status, answer) == (200, {"mode": mode})
-    assert stub.calls == []
-
-
-async def test_mode_route_answers_before_adoption_and_without_a_manager(served, env, monkeypatch):
-    env.setenv(sc.MODE_ENV, sc.MODE_PER_USER)
-    monkeypatch.setattr(api, "_sandboxes_adopted", False)
-    assert await asgi("GET", "/sandboxes/mode") == (200, {"mode": sc.MODE_PER_USER})
+async def test_mode_is_a_user_id_like_any_other(served, world, env):
+    """With the mode route gone, `GET /sandboxes/mode` is the status of a person
+    whose id is "mode": an empty one, never a mode an old webapp could read."""
+    env.setenv("KALI_SANDBOX_MODE", "shared")
+    served(world.mgr)
+    assert await asgi("GET", "/sandboxes/mode") == (200, {"instances": []})
 
 
 # --- ensure -----------------------------------------------------------------------
 
 async def test_ensure_passes_the_request_to_the_manager(served, env):
     stub = served(StubManager())
-    stub.answer = {"mode": sc.MODE_PER_USER, "state": "starting", "instance": "abc123", "fresh": True}
+    stub.answer = {"state": "starting", "instance": "abc123", "fresh": True}
     body = dict(ENSURE_BODY, view="act_as", need_project="projA", wait=False, touch=True)
     status, answer = await asgi("POST", "/sandboxes/ensure", body)
     assert status == 202 and answer == stub.answer
@@ -212,16 +196,25 @@ async def test_ensure_passes_the_request_to_the_manager(served, env):
 
 async def test_ensure_running_answers_200(served, env):
     stub = served(StubManager())
-    stub.answer = {"mode": sc.MODE_PER_USER, "state": "running", "instance": "abc123", "fresh": False}
+    stub.answer = {"state": "running", "instance": "abc123", "fresh": False}
     status, answer = await asgi("POST", "/sandboxes/ensure", ENSURE_BODY)
     assert status == 200 and answer["state"] == "running"
 
 
-async def test_ensure_in_shared_mode_answers_the_mode_even_before_adoption(served, env, monkeypatch):
-    env.setenv(sc.MODE_ENV, sc.MODE_SHARED)
+async def test_ensure_waits_for_adoption_whatever_the_old_mode_switch_says(served, env, monkeypatch):
+    env.setenv("KALI_SANDBOX_MODE", "shared")
     monkeypatch.setattr(api, "_sandboxes_adopted", False)
-    served(StubManager(sc.MODE_SHARED))
-    assert await asgi("POST", "/sandboxes/ensure", ENSURE_BODY) == (200, {"mode": sc.MODE_SHARED})
+    stub = served(StubManager())
+    status, answer = await asgi("POST", "/sandboxes/ensure", ENSURE_BODY)
+    assert status == 503 and answer["detail"]["code"] == sc.ERR_START_FAILED
+    assert stub.calls == []
+
+
+async def test_a_warm_up_that_did_not_start_answers_202(served, env):
+    stub = served(StubManager())
+    stub.answer = {"state": "unavailable", "instance": None, "fresh": False}
+    status, answer = await asgi("POST", "/sandboxes/ensure", dict(ENSURE_BODY, wait=False, touch=True))
+    assert (status, answer) == (202, stub.answer)
 
 
 @pytest.mark.parametrize("limit", ["ram", "hard"])
@@ -249,7 +242,7 @@ async def test_ensure_start_errors_answer_503_or_504_with_the_code(served, env, 
 
 @pytest.mark.parametrize("change,code", [
     ({"user_id": "bad/user"}, sc.ERR_INVALID_USER_ID),
-    ({"user_id": "mode"}, sc.ERR_INVALID_USER_ID),
+    ({"user_id": "stop-all"}, sc.ERR_INVALID_USER_ID),
     ({"view": "root"}, sc.ERR_INVALID_VIEW),
     ({"projects": ["../etc"]}, sc.ERR_INVALID_PROJECT_ID),
     ({"projects": [".staging"]}, sc.ERR_INVALID_PROJECT_ID),
@@ -269,23 +262,21 @@ async def test_list_carries_tokens_and_status_never_does(served, world):
     status, ens = await asgi("POST", "/sandboxes/ensure", ENSURE_BODY)
     assert status == 200 and ens["state"] == "running"
     status, listed = await asgi("GET", "/sandboxes")
-    assert status == 200 and listed["mode"] == sc.MODE_PER_USER
+    assert status == 200 and set(listed) == {"sandboxes"} and "mode" not in ens
     assert [s["token"] for s in listed["sandboxes"]] == [ens["token"]]
     assert listed["sandboxes"][0]["host"] == ens["host"]
     status, mine = await asgi("GET", f"/sandboxes/{ALICE}")
-    assert status == 200 and [i["instance"] for i in mine["instances"]] == [ens["instance"]]
+    assert status == 200 and set(mine) == {"instances"}
+    assert [i["instance"] for i in mine["instances"]] == [ens["instance"]]
     text = json.dumps(mine)
     assert ens["token"] not in text and ens["tunnel_token"] not in text and "token" not in text
 
 
-@pytest.mark.parametrize("user_id", ["mode", "ensure", "stop-all", "a.b", "x" * 65])
+@pytest.mark.parametrize("user_id", ["ensure", "stop-all", "stop-project", "a.b", "x" * 65])
 async def test_status_of_an_invalid_user_id_answers_400(served, world, user_id):
     served(world.mgr)
     status, answer = await asgi("GET", f"/sandboxes/{user_id}")
-    if user_id == "mode":
-        assert status == 200 and set(answer) == {"mode"}      # the mode route, matched first
-    else:
-        assert status == 400 and answer["detail"]["code"] == sc.ERR_INVALID_USER_ID
+    assert status == 400 and answer["detail"]["code"] == sc.ERR_INVALID_USER_ID
 
 
 async def test_stop_project_reaches_the_manager(served, world):
@@ -372,8 +363,7 @@ async def test_routes_outside_sandboxes_keep_their_404(served, world):
     assert await asgi("GET", "/no-such-route") == (404, {"detail": "Not Found"})
 
 
-@pytest.mark.parametrize("method,path,body", [r for r in ROUTES if r[1] not in ("/sandboxes/mode",
-                                                                              "/sandboxes/a/b/stop")])
+@pytest.mark.parametrize("method,path,body", [r for r in ROUTES if r[1] != "/sandboxes/a/b/stop"])
 async def test_routes_answer_503_until_adoption_has_finished(served, env, monkeypatch, method, path, body):
     stub = served(StubManager())
     monkeypatch.setattr(api, "_sandboxes_adopted", False)
@@ -465,9 +455,6 @@ class LifecycleManager:
         self.adopted_flag_at_adopt = []
         self.idle_started = asyncio.Event()
 
-    def mode(self):
-        return sc.MODE_PER_USER
-
     def reservation_keys(self):
         return set()
 
@@ -492,7 +479,7 @@ class LifecycleManager:
 
     async def ensure(self, *a, **kw):
         self.events.append("ensure")
-        return {"mode": sc.MODE_PER_USER, "state": "running"}
+        return {"state": "running"}
 
 
 @pytest.fixture
@@ -565,8 +552,7 @@ async def test_failed_adoption_is_retried_and_routes_wait_for_it(lifespan_env, e
         gate.set()
         await asyncio.wait_for(mgr.idle_started.wait(), 2)
         assert api._sandboxes_adopted is True
-        assert await asgi("POST", "/sandboxes/ensure", ENSURE_BODY) == (200, {"mode": sc.MODE_PER_USER,
-                                                                                "state": "running"})
+        assert await asgi("POST", "/sandboxes/ensure", ENSURE_BODY) == (200, {"state": "running"})
     assert mgr.events.count("adopt") == 3 and mgr.events.count("idle") == 1
     assert mgr.events.index("idle") > 2
 
@@ -760,6 +746,26 @@ async def test_capture_proxy_and_agent_join_with_low_gateway_priority(served, wo
         assert new_proxy.id in members and world.agent.id in members
         assert connects_to(world, net)[new_proxy.id] == {"GwPriority": sc.GUEST_GATEWAY_PRIORITY}
     assert {a["host"], b["host"]} == {c.name for c in world.created()}
+
+
+def test_the_proxy_the_orchestrator_starts_is_the_one_the_gate_attaches(world):
+    """Both halves read the same facts: the run kwargs of start_capture_proxy, as a
+    container, pass every check of the sandbox manager's attach gate."""
+    proxy_kw, _ = _proxy_kwargs({})        # runs its own event loop
+    world.proxy.remove(force=True)
+    world.proxy = lc.add_proxy(world.d, blocked=proxy_kw["environment"]["CAPTURE_BLOCKED_IPS"],
+                               sysctls=proxy_kw["sysctls"], cmd=proxy_kw["command"])
+    asyncio.run(world.mgr.ensure(ALICE, ["projA"]))
+    assert world.proxy.id in connects_to(world, sc.network_name(ALICE, "own"))
+
+
+@pytest.mark.parametrize("environ", [{}, {"CAPTURE_PROXY_IMAGE": "registry.local/proxy:7"}])
+def test_the_gate_reads_the_image_the_orchestrator_starts_the_proxy_from(environ):
+    with mock.patch.dict("os.environ", environ, clear=False):
+        if not environ:
+            os.environ.pop("CAPTURE_PROXY_IMAGE", None)
+        started = cm.ContainerManager.__new__(cm.ContainerManager)._capture_image()
+        assert sm.capture_proxy_image() == started
 
 
 @pytest.mark.parametrize("variant", ["no_sysctl", "no_pool"])

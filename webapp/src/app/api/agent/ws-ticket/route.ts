@@ -75,7 +75,7 @@ const TERMINAL_REFUSED =
 //
 // The ticket names its socket (`aud`, HD-25); no `socket` is the chat socket, as a
 // browser bundle from before the update sends. A `kali-terminal` ticket also needs
-// the terminal (HD-04): a root shell in the one sandbox every project shares. The
+// the terminal (HD-04): a root shell in the person's own Kali sandbox. The
 // REAL signed-in account must hold it, so an admin's act-as never borrows a
 // member's grant and a member never gets it by being the effective user.
 //

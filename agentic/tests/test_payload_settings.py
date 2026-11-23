@@ -31,21 +31,28 @@ def _fake_settings(values: dict):
     return _get
 
 
-class _SharedMode(unittest.TestCase):
-    """The shared sandbox's guidance: shared mode is named, since the default is
-    per_user and no gateway answers here."""
+POOL_PORT = 45002
+
+
+class _PoolSandbox(unittest.TestCase):
+    """The run's own sandbox publishes a pool port (KALI_SANDBOX_PORT_POOL), the one case
+    where a direct reverse shell to the host's address can work."""
 
     def setUp(self):
-        import sandbox_contract
         import sandbox_router
+        from one_sandbox import handle
 
-        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
+        sandbox_router._reset()
         self.addCleanup(sandbox_router._reset)
+        patcher = patch.object(sandbox_router, "current_handle",
+                               lambda project_id=None: handle(reverse_port=POOL_PORT))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
 
-class DefaultModeGuidanceTests(unittest.TestCase):
-    """No mode answered yet is the default, per_user: the sandbox publishes no port,
-    so the ASK branch never steers the agent to the host's LAN IP."""
+class NoPublishedPortGuidanceTests(unittest.TestCase):
+    """A run with no sandbox yet, or one that publishes no port: the ASK branch never
+    steers the agent to the host's LAN IP."""
 
     def test_the_default_offers_no_direct_reverse_shell(self):
         import sandbox_router
@@ -61,8 +68,9 @@ class DefaultModeGuidanceTests(unittest.TestCase):
         self.assertNotIn("host machine's LAN IP", out)
 
 
-class AskBranchGuidanceTests(_SharedMode):
-    """All-empty settings -> ASK branch must steer the agent to the host LAN IP.
+class AskBranchGuidanceTests(_PoolSandbox):
+    """All-empty settings -> ASK branch must steer the agent to the host's address and
+    the sandbox's published pool port.
 
     HOST_LAN_IP is cleared so these assert the no-detection fallback deterministically
     regardless of the ambient environment; the suggestion path is covered separately.
@@ -78,27 +86,27 @@ class AskBranchGuidanceTests(_SharedMode):
         out = self._render({})
         self.assertIn("PAYLOAD DIRECTION NOT CONFIGURED", out)
 
-    def test_ask_branch_names_the_host_lan_ip_as_lhost(self):
+    def test_ask_branch_names_the_hosts_address_as_lhost(self):
         out = self._render({})
-        self.assertIn("host machine's LAN IP", out)
+        self.assertIn("as LHOST the host's address the target can reach", out)
 
     def test_ask_branch_forbids_container_ip_autodetection(self):
         out = self._render({})
         # The exact failure from issue #180: the agent ran `ip`/`ifconfig` inside
-        # the container and got the unreachable 172.x veth address.
+        # the container and got the unreachable Docker address.
         self.assertIn("DO NOT GUESS OR AUTO-DETECT", out)
-        self.assertIn("172.x", out)
+        self.assertIn("Docker IP the target CANNOT reach", out)
         for cmd in ("ip addr", "ifconfig", "hostname -I"):
             self.assertIn(cmd, out)
         self.assertIn("ASK THE USER", out)
 
-    def test_ask_branch_explains_the_4444_host_forward(self):
+    def test_ask_branch_names_the_published_pool_port(self):
         out = self._render({})
-        self.assertIn("4444", out)
-        self.assertIn("host-LAN-IP:LPORT", out)
+        self.assertIn(f"use LPORT `{POOL_PORT}`", out)
+        self.assertNotIn("host-LAN-IP:LPORT", out)
 
 
-class DetectedHostIpSuggestionTests(_SharedMode):
+class DetectedHostIpSuggestionTests(_PoolSandbox):
     """HOST_LAN_IP (issue #180): the ask-branch suggests the host's LAN IP, but
     only when no tunnel is configured."""
 
@@ -111,7 +119,7 @@ class DetectedHostIpSuggestionTests(_SharedMode):
         out = self._render({}, {"HOST_LAN_IP": "192.168.1.50"})
         self.assertIn("192.168.1.50", out)
         self.assertIn("detected LAN IP", out)
-        # Still forbids self-detection from inside the container.
+        # Still forbids self-detection from inside the sandbox.
         self.assertIn("DO NOT GUESS OR AUTO-DETECT", out)
         # And no longer the bare "ASK THE USER" fallback line.
         self.assertNotIn("ASK THE USER for it", out)
@@ -137,7 +145,7 @@ class DetectedHostIpSuggestionTests(_SharedMode):
         self.assertNotIn("192.168.1.50", out)
 
 
-class ModeRegressionTests(_SharedMode):
+class ModeRegressionTests(_PoolSandbox):
     """Configured reverse/bind modes are unaffected by the new guidance."""
 
     def _render(self, values):
@@ -163,7 +171,7 @@ class ModeRegressionTests(_SharedMode):
         out = self._render({"LHOST": "203.0.113.9"})
         self.assertIn("PAYLOAD DIRECTION NOT CONFIGURED", out)
         self.assertIn("LPORT is missing", out)
-        self.assertIn("host machine's LAN IP", out)
+        self.assertIn("as LHOST the host's address the target can reach", out)
 
 
 if __name__ == "__main__":

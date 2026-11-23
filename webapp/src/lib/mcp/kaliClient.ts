@@ -253,12 +253,17 @@ export async function kaliExec(
   )
 }
 
+/**
+ * `userId` is the token's owner, as for `kaliExec`: the agent answers 404 for a job recorded for
+ * another person, so a co-member of the project cannot read or cancel someone else's command.
+ */
 export async function kaliJobStatus(
   projectId: string,
   jobId: string,
-  cursor: number
+  cursor: number,
+  userId: string
 ): Promise<KaliJob> {
-  const qs = new URLSearchParams({ project_id: projectId, cursor: String(cursor) })
+  const qs = new URLSearchParams({ project_id: projectId, cursor: String(cursor), user_id: userId })
   return agentJson(
     `/kali/exec/${encodeURIComponent(jobId)}?${qs}`,
     { method: 'GET' },
@@ -267,8 +272,8 @@ export async function kaliJobStatus(
   )
 }
 
-export async function kaliJobCancel(projectId: string, jobId: string): Promise<KaliJob> {
-  const qs = new URLSearchParams({ project_id: projectId })
+export async function kaliJobCancel(projectId: string, jobId: string, userId: string): Promise<KaliJob> {
+  const qs = new URLSearchParams({ project_id: projectId, user_id: userId })
   return agentJson(
     `/kali/exec/${encodeURIComponent(jobId)}/cancel?${qs}`,
     { method: 'POST' },

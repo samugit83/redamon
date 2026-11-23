@@ -5,9 +5,9 @@ import { tunnelStatusPath } from '@/lib/sharedSettingsEffects'
 
 const INACTIVE = { ngrok: { active: false }, chisel: { active: false } }
 
-// Read-only indicator: an unreachable agent reads as "no tunnel", never an error. With per-user
-// Kali sandboxes it shows the signed-in effective person's own tunnel (tunnelStatusPath), asked
-// of the agent with the master key agentFetch sends.
+// Read-only indicator: an unreachable agent reads as "no tunnel", never an error. It shows the
+// signed-in person's own tunnel, and none under act-as (tunnelStatusPath), asked of the agent with
+// the master key agentFetch sends.
 export async function GET() {
   const session = await requireSession()
   if (session instanceof NextResponse) return session

@@ -7,14 +7,13 @@ containers shaped like the daemon's: a container that mounts an empty volume
 over the image's templates gets them copied in (Docker's copy-up), a mount of a
 missing volume creates it unlabelled, `true`, `cat` and the refresher's script
 run as each test scripts them, and a container started with auto_remove is gone
-once it exits. Every test sets KALI_SANDBOX_MODE explicitly.
+once it exits.
 
 The manager and lifespan wiring tests reuse the lifecycle tests' FakeDocker and
 `world`, and the API tests' lifespan stubs.
 """
 import asyncio
 import json
-import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -340,7 +339,7 @@ class Sleeps:
 def fresh_process(monkeypatch):
     """Each test is a new orchestrator process: nothing populated yet."""
     st._populated.clear()
-    monkeypatch.setenv(sc.MODE_ENV, sc.MODE_PER_USER)
+    monkeypatch.delenv("KALI_SANDBOX_MODE", raising=False)
     yield
     st._populated.clear()
 
@@ -356,9 +355,8 @@ def d(wall):
 
 
 def stub_manager(d, owner=OWNER):
-    """What the loop reads of the sandbox manager; its mode reads the switch."""
-    return SimpleNamespace(client=d, owner=owner,
-                           mode=lambda: sc.mode_from_env(os.environ.get(sc.MODE_ENV)))
+    """What the loop reads of the sandbox manager."""
+    return SimpleNamespace(client=d, owner=owner)
 
 
 def volume_mounts(kw):
@@ -829,25 +827,18 @@ async def test_the_loop_survives_docker_errors(stamped, wall):
 
 
 async def test_the_loop_survives_an_unexpected_error(wall):
-    broken = SimpleNamespace(owner=OWNER, mode=lambda: sc.MODE_PER_USER)  # no client
+    broken = SimpleNamespace(owner=OWNER)  # no client
     sleeps = Sleeps(wall, 2)
     with pytest.raises(Stop):
         await asyncio.wait_for(st.refresh_loop(broken, clock=wall, sleep=sleeps), 5)
     assert sleeps.seen == [st.RETRY_S, st.RETRY_S]
 
 
-async def test_shared_mode_does_nothing(d, wall, monkeypatch):
-    monkeypatch.setenv(sc.MODE_ENV, sc.MODE_SHARED)
-    sleeps = Sleeps(wall, 1)
-    await asyncio.wait_for(st.refresh_loop(stub_manager(d), clock=wall, sleep=sleeps), 5)
-    assert d.calls == [] and sleeps.seen == []
-
-
-async def test_shared_mode_does_nothing_with_the_real_manager(world, monkeypatch):
-    monkeypatch.setenv(sc.MODE_ENV, sc.MODE_SHARED)
-    before = list(world.d.calls)
-    await asyncio.wait_for(st.refresh_loop(world.mgr, sleep=Sleeps(Wall(), 1)), 5)
-    assert world.d.calls == before
+async def test_the_old_mode_switch_does_not_stop_the_refresher(stamped, wall, monkeypatch):
+    # An .env from before the shared container went may still name it.
+    monkeypatch.setenv("KALI_SANDBOX_MODE", "shared")
+    sleeps = await run_loop(stamped, wall, 1)
+    assert refresh_times(stamped) == [WALL0] and sleeps.seen == [DAY]
 
 
 # --- The manager's call ------------------------------------------------------------
@@ -886,10 +877,11 @@ async def test_a_refused_start_prepares_nothing(world, prepared):
     assert prepared.calls == []
 
 
-async def test_shared_mode_prepares_nothing(world, prepared, monkeypatch):
-    monkeypatch.setenv(sc.MODE_ENV, sc.MODE_SHARED)
-    assert await world.mgr.ensure(ALICE, ["projA"]) == {"mode": sc.MODE_SHARED}
-    assert prepared.calls == []
+async def test_the_old_mode_switch_still_prepares_the_volume(world, prepared, monkeypatch):
+    monkeypatch.setenv("KALI_SANDBOX_MODE", "shared")
+    answer = await world.mgr.ensure(ALICE, ["projA"])
+    assert answer["state"] == "running"
+    assert prepared.calls == [(world.d, world.mgr.owner)]
 
 
 async def test_with_the_real_preparation_a_docker_without_volumes_still_starts(world):

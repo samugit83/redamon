@@ -200,7 +200,6 @@ class ConcurrencyCapEnforcementTests(unittest.IsolatedAsyncioTestCase):
                 state, config,
                 tool_executor=tool_executor,
                 streaming_callbacks={},
-                session_manager_base="http://unused",
                 graph_view_cyphers=None,
             )
         return result, steps, get_peak(), call_log
@@ -334,7 +333,6 @@ class NodeBehaviourPreservedTests(unittest.IsolatedAsyncioTestCase):
                 state, config,
                 tool_executor=tool_executor,
                 streaming_callbacks={},
-                session_manager_base="http://unused",
             )
         self.assertIn("_current_plan", out)
         self.assertIn("wave_id", out["_current_plan"])
@@ -362,7 +360,6 @@ class NodeBehaviourPreservedTests(unittest.IsolatedAsyncioTestCase):
                 state, config,
                 tool_executor=tool_executor,
                 streaming_callbacks={},
-                session_manager_base="http://unused",
             )
         self.assertEqual(out, {"_current_plan": None})
 

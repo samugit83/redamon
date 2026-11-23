@@ -251,9 +251,9 @@ def _plain(value):
 #: Every constant the webapp needs (WI-S01-4). A name missing from contract.ts is
 #: a failure, so the check cannot pass by finding nothing.
 TS_REQUIRED = (
-    "CONTRACT_VERSION", "MODES", "DEFAULT_MODE", "VIEWS", "SHARED_INSTANCE",
+    "CONTRACT_VERSION", "VIEWS",
     "ROUTE_ENSURE", "ROUTE_LEASES", "ROUTE_LEASE", "ROUTE_RECONCILE", "ROUTE_STOP_USER",
-    "ROUTE_STOP_PROJECT", "ROUTE_STOP_ALL", "ROUTE_STATUS", "ROUTE_LIST", "ROUTE_MODE",
+    "ROUTE_STOP_PROJECT", "ROUTE_STOP_ALL", "ROUTE_STATUS", "ROUTE_LIST",
     "INTERNAL_ROUTE_ENSURE", "INTERNAL_ROUTE_LEASE", "INTERNAL_ROUTE_RELEASE",
     "INTERNAL_ROUTE_LIST", "SESSION_ROUTE_STATUS", "AGENT_ROUTE_DROP", "AGENT_ROUTE_TUNNEL",
     "ERR_INVALID_PROJECT_ID", "ERR_INVALID_USER_ID", "ERR_INVALID_VIEW",
@@ -298,9 +298,9 @@ def test_ts_check_fails_when_a_constant_is_missing_or_differs():
     without = re.sub(r"^export const START_TIMEOUT_S = .*$", "", text, count=1, flags=re.M)
     assert without != text
     assert "START_TIMEOUT_S is missing from contract.ts" in _ts_mismatches(without)
-    changed = re.sub(r"^export const SHARED_INSTANCE = .*$", "export const SHARED_INSTANCE = 'x'",
+    changed = re.sub(r"^export const ROUTE_LIST = .*$", "export const ROUTE_LIST = 'x'",
                      text, count=1, flags=re.M)
-    assert any(p.startswith("SHARED_INSTANCE:") for p in _ts_mismatches(changed))
+    assert any(p.startswith("ROUTE_LIST:") for p in _ts_mismatches(changed))
     with pytest.raises(ValueError):
         _ts_constants("export const X = 1 + 2\n")
 
@@ -318,8 +318,8 @@ def test_ts_check_refuses_an_expression_or_a_hidden_constant():
     # A literal that continues on the next line is another value at run time.
     for bad in (
         _edit(text, start, "export const START_TIMEOUT_S = 300\n  * 2"),
-        _edit(text, r"^export const DEFAULT_MODE = 'per_user'$",
-              "export const DEFAULT_MODE = 'per_user'\n  .replace('per_user', 'shared')"),
+        _edit(text, r"^export const ERR_RAM = 'sandbox_ram'$",
+              "export const ERR_RAM = 'sandbox_ram'\n  .replace('ram', 'hard')"),
         _edit(text, start, "export const START_TIMEOUT_S = 300 as const satisfies number"),
         _edit(text, start, "export const START_TIMEOUT_S: number = 300"),
         _edit(text, start, "export let START_TIMEOUT_S = 300"),
@@ -334,9 +334,9 @@ def test_ts_check_refuses_an_expression_or_a_hidden_constant():
                    _edit(text, start, "// export const START_TIMEOUT_S = 300")):
         assert "START_TIMEOUT_S is missing from contract.ts" in _ts_mismatches(hidden)
     # `//` inside a string is not a comment: the whole value is compared.
-    sliced = _edit(text, r"^export const SHARED_INSTANCE = .*$",
-                   "export const SHARED_INSTANCE = 'shared//x'")
-    assert any(p.startswith("SHARED_INSTANCE:") for p in _ts_mismatches(sliced))
+    sliced = _edit(text, r"^export const ROUTE_LIST = .*$",
+                   "export const ROUTE_LIST = '/sandboxes//x'")
+    assert any(p.startswith("ROUTE_LIST:") for p in _ts_mismatches(sliced))
 
 
 def test_ensure_answers_carry_fresh():
@@ -344,7 +344,7 @@ def test_ensure_answers_carry_fresh():
     # person's tunnels off; a non-waiting ensure (the ws-ticket warm-up) creates
     # the instance too, so the 202 answer must say so as well.
     assert "fresh" in c.ENSURE_STARTING_KEYS and "fresh" in c.ENSURE_RUNNING_KEYS
-    assert c.ENSURE_STARTING_KEYS == ("mode", "state", "instance", "fresh")
+    assert c.ENSURE_STARTING_KEYS == ("state", "instance", "fresh")
     with open(TS_PATH, encoding="utf-8") as f:
         text = f.read()
     assert _ts_interface_keys(text, "EnsureStarting") == list(c.ENSURE_STARTING_KEYS)
@@ -550,7 +550,7 @@ def test_two_users_never_share_a_container_or_network_name():
 
 
 BAD_USER_IDS = ["", "a" * 65, "a b", "a/b", "../x", "act_as:x", "ünï", "id\n", "a.b",
-                None, 7, "mode", "ensure", "stop-all", "stop-project"]
+                None, 7, "ensure", "stop-all", "stop-project"]
 
 
 @pytest.mark.parametrize("bad", BAD_USER_IDS)
@@ -714,17 +714,18 @@ def test_env_parsers_defaults():
                 "40000 - 40001"):
         assert c.port_pool(raw) is None, raw
     assert c.ENV_VARS == ("KALI_SANDBOX_IDLE_MINUTES", "KALI_SANDBOX_MAX_CONCURRENT",
-                          "KALI_SANDBOX_PORT_POOL", "KALI_SANDBOX_MODE")
+                          "KALI_SANDBOX_PORT_POOL")
 
 
-def test_mode_from_env():
-    assert c.mode_from_env("per_user") == "per_user"
-    assert c.mode_from_env(" PER_USER ") == "per_user"
-    assert c.mode_from_env("shared") == "shared"
-    for raw in ("", None, "peruser", "per-user", "on", "1"):
-        assert c.mode_from_env(raw) == c.DEFAULT_MODE
-    assert c.MODE_ENV == "KALI_SANDBOX_MODE"
-    assert c.MODES == ("shared", "per_user")
+def test_the_pool_never_hands_out_the_default_reverse_port():
+    # A sandbox without a pool port listens on 4444, which the agent reads as "nothing
+    # published" (agentic/utils.py): a pool port of 4444 would tell its person the same.
+    assert c.DEFAULT_REVERSE_PORT == 4444
+    assert list(c.port_pool("4440-4449").ports()) == [4440, 4441, 4442, 4443, 4445, 4446,
+                                                      4447, 4448, 4449]
+    assert list(c.port_pool("0.0.0.0:4444-4444").ports()) == []
+    assert list(c.port_pool("4450-4452").ports()) == [4450, 4451, 4452]
+    assert list(agent_copy.port_pool("4443-4445").ports()) == [4443, 4445]
 
 
 def test_guest_sysctls_turn_forwarding_off():
@@ -755,14 +756,131 @@ def test_lease_kinds_and_states():
         assert status in (400, 403, 404, 409, 503, 504), code
 
 
-def test_default_mode_is_per_user():
-    # compose passes an unset KALI_SANDBOX_MODE as "": that, and any value outside
-    # MODES, must give per-user sandboxes; the shared container only when named.
-    assert c.DEFAULT_MODE == "per_user"
-    assert agent_copy.DEFAULT_MODE == "per_user"
+#: The switch and the shared container's names, gone with the shared mode (S20).
+SWITCH_NAMES = ("MODE_ENV", "MODE_SHARED", "MODE_PER_USER", "MODES", "DEFAULT_MODE",
+                "mode_from_env", "ROUTE_MODE", "SHARED_INSTANCE")
+
+
+def test_the_switch_is_gone_from_every_copy():
+    for copy in (c, agent_copy):
+        assert [n for n in SWITCH_NAMES if hasattr(copy, n)] == []
+        assert "mode" not in copy.ENSURE_RUNNING_KEYS and "mode" not in copy.ENSURE_STARTING_KEYS
+        assert "mode" not in copy.RESERVED_USER_IDS
+    with open(ORCH_PATH, encoding="utf-8") as f:
+        assert "KALI_SANDBOX_MODE" not in f.read()
     with open(TS_PATH, encoding="utf-8") as f:
-        assert _ts_constants(f.read())["DEFAULT_MODE"] == "per_user"
-    for raw in (None, "", "  ", "per-user", "SHARED_"):
-        assert c.mode_from_env(raw) == "per_user", raw
-        assert agent_copy.mode_from_env(raw) == "per_user", raw
-    assert c.mode_from_env(" Shared ") == "shared"
+        text = f.read()
+    assert [n for n in SWITCH_NAMES if n in _ts_constants(text)] == []
+    assert "/sandboxes/mode" not in text and "SandboxMode" not in text
+    assert "EnsureShared" not in text
+    for interface in ("EnsureRunning", "EnsureStarting"):
+        assert "mode" not in _ts_interface_keys(text, interface)
+    # The sandbox still tells the servers inside it they run for one person
+    # (mcp/servers/tunnel_manager.py and metasploit_server.py read it).
+    assert c.CONTAINER_ENV_FIXED["REDAMON_SANDBOX_MODE"] == "per_user"
+
+
+# --- no code reaches the shared container (WI-S20-5) ---------------------------------
+
+#: Code only: tests may name the old address to assert nothing calls it.
+_NOT_CODE = re.compile(r"(^|/)(tests?|tests_live|__tests__|node_modules|__testing__)/|\.test\.tsx?$|(^|/)test_[^/]*\.py$"
+                       r"|_test\.sh$|conftest\.py$|\.spec\.ts$")
+_CODE_SUFFIXES = (".py", ".ts", ".tsx", ".js", ".mjs", ".sh", ".json")
+
+
+#: Folders that hold results or a person's files, not code, by their path from the root: a
+#: folder's name alone would also skip code (webapp/src/app/api/plugin-gateway/v1/data/).
+_NOT_SCANNED = re.compile(r"^(scanners/[^/]+/output|agentic/agent-workspace|agentic/logs"
+                          r"|(agentic|services)/knowledge_base/data)$")
+
+
+def _code_files(*roots):
+    for root in roots:
+        for folder, dirs, files in os.walk(os.path.join(ROOT, root)):
+            here = os.path.relpath(folder, ROOT).replace(os.sep, "/")
+            dirs[:] = [d for d in dirs if d not in ("node_modules", ".next", "__pycache__", ".venv", "venv")
+                       and not _NOT_SCANNED.match(f"{here}/{d}")]
+            for name in files:
+                path = os.path.join(folder, name)
+                rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
+                if name.endswith(_CODE_SUFFIXES) and not _NOT_CODE.search(rel):
+                    yield rel, path
+
+
+def _hits(pattern, *roots):
+    found = []
+    for rel, path in _code_files(*roots):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for n, line in enumerate(f, 1):
+                if pattern.search(line):
+                    found.append(f"{rel}:{n}: {line.strip()[:120]}")
+    return found
+
+
+def test_no_code_dials_the_shared_container():
+    # Its addresses, the variables that named them, and its one MCP token.
+    pattern = re.compile(r"(https?|wss?)://kali-sandbox[:/]|\bMCP_NETWORK_RECON_URL\b"
+                         r"|\bMCP_(NUCLEI|METASPLOIT|NMAP|PLAYWRIGHT|METASPLOIT_PROGRESS|HYDRA_PROGRESS)_URL\b"
+                         r"|\bKALI_TERMINAL_WS_URL\b")
+    assert _hits(pattern, "agentic", "webapp/src", "recon_orchestrator") == []
+
+
+def test_the_agent_reads_no_shared_kali_token():
+    # Each sandbox has its own two tokens, handed out by the orchestrator; the shared
+    # container's (still in an old .env) must never ride on a Kali call.
+    pattern = re.compile(r"""(environ(\.get)?\(|environ\[|getenv\(|token_env_var\s*=)\s*["'](MCP|TUNNEL)_AUTH_TOKEN""")
+    assert _hits(pattern, "agentic") == []
+
+
+#: A quoted, backticked or URL `kali-sandbox` host, in every service that dials containers.
+_SHARED_HOST = re.compile(r"""["'`]kali-sandbox["'`]|(https?|wss?)://kali-sandbox\b|["'`]kali-sandbox:\d""")
+_HOST_ROOTS = ("agentic", "webapp/src", "recon_orchestrator", "services", "graph_db", "scanners")
+
+
+def test_no_code_names_the_shared_container_as_a_host():
+    # Docker makes a container's hostname a DNS name on its network, and the agent joins
+    # every sandbox network: a bare "kali-sandbox" (a default, an `or` fallback) can
+    # resolve to one person's sandbox. Only the contract names it, for the sandbox's own
+    # /etc/hosts.
+    hits = [h for h in _hits(_SHARED_HOST, *_HOST_ROOTS) if not h.split(":", 1)[0].endswith("/sandbox_contract.py")]
+    assert hits == []
+
+
+def test_a_sandbox_is_its_own_kali_sandbox_and_nobody_else_s():
+    for copy in (c, agent_copy):
+        assert not hasattr(copy, "CONTAINER_HOSTNAME")
+        assert dict(copy.EXTRA_HOSTS) == {"kali-sandbox": "127.0.0.1"}
+        assert copy.SELF_NAME == "kali-sandbox"
+        with pytest.raises(TypeError):
+            copy.EXTRA_HOSTS["kali-sandbox"] = "10.214.0.2"
+    # The hostname each sandbox gets (its container name) never repeats across persons,
+    # views or instances, so no name is shared on a network the agent joins.
+    names = {c.container_name(u, v, i) for u in (ALICE, BOB) for v in c.VIEWS for i in ("a1b2c3", "d4e5f6")}
+    assert len(names) == 8 and c.SELF_NAME not in names
+
+
+def test_no_text_tells_a_user_the_sandbox_is_shared():
+    pattern = re.compile(r"shared with every other project|sandbox shared by every project"
+                         r"|a shared sandbox where every project|Shared environment: other projects",
+                         re.I)
+    assert _hits(pattern, "webapp/src") == []
+
+
+def test_the_static_checks_find_what_they_look_for():
+    # The walk would pass by finding nothing: it must see real code and skip tests.
+    seen = {rel for rel, _ in _code_files("agentic", "webapp/src", "recon_orchestrator")}
+    assert "agentic/sandbox_router.py" in seen and "webapp/src/lib/sandbox/gateway.ts" in seen
+    assert "recon_orchestrator/sandbox_manager.py" in seen
+    assert not any(_NOT_CODE.search(rel) for rel in seen)
+    assert _NOT_CODE.search("agentic/tests/test_x.py") and _NOT_CODE.search("webapp/src/a.test.ts")
+    assert not _NOT_CODE.search("webapp/src/lib/sandbox/contract.ts")
+    assert _NOT_CODE.search("services/plugin_runner/tests_live/probe.py")
+    for planted in ('url = "kali-sandbox"', "host || 'kali-sandbox'", "const h = `kali-sandbox`",
+                    'base = "kali-sandbox:8013"', "ws://kali-sandbox/x"):
+        assert _SHARED_HOST.search(planted), planted
+    assert not _SHARED_HOST.search("The listener runs inside kali-sandbox on 4444.")
+    seen_hosts = {rel.split("/", 1)[0] for rel, _ in _code_files("services", "graph_db", "scanners")}
+    assert {"services", "graph_db", "scanners"} <= seen_hosts
+    assert "webapp/src/app/api/plugin-gateway/v1/data/get/route.ts" in seen
+    assert _NOT_SCANNED.match("scanners/gvm_scan/output") and _NOT_SCANNED.match("agentic/agent-workspace")
+    assert not _NOT_SCANNED.match("webapp/src/app/api/plugin-gateway/v1/data")

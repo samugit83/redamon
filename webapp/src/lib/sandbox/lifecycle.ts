@@ -10,8 +10,7 @@
  * - a project deleted → every instance mounting it stops, before its folder is purged;
  * - the emergency stop → every sandbox, or the presser's own.
  *
- * Nothing is asked in shared mode. The mode comes from the orchestrator (`sandboxMode`, cached 30 s);
- * no answer is a failure, never "shared": access was lost and nobody could check it was stopped.
+ * No answer from the orchestrator is a failure: access was lost and nobody could check it was stopped.
  *
  * A hook never throws and never holds the change for long: it answers within LIFECYCLE_DEADLINE_MS
  * with a count or a code, for the caller to record. A stop that failed (the orchestrator down, or
@@ -34,9 +33,9 @@
 import { writeAudit } from '@/lib/audit'
 import { auditActor } from '@/lib/auditActor'
 import { logValue, safeErrorCode, upstreamFailure } from '@/lib/routeErrors'
-import { ERR_INVALID_PROJECT_ID, ERR_INVALID_USER_ID, ERR_USER_REFUSED, type SandboxMode, type StopReason } from './contract'
+import { ERR_INVALID_PROJECT_ID, ERR_INVALID_USER_ID, ERR_USER_REFUSED, type StopReason } from './contract'
 import {
-  assertSandboxUser, listSandboxes, sandboxMode, sandboxProjectsFor, stopAllSandboxes, stopProjectSandboxes, stopSandbox,
+  assertSandboxUser, listSandboxes, sandboxProjectsFor, stopAllSandboxes, stopProjectSandboxes, stopSandbox,
   touchSandbox, type SandboxActor,
 } from './gateway'
 import { OrchestratorUnreachable, SandboxError, orchestratorReconcile, validProjectId, validUserId } from './orchestratorClient'
@@ -56,10 +55,9 @@ const TIMEOUT = 'sandbox_timeout'
 /** Codes the orchestrator would answer again on a retry. */
 const PERMANENT = new Set([ERR_INVALID_PROJECT_ID, ERR_INVALID_USER_ID, 'invalid_reason'])
 
-/** Nothing asked (shared mode), what stopped, or why it could not be done (with what stopped before). */
+/** What stopped, or why it could not be done (with what stopped before). */
 export type SandboxHookOutcome =
-  | { mode: 'shared' }
-  | { mode: 'per_user'; stopped: number }
+  | { stopped: number }
   | { error: string; stopped: number }
 
 /** The stop reasons of an account that can no longer have a sandbox. */
@@ -72,20 +70,10 @@ type Pending = (
   | { kind: 'project'; projectId: string; actor: SandboxActor }
 ) & { again?: boolean }
 
-const SHARED: SandboxHookOutcome = Object.freeze({ mode: 'shared' })
-
 function codeOf(err: unknown): string {
   if (err instanceof SandboxError) return err.code
   if (err instanceof OrchestratorUnreachable) return upstreamFailure('orchestrator', err.cause_, '').body.code
   return safeErrorCode(err)
-}
-
-let modeProbe: Promise<SandboxMode> | null = null
-
-/** One mode read for a burst of hooks (a sweep, a batch of capability removals). Throws when nobody answered. */
-function currentMode(): Promise<SandboxMode> {
-  modeProbe ??= sandboxMode().finally(() => { modeProbe = null })
-  return modeProbe
 }
 
 /** The actor the caller named; none named: the person signed in to this request, or the system outside one. */
@@ -194,18 +182,6 @@ export function retryPendingSandboxStops(): Promise<void> {
 
 async function retryRound(): Promise<void> {
   if (pending.size === 0) return
-  let mode: SandboxMode
-  try {
-    mode = await currentMode()
-  } catch {
-    retryLater()
-    return
-  }
-  if (mode === 'shared') {
-    // No per-user sandbox is started in shared mode; the idle loop stops any left over.
-    pending.clear()
-    return
-  }
   for (const [key, first] of [...pending]) {
     let item = first
     let code = await attempt(runPending(item))
@@ -262,22 +238,11 @@ async function reconcilePerson(userId: string, actor: SandboxActor): Promise<num
  */
 export async function sandboxAccessChanged(userIds: readonly string[], actor?: SandboxActor): Promise<SandboxHookOutcome> {
   const people = [...new Set(userIds)].filter((id) => validUserId(id))
-  if (people.length === 0) return { mode: 'per_user', stopped: 0 }
+  if (people.length === 0) return { stopped: 0 }
   const done = new Set<string>()
   let late = false
   let who: SandboxActor = null
   const work = (async (): Promise<SandboxHookOutcome> => {
-    let mode: SandboxMode
-    try {
-      mode = await currentMode()
-    } catch (err) {
-      who = await actorOf(actor)
-      const code = codeOf(err)
-      console.warn(`[sandbox] access-loss stop not done: ${code}`)
-      for (const userId of people) keep({ kind: 'reconcile', userId, actor: who }, code)
-      return { error: code, stopped: 0 }
-    }
-    if (mode === 'shared') return SHARED
     const by = await actorOf(actor)
     who = by
     let stopped = 0
@@ -297,7 +262,7 @@ export async function sandboxAccessChanged(userIds: readonly string[], actor?: S
     if (late) return { error: TIMEOUT, stopped }
     if (error === null) {
       orchestratorAnswered()
-      return { mode: 'per_user', stopped }
+      return { stopped }
     }
     return { error, stopped }
   })()
@@ -320,23 +285,12 @@ export function sandboxAccountEnded(userId: string, reason: AccountEndReason, ac
  */
 export async function sandboxAccountsEnded(userIds: readonly string[], reason: AccountEndReason, actor?: SandboxActor): Promise<SandboxHookOutcome> {
   const people = [...new Set(userIds)].filter((id) => validUserId(id))
-  if (people.length === 0) return { mode: 'per_user', stopped: 0 }
+  if (people.length === 0) return { stopped: 0 }
   const done = new Set<string>()
   let late = false
   let who: SandboxActor = null
   const keepStop = (userId: string, code: string) => keep({ kind: 'stop', userId, reason, actor: who }, code)
   const work = (async (): Promise<SandboxHookOutcome> => {
-    let mode: SandboxMode
-    try {
-      mode = await currentMode()
-    } catch (err) {
-      who = await actorOf(actor)
-      const code = codeOf(err)
-      console.warn(`[sandbox] ${reason} stop not done: ${code}`)
-      for (const userId of people) keepStop(userId, code)
-      return { error: code, stopped: 0 }
-    }
-    if (mode === 'shared') return SHARED
     who = await actorOf(actor)
     let stopped = 0
     let error: string | null = null
@@ -355,7 +309,7 @@ export async function sandboxAccountsEnded(userIds: readonly string[], reason: A
     if (late) return { error: TIMEOUT, stopped }
     if (error === null) {
       orchestratorAnswered()
-      return { mode: 'per_user', stopped }
+      return { stopped }
     }
     return { error, stopped }
   })()
@@ -370,7 +324,7 @@ export async function sandboxAccountsEnded(userIds: readonly string[], reason: A
 /** A project being deleted: every instance mounting it stops, before its folder is purged (TD-27). */
 export async function sandboxProjectDeleted(projectId: string, actor?: SandboxActor): Promise<SandboxHookOutcome> {
   // The gateway never puts an id the contract refuses in a mount list: no instance can hold it.
-  if (!validProjectId(projectId)) return { mode: 'per_user', stopped: 0 }
+  if (!validProjectId(projectId)) return { stopped: 0 }
   let who: SandboxActor = null
   const fail = (code: string): SandboxHookOutcome => {
     console.warn(`[sandbox] project stop not done for ${logValue(projectId, 80)}: ${code}`)
@@ -378,17 +332,11 @@ export async function sandboxProjectDeleted(projectId: string, actor?: SandboxAc
     return { error: code, stopped: 0 }
   }
   const work = (async (): Promise<SandboxHookOutcome> => {
-    try {
-      if (await currentMode() === 'shared') return SHARED
-    } catch (err) {
-      who = await actorOf(actor)
-      return fail(codeOf(err))
-    }
     who = await actorOf(actor)
     const outcome = await stopProjectSandboxes(projectId, 'project_deleted', who)
     if (!outcome.ok) return fail(outcome.code)
     orchestratorAnswered()
-    return { mode: 'per_user', stopped: outcome.stopped }
+    return { stopped: outcome.stopped }
   })()
   return withDeadline(work, () => fail(TIMEOUT))
 }
@@ -402,12 +350,11 @@ export async function sandboxEmergencyStop(
 ): Promise<SandboxHookOutcome> {
   const work = (async (): Promise<SandboxHookOutcome> => {
     try {
-      if (await currentMode() === 'shared') return SHARED
       const stopped = target.scope === 'all'
         ? await stopAllSandboxes('emergency', actor)
         : await stopSandbox(target.userId, 'emergency', actor)
       orchestratorAnswered()
-      return { mode: 'per_user', stopped }
+      return { stopped }
     } catch (err) {
       const code = codeOf(err)
       console.warn(`[sandbox] emergency stop not done (${target.scope}): ${code}`)
@@ -435,7 +382,7 @@ async function accountRefusal(userId: string): Promise<AccountEndReason | null> 
  * policy (with Root as `actor`): each person with a running sandbox (at most BACKSTOP_MAX_PEOPLE, one
  * by one under the deadline) is checked again. An account refused now is stopped with its reason
  * (`account_deleted` also removes its output folders); any other is reconciled with its fresh own and
- * act-as lists. Nothing in shared mode. Never throws; the log line carries counts only. A person not
+ * act-as lists. Never throws; the log line carries counts only. A person not
  * reached is checked at the next sweep.
  */
 export async function reconcileRunningSandboxes(actor: SandboxActor = null): Promise<SandboxHookOutcome> {
@@ -452,7 +399,6 @@ export async function reconcileRunningSandboxes(actor: SandboxActor = null): Pro
       console.warn(`[sandbox] backstop not done: ${code}`)
       return { error: code, stopped: 0 }
     }
-    if (running.mode === 'shared') return SHARED
     const people = [...new Set(running.sandboxes.map((s) => s.user_id))].filter((id) => validUserId(id)).slice(0, BACKSTOP_MAX_PEOPLE)
     let error: string | null = null
     for (const userId of people) {
@@ -469,7 +415,7 @@ export async function reconcileRunningSandboxes(actor: SandboxActor = null): Pro
     if (late) return { error: TIMEOUT, stopped }
     if (failed > 0) console.warn(`[sandbox] backstop people=${visited} stopped=${stopped} failed=${failed}`)
     else if (stopped > 0) console.info(`[sandbox] backstop people=${visited} stopped=${stopped}`)
-    return error === null ? { mode: 'per_user', stopped } : { error, stopped }
+    return error === null ? { stopped } : { error, stopped }
   })()
   return withDeadline(work, () => {
     late = true
@@ -515,13 +461,12 @@ export function sandboxRetryIdleForTests(): Promise<void> {
   return retrying ?? Promise.resolve()
 }
 
-/** Tests only: forget the kept stops, the retry timer, the mode read in flight and the warm-ups. */
+/** Tests only: forget the kept stops, the retry timer and the warm-ups. */
 export function resetSandboxLifecycleForTests(): void {
   pending.clear()
   if (retryTimer) clearTimeout(retryTimer)
   retryTimer = null
   retryDelay = RETRY_FIRST_MS
   retrying = null
-  modeProbe = null
   warmUps.clear()
 }

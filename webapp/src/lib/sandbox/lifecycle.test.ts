@@ -3,7 +3,7 @@
  * end, a project's deletion and the emergency stop do to the per-user Kali sandboxes, through the
  * gateway (lib/sandbox/gateway.ts, a double here) and the orchestrator's reconcile (a double).
  *
- * Every test names the mode the gateway answers (the switch), never the contract's default.
+ * No hook asks the orchestrator for a mode: there is one, per-user sandboxes.
  *
  * Run: npx vitest run --no-file-parallelism src/lib/sandbox/lifecycle.test.ts
  * @vitest-environment node
@@ -11,8 +11,7 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 
 const h = vi.hoisted(() => ({
-  mode: 'per_user' as 'shared' | 'per_user',
-  modeError: null as unknown,
+  // The gateway no longer has it: kept in the double only to show no hook asks a mode.
   sandboxMode: vi.fn(),
   lists: {} as Record<string, { own: string[]; actAs: string[] }>,
   projectsFor: vi.fn(),
@@ -28,7 +27,7 @@ const h = vi.hoisted(() => ({
   requestActor: vi.fn(),
 }))
 
-// vitest.setup.ts gives every other test a shared-mode double of this module.
+// vitest.setup.ts gives every other test a no-op double of this module.
 vi.unmock('./lifecycle')
 vi.mock('./gateway', () => ({
   sandboxMode: (...a: unknown[]) => h.sandboxMode(...a),
@@ -63,12 +62,7 @@ const warnLines = () => vi.mocked(console.warn).mock.calls.map((c) => String(c[0
 
 beforeEach(() => {
   resetSandboxLifecycleForTests()
-  h.mode = 'per_user'
-  h.modeError = null
-  h.sandboxMode.mockReset().mockImplementation(async () => {
-    if (h.modeError) throw h.modeError
-    return h.mode
-  })
+  h.sandboxMode.mockReset().mockResolvedValue('per_user')
   h.lists = { bob: { own: ['P-bob', 'P1'], actAs: ['P-bob'] }, carol: { own: ['P-carol'], actAs: ['P-carol'] }, dan: { own: [], actAs: [] } }
   h.projectsFor.mockReset().mockImplementation(async (userId: string, opts?: { actingAs?: boolean }) =>
     (opts?.actingAs ? h.lists[userId]?.actAs : h.lists[userId]?.own) ?? [])
@@ -78,7 +72,7 @@ beforeEach(() => {
   h.stopProject.mockReset().mockResolvedValue({ ok: true, stopped: 0 })
   h.touch.mockReset().mockResolvedValue(undefined)
   h.assertUser.mockReset().mockResolvedValue(undefined)
-  h.list.mockReset().mockResolvedValue({ mode: 'per_user', sandboxes: [] })
+  h.list.mockReset().mockResolvedValue({ sandboxes: [] })
   h.principal.mockReset().mockImplementation(async (id: string) => ({ id, status: 'active' }))
   h.audit = []
   h.requestActor.mockReset().mockResolvedValue(OWNER)
@@ -91,32 +85,27 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('shared mode: nothing is asked', () => {
-  test('every hook answers shared and calls nothing else', async () => {
-    h.mode = 'shared'
-    expect(await sandboxAccessChanged(['bob'], ADMIN)).toEqual({ mode: 'shared' })
-    expect(await sandboxAccountEnded('bob', 'account_deleted', ADMIN)).toEqual({ mode: 'shared' })
-    expect(await sandboxProjectDeleted('P1', ADMIN)).toEqual({ mode: 'shared' })
-    expect(await sandboxEmergencyStop({ scope: 'all' }, ADMIN)).toEqual({ mode: 'shared' })
-    expect(await sandboxEmergencyStop({ scope: 'own', userId: 'bob' }, ADMIN)).toEqual({ mode: 'shared' })
-    for (const fn of [h.projectsFor, h.reconcile, h.stopSandbox, h.stopAll, h.stopProject, h.requestActor]) {
-      expect(fn).not.toHaveBeenCalled()
-    }
-    expect(h.audit).toEqual([])
-    expect(pendingSandboxStopsForTests()).toEqual([])
-  })
-
-  test('the mode is asked once for a burst of hooks (the probe is shared while in flight)', async () => {
-    h.mode = 'shared'
-    await Promise.all([sandboxAccessChanged(['bob']), sandboxAccessChanged(['carol']), sandboxAccountEnded('dan', 'account_disabled')])
-    expect(h.sandboxMode).toHaveBeenCalledTimes(1)
+describe('one mode: every hook acts, none asks a mode first', () => {
+  test('each hook goes straight to its stop, and no mode is ever asked', async () => {
+    h.stopSandbox.mockResolvedValue(1)
+    h.stopAll.mockResolvedValueOnce(2)
+    h.stopProject.mockResolvedValueOnce({ ok: true, stopped: 1 })
+    h.list.mockResolvedValueOnce({ sandboxes: [{ user_id: 'carol', view: 'own', instance: 'a00001', state: 'running' }] })
+    expect(await sandboxAccessChanged(['bob'], ADMIN)).toEqual({ stopped: 0 })
+    expect(await sandboxAccountEnded('bob', 'account_deleted', ADMIN)).toEqual({ stopped: 1 })
+    expect(await sandboxProjectDeleted('P1', ADMIN)).toEqual({ stopped: 1 })
+    expect(await sandboxEmergencyStop({ scope: 'all' }, ADMIN)).toEqual({ stopped: 2 })
+    expect(await sandboxEmergencyStop({ scope: 'own', userId: 'bob' }, ADMIN)).toEqual({ stopped: 1 })
+    expect(await reconcileRunningSandboxes()).toEqual({ stopped: 0 })
+    expect(h.reconcile.mock.calls.map((c) => c[0])).toEqual(['bob', 'carol'])
+    expect(h.sandboxMode).not.toHaveBeenCalled()
   })
 })
 
 describe('access changed (a share lost, consent withdrawn, a project deleted)', () => {
   test('each person is reconciled with both fresh lists; nothing is started', async () => {
     const out = await sandboxAccessChanged(['bob', 'carol', 'bob'], ADMIN)
-    expect(out).toEqual({ mode: 'per_user', stopped: 0 })
+    expect(out).toEqual({ stopped: 0 })
     expect(h.reconcile.mock.calls).toEqual([['bob', ['P-bob', 'P1'], ['P-bob']], ['carol', ['P-carol'], ['P-carol']]])
     expect(h.stopSandbox).not.toHaveBeenCalled()
     expect(h.audit).toEqual([])
@@ -124,7 +113,7 @@ describe('access changed (a share lost, consent withdrawn, a project deleted)', 
 
   test('an instance stopped by the reconcile writes sandbox.stopped with the actor of the change', async () => {
     h.reconcile.mockResolvedValueOnce(2)
-    expect(await sandboxAccessChanged(['bob'], ADMIN)).toEqual({ mode: 'per_user', stopped: 2 })
+    expect(await sandboxAccessChanged(['bob'], ADMIN)).toEqual({ stopped: 2 })
     expect(h.audit).toEqual([{
       ...ADMIN, action: 'sandbox.stopped', targetType: 'user', targetId: 'bob', after: { reason: 'access_lost', stopped: 2 }, source: 'system',
     }])
@@ -132,7 +121,7 @@ describe('access changed (a share lost, consent withdrawn, a project deleted)', 
 
   test('a person left with no allowed project is stopped with last_project_deleted', async () => {
     h.stopSandbox.mockResolvedValueOnce(1)
-    expect(await sandboxAccessChanged(['dan'], OWNER)).toEqual({ mode: 'per_user', stopped: 1 })
+    expect(await sandboxAccessChanged(['dan'], OWNER)).toEqual({ stopped: 1 })
     expect(h.reconcile).toHaveBeenCalledWith('dan', [], [])
     expect(h.stopSandbox).toHaveBeenCalledWith('dan', 'last_project_deleted', OWNER)
   })
@@ -144,10 +133,6 @@ describe('access changed (a share lost, consent withdrawn, a project deleted)', 
     h.requestActor.mockRejectedValueOnce(new Error('cookies() was called outside a request scope'))
     await sandboxAccessChanged(['carol'])
     expect(h.audit[1]).toMatchObject(SYSTEM_ACTOR)
-    h.mode = 'shared'
-    h.requestActor.mockClear()
-    await sandboxAccessChanged(['bob'])
-    expect(h.requestActor).not.toHaveBeenCalled()
   })
 
   test('the system actor given as null stays null (the expiry sweep)', async () => {
@@ -175,14 +160,13 @@ describe('access changed (a share lost, consent withdrawn, a project deleted)', 
   })
 
   test('an id the contract refuses is skipped, never sent', async () => {
-    expect(await sandboxAccessChanged(['../etc', 'ensure', 'bob'], ADMIN)).toEqual({ mode: 'per_user', stopped: 0 })
+    expect(await sandboxAccessChanged(['../etc', 'ensure', 'bob'], ADMIN)).toEqual({ stopped: 0 })
     expect(h.reconcile.mock.calls.map((c) => c[0])).toEqual(['bob'])
   })
 
-  test('no answer about the mode is a failure (never read as shared)', async () => {
-    h.modeError = unreachable()
+  test('no answer from the orchestrator is a failure, kept for a retry (never read as "nothing to stop")', async () => {
+    h.reconcile.mockRejectedValueOnce(unreachable())
     expect(await sandboxAccessChanged(['bob'], ADMIN)).toEqual({ error: 'orchestrator_unreachable', stopped: 0 })
-    expect(h.reconcile).not.toHaveBeenCalled()
     expect(pendingSandboxStopsForTests()).toEqual([{ key: 'user:bob', kind: 'reconcile' }])
   })
 })
@@ -190,13 +174,13 @@ describe('access changed (a share lost, consent withdrawn, a project deleted)', 
 describe("an account's end", () => {
   test.each(['account_disabled', 'account_deleted', 'access_lost'] as const)('%s stops both views with that reason and the actor', async (reason) => {
     h.stopSandbox.mockResolvedValueOnce(2)
-    expect(await sandboxAccountEnded('bob', reason, ADMIN)).toEqual({ mode: 'per_user', stopped: 2 })
+    expect(await sandboxAccountEnded('bob', reason, ADMIN)).toEqual({ stopped: 2 })
     expect(h.stopSandbox).toHaveBeenCalledWith('bob', reason, ADMIN)
   })
 
   test('a deletion is sent to the orchestrator even when nothing runs (the output folders go)', async () => {
     h.stopSandbox.mockResolvedValueOnce(0)
-    expect(await sandboxAccountEnded('bob', 'account_deleted', ADMIN)).toEqual({ mode: 'per_user', stopped: 0 })
+    expect(await sandboxAccountEnded('bob', 'account_deleted', ADMIN)).toEqual({ stopped: 0 })
     expect(h.stopSandbox).toHaveBeenCalledTimes(1)
     expect(h.stopSandbox).toHaveBeenCalledWith('bob', 'account_deleted', ADMIN)
   })
@@ -211,13 +195,12 @@ describe("an account's end", () => {
 describe('a project deleted (TD-27)', () => {
   test('every instance mounting it is stopped, with its actor', async () => {
     h.stopProject.mockResolvedValueOnce({ ok: true, stopped: 3 })
-    expect(await sandboxProjectDeleted('P1', ADMIN)).toEqual({ mode: 'per_user', stopped: 3 })
+    expect(await sandboxProjectDeleted('P1', ADMIN)).toEqual({ stopped: 3 })
     expect(h.stopProject).toHaveBeenCalledWith('P1', 'project_deleted', ADMIN)
   })
 
   test('a project id the contract refuses was never mounted: nothing to stop, nothing asked', async () => {
-    expect(await sandboxProjectDeleted('../P1', ADMIN)).toEqual({ mode: 'per_user', stopped: 0 })
-    expect(h.sandboxMode).not.toHaveBeenCalled()
+    expect(await sandboxProjectDeleted('../P1', ADMIN)).toEqual({ stopped: 0 })
     expect(h.stopProject).not.toHaveBeenCalled()
     expect(pendingSandboxStopsForTests()).toEqual([])
   })
@@ -232,13 +215,13 @@ describe('a project deleted (TD-27)', () => {
 describe('the emergency stop', () => {
   test('instance-wide: every sandbox, with the presser', async () => {
     h.stopAll.mockResolvedValueOnce(4)
-    expect(await sandboxEmergencyStop({ scope: 'all' }, ADMIN)).toEqual({ mode: 'per_user', stopped: 4 })
+    expect(await sandboxEmergencyStop({ scope: 'all' }, ADMIN)).toEqual({ stopped: 4 })
     expect(h.stopAll).toHaveBeenCalledWith('emergency', ADMIN)
   })
 
   test("a person's own: both their views, with the presser", async () => {
     h.stopSandbox.mockResolvedValueOnce(1)
-    expect(await sandboxEmergencyStop({ scope: 'own', userId: 'bob' }, OWNER)).toEqual({ mode: 'per_user', stopped: 1 })
+    expect(await sandboxEmergencyStop({ scope: 'own', userId: 'bob' }, OWNER)).toEqual({ stopped: 1 })
     expect(h.stopSandbox).toHaveBeenCalledWith('bob', 'emergency', OWNER)
   })
 
@@ -318,26 +301,19 @@ describe('retries of a stop that failed (TD-17: access lost while the orchestrat
     expect(pendingSandboxStopsForTests()).toEqual([])
   })
 
-  test('a project stop is retried; switched to shared meanwhile, the retry is dropped', async () => {
+  test('a project stop is retried until it is done', async () => {
     h.stopProject.mockResolvedValueOnce({ ok: false, code: 'orchestrator_unreachable' })
     await sandboxProjectDeleted('P1', ADMIN)
     await retryPendingSandboxStops()
     expect(h.stopProject).toHaveBeenCalledTimes(2)
     expect(pendingSandboxStopsForTests()).toEqual([])
-    h.stopProject.mockResolvedValueOnce({ ok: false, code: 'orchestrator_unreachable' })
-    await sandboxProjectDeleted('P2', ADMIN)
-    h.mode = 'shared'
-    await retryPendingSandboxStops()
-    expect(h.stopProject).toHaveBeenCalledTimes(3)
-    expect(pendingSandboxStopsForTests()).toEqual([])
   })
 
-  test("a mode read that failed still names the change's actor on the retry's row", async () => {
-    h.modeError = unreachable()
+  test("an orchestrator that did not answer still names the change's actor on the retry's row", async () => {
+    h.reconcile.mockRejectedValueOnce(unreachable())
     await sandboxAccessChanged(['bob'])
     h.stopSandbox.mockRejectedValueOnce(unreachable())
     await sandboxAccountEnded('carol', 'account_disabled')
-    h.modeError = null
     h.reconcile.mockResolvedValue(1)
     h.assertUser.mockRejectedValueOnce(new SandboxError(403, 'sandbox_user_refused'))
     await retryPendingSandboxStops()
@@ -382,19 +358,13 @@ describe('the warm-up (ws-ticket mint), coalesced per person and view', () => {
     await warmUpSandbox('bob', { actingAs: false, actor: null })
     expect(h.touch).toHaveBeenCalledTimes(1)
   })
-
-  test('a warm-up never asks the mode itself (the gateway stays quiet until per-user is named)', async () => {
-    await warmUpSandbox('bob', { actingAs: false, actor: null })
-    expect(h.sandboxMode).not.toHaveBeenCalled()
-  })
 })
 
 describe('several accounts ended at once (a capability removed from a set)', () => {
   test('each account is stopped with the reason, one deadline for all', async () => {
     h.stopSandbox.mockResolvedValue(1)
-    expect(await sandboxAccountsEnded(['bob', 'carol', 'bob', '../x'], 'access_lost', ADMIN)).toEqual({ mode: 'per_user', stopped: 2 })
+    expect(await sandboxAccountsEnded(['bob', 'carol', 'bob', '../x'], 'access_lost', ADMIN)).toEqual({ stopped: 2 })
     expect(h.stopSandbox.mock.calls).toEqual([['bob', 'access_lost', ADMIN], ['carol', 'access_lost', ADMIN]])
-    expect(h.sandboxMode).toHaveBeenCalledTimes(1)
   })
 
   test('one failing goes on with the next and is kept; past the deadline nobody more is visited', async () => {
@@ -453,19 +423,18 @@ describe('a refused keep is not lost when the held retry succeeds on a stale lis
 
 describe('the backstop (every RBAC sweep): every person with a running sandbox is checked again', () => {
   const running = (...people: Array<[string, 'own' | 'act_as']>) => ({
-    mode: 'per_user', sandboxes: people.map(([user_id, view], i) => ({ user_id, view, instance: `a0000${i}`, state: 'running' })),
+    sandboxes: people.map(([user_id, view], i) => ({ user_id, view, instance: `a0000${i}`, state: 'running' })),
   })
 
-  test('shared mode: nothing else is asked', async () => {
-    h.list.mockResolvedValue({ mode: 'shared', sandboxes: [] })
-    expect(await reconcileRunningSandboxes()).toEqual({ mode: 'shared' })
+  test('nobody running: nothing else is asked', async () => {
+    expect(await reconcileRunningSandboxes()).toEqual({ stopped: 0 })
     for (const fn of [h.reconcile, h.stopSandbox, h.projectsFor, h.assertUser, h.principal]) expect(fn).not.toHaveBeenCalled()
   })
 
   test('an account that may still have one is reconciled once, both views (a policy change, an expired share or override)', async () => {
     h.list.mockResolvedValue(running(['bob', 'own'], ['bob', 'act_as'], ['carol', 'own']))
     h.reconcile.mockResolvedValueOnce(1).mockResolvedValueOnce(0)
-    expect(await reconcileRunningSandboxes()).toEqual({ mode: 'per_user', stopped: 1 })
+    expect(await reconcileRunningSandboxes()).toEqual({ stopped: 1 })
     expect(h.reconcile.mock.calls).toEqual([['bob', ['P-bob', 'P1'], ['P-bob']], ['carol', ['P-carol'], ['P-carol']]])
     expect(h.audit).toEqual([{
       ...SYSTEM_ACTOR, action: 'sandbox.stopped', targetType: 'user', targetId: 'bob', after: { reason: 'access_lost', stopped: 1 }, source: 'system',
@@ -478,7 +447,7 @@ describe('the backstop (every RBAC sweep): every person with a running sandbox i
     h.assertUser.mockRejectedValue(new SandboxError(403, 'sandbox_user_refused'))
     h.principal.mockImplementation(async (id: string) => (id === 'gone' ? null : { id, status: id === 'off' ? 'disabled' : 'active' }))
     h.stopSandbox.mockResolvedValue(1)
-    expect(await reconcileRunningSandboxes()).toEqual({ mode: 'per_user', stopped: 3 })
+    expect(await reconcileRunningSandboxes()).toEqual({ stopped: 3 })
     expect(h.stopSandbox.mock.calls).toEqual([
       ['gone', 'account_deleted', null], ['off', 'account_disabled', null], ['stripped', 'access_lost', null],
     ])

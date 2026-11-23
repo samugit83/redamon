@@ -3,10 +3,10 @@ import {
   MODAL_RAM_TITLE, MODAL_RETRY_LABEL, SHARE_KEYS_LENT_TEXT,
 } from '../../../webapp/src/lib/sandbox/contract'
 import {
-  LAB_SHELL_PORT, MODE, adminCredentials, completeSessionsOf, connectLab, containersHolding, chiselEdgeLog,
+  LAB_SHELL_PORT, adminCredentials, completeSessionsOf, connectLab, containersHolding, chiselEdgeLog,
   deleteConversation, deleteStubProvider, driveRun, ensureStubProvider, expectSessionOutOfReach, goneWithin, json,
   listedFolders, meId, mountedProjects, noSandboxWithin, nonce, openChat, openChatUntilSandbox, recordTransientTexts,
-  removeListeners, removeMarkers, restoreProjects, sandboxContainers, sandboxOf, seedAndRead, send, sessionCard,
+  redactRequestErrors, redactSecrets, removeListeners, removeMarkers, restoreProjects, sandboxContainers, sandboxOf, seedAndRead, send, sessionCard,
   sessionsOf, setProject, signIn, sleep, stackMissing, startChiselEdge, startLab, startStub, stopChiselEdge, stopLab,
   stopPersonSandbox, toolCards, toolOutput, wasSeen, processRunning, recordGrant, recordedGrant, restoreGrants,
   forgetGrant, readLedger, sandboxFits, tail, watchContainerLog,
@@ -23,8 +23,8 @@ import {
  *
  * Every test checks where its work ran, by finding the container whose /tmp holds the marker the
  * command wrote (docker, read only) and by the folders `ls /workspace` printed. Those checks are
- * `expect.soft` and say ISOLATION, so a run in shared mode (the wrapper's --shared, the "fails
- * before" evidence) still walks each flow to its end and reports every isolation check that fails.
+ * `expect.soft` and say ISOLATION, so a run still walks each flow to its end and reports every
+ * isolation check that fails.
  *
  * Groups, by the orchestrator setting they need (testing/e2e/scripts/per-user-sandbox-e2e.sh starts the
  * orchestrator with it, in the shell only, and puts the previous values back):
@@ -32,7 +32,7 @@ import {
  *   Group B (idle)      test 8, KALI_SANDBOX_IDLE_MINUTES=1
  *   Group C (memory)    test 9, the pool lowered with SERVICE_BASELINE_MEM and OS_HEADROOM_MEM
  *   Group D (tunnel)    test 10
- * Run: bash testing/e2e/scripts/per-user-sandbox-e2e.sh (never alone against a stack in another mode).
+ * Run: bash testing/e2e/scripts/per-user-sandbox-e2e.sh (never alone: groups B and C need the settings it sets).
  *
  * Needs the stack up, Docker, python3 (the seed) and node (the stub). Skips with the reason when one
  * is missing; once they are up, a failed precondition is a failure. Synthetic accounts, `.invalid`
@@ -71,7 +71,7 @@ const apis = () => ({ alice: alice.request, bob: bob.request })
 
 test.beforeAll(async ({ browser, playwright }) => {
   test.setTimeout(600_000)
-  const probe = await playwright.request.newContext({ baseURL: BASE })
+  const probe = redactRequestErrors(await playwright.request.newContext({ baseURL: BASE }))
   skipReason = await stackMissing(probe)
   await probe.dispose()
   // The wrapper sets this: a milestone never accepts a skip.
@@ -130,7 +130,11 @@ test.beforeEach(() => {
   test.skip(Boolean(skipReason), skipReason ?? '')
 })
 
-/** The person's own sandbox, expected to exist (per-user mode), or null in shared mode. */
+/** A press whose request never reached the webapp: the button sends it once and shows nothing. */
+const STOP_LOST = 'PRODUCT, not the test: PAUSE ALL sent POST /api/agent/emergency-stop-all once and the browser '
+  + 'got no answer, so nothing was stopped and the page did not say so'
+
+/** The person's own sandbox, expected to exist (a soft ISOLATION failure, and null, when it does not). */
 async function ownSandbox(userId: string, label: string): Promise<SandboxContainer | null> {
   const box = await sandboxOf(userId, 'own')
   expect.soft(box, `ISOLATION: ${label} has a running sandbox of their own`).not.toBeNull()
@@ -241,12 +245,10 @@ test.describe('Group A (defaults)', () => {
     let session = ''
     try {
       await openChat(page, state.projects.PA)
-      if (MODE === 'per_user') {
-        // Opening the drawer warms Alice's sandbox up (ws-ticket, B.10); stop it so the run meets a cold start.
-        await sandboxOf(state.alice.id, 'own', 120_000)
-        await stopPersonSandbox(admin.request, BASE, state.alice.id)
-        expect(await noSandboxWithin(state.alice.id, 'own', 90_000), 'Alice\'s sandbox stopped before the run').toBe(true)
-      }
+      // Opening the drawer warms Alice's sandbox up (ws-ticket, B.10); stop it so the run meets a cold start.
+      await sandboxOf(state.alice.id, 'own', 120_000)
+      await stopPersonSandbox(admin.request, BASE, state.alice.id)
+      expect(await noSandboxWithin(state.alice.id, 'own', 90_000), 'Alice\'s sandbox stopped before the run').toBe(true)
       stub = await startStub('marker', { NONCE: n }, stubPort)
       session = await send(page, alice.request, state.projects.PA, `g1 e2e first use ${n}`)
       const { allowed } = await driveRun(page, alice.request, state.projects.PA, session)
@@ -384,7 +386,7 @@ test.describe('Group A (defaults)', () => {
       stub = await startStub('sessions', { NONCE: n, LAB_IP: labIp, ALICE_LAB_IP: aliceLabIp }, stubPort)
 
       // Alice's own Metasploit session on her private g1-PA: her sandbox's console, which no earlier
-      // test used, serves only her projects (in shared mode the one console refuses Bob's run next).
+      // test used, serves only her projects.
       aliceChat = await send(owner, alice.request, state.projects.PA, `g1 e2e session on Alice's private project ${n}`)
       expect((await driveRun(owner, alice.request, state.projects.PA, aliceChat, 420_000)).approved).toBe(1)
 
@@ -471,7 +473,7 @@ test.describe('Group A (defaults)', () => {
         }).toPass({ timeout: 180_000 })
       } catch (err) {
         throw new Error(`Alice's command reached the session and its answer stayed on screen: not in ${attempts} attempt(s); `
-          + `her browser's interact answers: ${answers.join(' | ') || 'none'}\n${String(err)}`)
+          + `her browser's interact answers: ${answers.join(' | ') || 'none'}\n${redactSecrets(String(err))}`)
       }
       if (attempts > 1) console.log(`test 4: Alice's answer stayed on screen at attempt ${attempts}; interact answers: ${answers.join(' | ')}`)
     } finally {
@@ -485,11 +487,24 @@ test.describe('Group A (defaults)', () => {
           await api.post(drivePath('jobs', row), { headers: { Origin: new URL(BASE).origin } })
         }
       }
+      // The listener is removed (and checked) while Bob's sandbox still runs, before the stop below.
       let left: string[]
       try {
         left = removeListeners(listener)
       } catch (err) {
-        left = [String(err).slice(0, 200)]
+        left = [redactSecrets(String(err)).slice(0, 200)]
+      }
+      expect.soft(left, 'test 4 removed the listener it registered').toEqual([])
+      // A handler's background job carries no chat id, so the kills above may leave it, and the
+      // agent's hold watcher then holds that sandbox for 8 hours (test 8 waits for an idle stop).
+      // Stopping both persons' sandboxes ends every job and hold of this test.
+      for (const [who, id] of [['Bob', state.bob.id], ['Alice', state.alice.id]] as const) {
+        try {
+          if (sandboxContainers({ user: id, view: 'own' }).length) await stopPersonSandbox(admin.request, BASE, id)
+          expect.soft(await noSandboxWithin(id, 'own', 90_000), `test 4 left no sandbox of ${who} holding its jobs`).toBe(true)
+        } catch (err) {
+          expect.soft(redactSecrets(String(err)).slice(0, 300), `test 4 stopped ${who}'s sandbox`).toBe('')
+        }
       }
       await page.close()
       await owner.close()
@@ -497,7 +512,6 @@ test.describe('Group A (defaults)', () => {
       stopLab(lab)
       for (const s of sessions) await deleteConversation(bob.request, BASE, s)
       if (aliceChat) await deleteConversation(alice.request, BASE, aliceChat)
-      expect.soft(left, 'test 4 removed the listener it registered').toEqual([])
       expect.soft(await restoreProjects(apis(), BASE, { fields: ['agentBindPortOnTarget'] }), 'the bind ports of g1-PA and g1-PS were put back').toEqual([])
       removeMarkers(`g1e2e-${n}`)
     }
@@ -515,7 +529,7 @@ test.describe('Group A (defaults)', () => {
       }))
       expect(created.ok(), 'the admin\'s throwaway project').toBeTruthy()
       project = ((await created.json()) as { id: string }).id
-      if (MODE === 'per_user' && sandboxContainers({ user: adminId, view: 'own' }).length) {
+      if (sandboxContainers({ user: adminId, view: 'own' }).length) {
         await stopPersonSandbox(admin.request, BASE, adminId)
         expect(await noSandboxWithin(adminId, 'own', 90_000)).toBe(true)
       }
@@ -568,7 +582,8 @@ test.describe('Group A (defaults)', () => {
       }
 
       await owner.goto('/projects')
-      await owner.getByRole('button', { name: `Share ${PROJECT_NAMES.PS}` }).click()
+      // The page body's card: with g1-PS the current project, the header's selector has its own share button.
+      await owner.getByRole('main').getByRole('button', { name: `Share ${PROJECT_NAMES.PS}` }).click()
       const dialog = owner.getByRole('dialog', { name: `Share "${PROJECT_NAMES.PS}"` })
       await expect(dialog.getByRole('heading', { name: 'People with access' })).toBeVisible()
       const row = dialog.getByRole('listitem', { name: 'G1 Bob' })
@@ -637,7 +652,26 @@ test.describe('Group A (defaults)', () => {
       await page.goto(`/graph?project=${state.projects.PA}`)
       const pause = page.getByRole('button', { name: 'PAUSE ALL' })
       await expect(pause).toBeEnabled({ timeout: 60_000 })
+      const isPress = (url: string, method: string) => method === 'POST' && new URL(url).pathname === '/api/agent/emergency-stop-all'
+      let lost = ''
+      const onFailed = (r: import('@playwright/test').Request) => {
+        if (isPress(r.url(), r.method())) lost = r.failure()?.errorText ?? 'failed'
+      }
+      page.on('requestfailed', onFailed)
+      const answered = page.waitForResponse((r) => isPress(r.url(), r.request().method()), { timeout: 60_000 }).catch(() => null)
       await pause.click()
+      const press = await answered
+      page.off('requestfailed', onFailed)
+      expect(press, `${STOP_LOST} (${lost ? `the browser reported ${lost}` : 'no answer within 60 s'})`).not.toBeNull()
+      expect(press!.status(), 'the emergency stop answered').toBe(200)
+      const stopBody = (await press!.json().catch(() => null)) as { sandboxes?: { stopped?: unknown; error?: unknown } } | null
+      // The orchestrator stops instances one by one, each with its grace period, and the webapp
+      // answers `sandbox_timeout` when that outlasts its own deadline: the stop goes on, and the
+      // check that the sandbox goes away below decides.
+      if (box && stopBody?.sandboxes?.error !== 'sandbox_timeout') {
+        expect(stopBody?.sandboxes?.stopped, 'the emergency stop names the Kali sandboxes it stopped').toEqual(expect.any(Number))
+        expect(stopBody!.sandboxes!.stopped as number, 'the emergency stop stopped Alice\'s sandbox').toBeGreaterThanOrEqual(1)
+      }
       await expect.poll(async () => live(await partialRuns(alice.request, state.projects.PA)).length,
         { message: 'PAUSE ALL stopped the partial recon', timeout: 120_000 }).toBe(0)
       if (box) expect.soft(await goneWithin(box.name, 90_000), 'ISOLATION (D22): PAUSE ALL stopped Alice\'s sandbox').toBe(true)
@@ -665,8 +699,6 @@ test.describe('Group A (defaults)', () => {
 // ======================================================================================
 
 test.describe('Group B (idle)', () => {
-  test.beforeEach(() => test.skip(MODE === 'shared', 'needs the orchestrator in per-user mode (KALI_SANDBOX_IDLE_MINUTES=1)'))
-
   test('8. idle stop and return: Alice\'s sandbox stops after about two minutes, her next message restarts it, her files are there', async () => {
     test.setTimeout(900_000)
     const n = nonce()
@@ -717,8 +749,6 @@ test.describe('Group B (idle)', () => {
 // ======================================================================================
 
 test.describe('Group C (memory)', () => {
-  test.beforeEach(() => test.skip(MODE === 'shared', 'needs the orchestrator in per-user mode with a lowered pool'))
-
   test('9. not enough memory: Bob gets the modal with the figures, a refused warm-up shows nothing, Retry works once the scan stops', async () => {
     test.setTimeout(900_000)
     const n = nonce()
@@ -816,8 +846,6 @@ test.describe('Group C (memory)', () => {
 // ======================================================================================
 
 test.describe('Group D (tunnel)', () => {
-  test.beforeEach(() => test.skip(MODE === 'shared', 'needs the orchestrator in per-user mode'))
-
   test('10. tunnels from Settings: Bob\'s chisel tunnel runs in his sandbox only and is off after his sandbox restarts', async () => {
     test.setTimeout(900_000)
     const n = nonce()

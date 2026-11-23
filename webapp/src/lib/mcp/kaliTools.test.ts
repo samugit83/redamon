@@ -261,12 +261,12 @@ describe('audit', () => {
 describe('kali_output', () => {
   test('reads from the start when no cursor is given', async () => {
     await readCommandOutput(ctx(), 'p1', 'j1')
-    expect(h.status).toHaveBeenCalledWith('p1', 'j1', 0)
+    expect(h.status).toHaveBeenCalledWith('p1', 'j1', 0, 'owner')
   })
 
   test('resumes from the cursor it is given', async () => {
     await readCommandOutput(ctx(), 'p1', 'j1', 512)
-    expect(h.status).toHaveBeenCalledWith('p1', 'j1', 512)
+    expect(h.status).toHaveBeenCalledWith('p1', 'j1', 512, 'owner')
   })
 
   test('a truncated read says there is more, and where', async () => {
@@ -355,6 +355,17 @@ describe('the person whose sandbox runs the command (group 1)', () => {
     await execCommand(c, 'p1', 'id')
     expect(h.exec).toHaveBeenCalledTimes(1)
     expect(h.exec.mock.calls[0][3]).toBe('person-9')
+    // Its poll and cancel name the same person: the agent refuses a job recorded for someone else.
+    vi.mocked(projectAccess).mockResolvedValueOnce(
+      { project: { id: 'p1', userId: 'owner' }, level: 'write', toggles: { rawData: true, exploit: true }, via: 'share' } as ProjectAccess
+    )
+    await readCommandOutput(c, 'p1', 'j1')
+    vi.mocked(projectAccess).mockResolvedValueOnce(
+      { project: { id: 'p1', userId: 'owner' }, level: 'write', toggles: { rawData: true, exploit: true }, via: 'share' } as ProjectAccess
+    )
+    await cancelCommand(c, 'p1', 'j1')
+    expect(h.status.mock.calls.at(-1)).toEqual(['p1', 'j1', 0, 'person-9'])
+    expect(h.cancel.mock.calls.at(-1)).toEqual(['p1', 'j1', 'person-9'])
     const actual = await vi.importActual<typeof import('@/lib/authz/projectAccess')>('@/lib/authz/projectAccess')
     vi.mocked(projectAccess).mockImplementation(actual.projectAccess)
   })

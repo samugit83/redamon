@@ -12,7 +12,6 @@
  */
 import type { MyAccess } from '@/lib/authz/projectAccess'
 import type { ShareGrantable } from '@/lib/authz/projectShares'
-import { PERMISSIONS } from '@/lib/authz/permissions'
 import { SHARE_KEYS_LENT_TEXT } from '@/lib/sandbox/contract'
 
 export type ShareAccessLevel = 'read' | 'write'
@@ -37,8 +36,6 @@ export type ShareTermsLike = { access: string; rawData: boolean } & Partial<Omit
 
 export const RAW_DATA_WARNING =
   'Raw data includes captured traffic, workspace files and loot; grant it as you would hand over the files.'
-/** HD-22 (F-18, OQ-46): what the agent runs, it runs in one sandbox every project shares, until D-21. */
-export const SANDBOX_NOTICE = 'Use AI agent and Exploitation & shells reach a sandbox shared by every project on this server.'
 /** SH-29: a scan or an agent run authenticates to the target with the project's auth profile. */
 export const TARGET_CREDENTIALS_WARNING = "Run scans and Use AI agent carry the project's target credentials (its auth profile)."
 /**
@@ -71,8 +68,6 @@ export const EXPLOIT_STEP_UP =
 /** A share's note, at most (lib/authz/projectShares.ts NOTE_MAX_LENGTH, which this module cannot import). */
 export const NOTE_MAX_CHARS = 500
 
-const sandboxShared = PERMISSIONS['agent:kali_exec'].sandboxShared
-
 export interface ShareToggleInfo {
   id: ShareToggleId
   label: string
@@ -96,14 +91,13 @@ export const SHARE_TOGGLES: readonly ShareToggleInfo[] = [
   {
     id: 'useAgent', label: 'Use AI agent', level: 'write',
     description: 'Chat, Fireteam, triage runs, CodeFix and assistants.',
-    // Group 1, I11 (OD-G1-k): the owner's third-party keys reach the collaborator's own sandbox,
-    // in either sandbox mode.
-    notices: [...(sandboxShared ? [SANDBOX_NOTICE] : []), SHARE_KEYS_LENT_TEXT, TARGET_CREDENTIALS_WARNING],
+    // Group 1, I11 (OD-G1-k): the owner's third-party keys reach the collaborator's own sandbox.
+    notices: [SHARE_KEYS_LENT_TEXT, TARGET_CREDENTIALS_WARNING],
   },
   {
     id: 'exploit', label: 'Exploitation & shells', level: 'write',
     description: 'Approve exploitation and dangerous tools, project shell sessions, Kali exec.',
-    notices: [...(sandboxShared ? [SANDBOX_NOTICE] : []), SHARE_KEYS_LENT_TEXT],
+    notices: [SHARE_KEYS_LENT_TEXT],
   },
   {
     id: 'manage', label: 'Manage (co-owner)', level: 'write',

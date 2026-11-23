@@ -165,22 +165,16 @@ class TrafficRoutes(_Base):
 
 # --- the agent mints one for every proxy_brain call ------------------------------
 class ProxyBrainGetsACredential(unittest.TestCase):
-    def setUp(self):
-        import sandbox_contract
-        import sandbox_router
-
-        # The shared sandbox's path: shared mode is named, since the default is
-        # per_user and no gateway answers here.
-        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
-        self.addCleanup(sandbox_router._reset)
+    """The call runs in the person's sandbox (one_sandbox), whose client serves the tool."""
 
     def _executor(self):
+        from one_sandbox import route_to
         from tools import PhaseAwareToolExecutor
         ex = PhaseAwareToolExecutor(mcp_manager=mock.MagicMock(), graph_tool=None)
         tool = mock.AsyncMock()
         tool.name = "proxy_brain"
         tool.ainvoke.return_value = "ok"
-        ex._all_tools["proxy_brain"] = tool
+        route_to(self, {"proxy_brain": tool})
         return ex, tool
 
     def _run(self, ex, args, tenant=("uA", "pA", "sess-1")):
@@ -224,12 +218,13 @@ class ProxyBrainGetsACredential(unittest.TestCase):
         tool.ainvoke.assert_not_called()
 
     def test_other_tools_get_no_credential(self):
+        from one_sandbox import route_to
         from tools import PhaseAwareToolExecutor
         ex = PhaseAwareToolExecutor(mcp_manager=mock.MagicMock(), graph_tool=None)
         tool = mock.AsyncMock()
         tool.name = "kali_shell"
         tool.ainvoke.return_value = "ok"
-        ex._all_tools["kali_shell"] = tool
+        route_to(self, {"kali_shell": tool})
 
         async def go():
             from agent_context import set_tenant_context

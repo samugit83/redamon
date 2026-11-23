@@ -4,11 +4,10 @@
  * forwarded, and record its outcome.
  *
  * A target is the pair (sandbox instance, number) (group 1, TD-11): every per-user sandbox numbers
- * its sessions from 1, so the route takes `?sandbox=<instance>`, the pair is looked up whole and
- * authorized by its own project, and the agent is sent that same instance. In per-user mode the
- * parameter is required; without it only the untagged rows of the shared container match. The
- * instance comes from the agent's list, never as a person or a view: the caller cannot choose whose
- * sandbox it reaches, only which of the entries it may see.
+ * its sessions from 1, so the route takes `?sandbox=<instance>` (required), the pair is looked up
+ * whole and authorized by its own project, and the agent is sent that same instance. The instance
+ * comes from the agent's list, never as a person or a view: the caller cannot choose whose sandbox
+ * it reaches, only which of the entries it may see.
  *
  * Server-side only.
  */
@@ -25,40 +24,31 @@ import {
   type SessionsViewer,
   type SessionTarget,
 } from '@/lib/authz/agentSessionsAccess'
-import { SHARED_INSTANCE } from '@/lib/sandbox/contract'
-import { sandboxMode } from '@/lib/sandbox/gateway'
 import { agentErrorResponse, callAgent } from '../agentProxy'
 
 export type DriveKind = 'session' | 'job'
 
-/** The instance the request names (`?sandbox=`), null when it names none, or the route's 400. */
-export function driveSandbox(request: NextRequest): string | null | NextResponse {
+/**
+ * The instance the request names (`?sandbox=`), or the route's 400: none named, or not an instance.
+ * Decided before any lookup and the same for every number, so it tells nothing about which sessions
+ * exist.
+ */
+export function driveSandbox(request: NextRequest): string | NextResponse {
   const params = request.nextUrl.searchParams
-  if (!params.has('sandbox')) return null
+  if (!params.has('sandbox')) {
+    return NextResponse.json({ error: 'Name the Kali sandbox the session runs in (?sandbox=)', code: 'sandbox_required' }, { status: 400 })
+  }
   const sandbox = params.get('sandbox')
   if (isSandboxInstance(sandbox)) return sandbox
   return NextResponse.json({ error: 'sandbox must name a Kali sandbox instance', code: 'invalid_sandbox' }, { status: 400 })
 }
 
-/** Per-user mode as the orchestrator last named it; unknown (an outage) is never taken for per-user. */
-async function perUserMode(): Promise<boolean> {
-  try {
-    return (await sandboxMode()) === 'per_user'
-  } catch {
-    return false
-  }
-}
-
-/**
- * The target, or the route's answer: the agent's failure, 400 when per-user mode needs an instance
- * the request did not name, or 404 for anything outside the caller's view. The 400 is decided after
- * the lookup and the same for every number, so it tells nothing about which sessions exist.
- */
+/** The target, or the route's answer: the agent's failure, or 404 for anything outside the caller's view. */
 export async function findDriveTarget(
   viewer: SessionsViewer,
   kind: DriveKind,
   id: string,
-  sandbox: string | null,
+  sandbox: string,
   failed: string,
 ): Promise<SessionTarget | NextResponse> {
   const call = await callAgent('/sessions', { cache: 'no-store' }, failed)
@@ -66,16 +56,12 @@ export async function findDriveTarget(
   if (!call.res.ok) return agentErrorResponse(call.res, failed)
   const target = await authorizeSessionTarget(await call.res.json(), viewer, kind, id, sandbox)
   if (target) return target
-  if (sandbox === null && (await perUserMode())) {
-    return NextResponse.json({ error: 'Name the Kali sandbox the session runs in (?sandbox=)', code: 'sandbox_required' }, { status: 400 })
-  }
   return NextResponse.json({ error: 'Not found' }, { status: 404 })
 }
 
 /** The agent's route for the drive, naming the same instance the target was found in. */
-export function drivePath(kind: DriveKind, id: string, action: 'interact' | 'kill', sandbox: string | null): string {
-  const path = `/${kind === 'session' ? 'sessions' : 'jobs'}/${encodeURIComponent(id)}/${action}`
-  return sandbox === null ? path : `${path}?sandbox=${encodeURIComponent(sandbox)}`
+export function drivePath(kind: DriveKind, id: string, action: 'interact' | 'kill', sandbox: string): string {
+  return `/${kind === 'session' ? 'sessions' : 'jobs'}/${encodeURIComponent(id)}/${action}?sandbox=${encodeURIComponent(sandbox)}`
 }
 
 export type DriveAction = 'agent.session_interact' | 'agent.session_kill' | 'agent.job_kill'
@@ -102,20 +88,19 @@ function withOutcome(audit: DriveAudit, outcome: DriveOutcome | 'attempted', sta
  * The drive's `attempted` row, written before anything is forwarded and in `auditedTransaction`: a
  * row that cannot be written throws, the route answers 500, and nothing reaches the agent. The row
  * cannot wait for the answer: the drive may run with none. It names the session as
- * `<instance>:<number>` and, for a per-user sandbox, whose sandbox it runs in (`sandboxUser`). Never
- * the command text.
+ * `<instance>:<number>` and whose sandbox it runs in (`sandboxUser`) when the agent named the person.
+ * Never the command text.
  */
 export async function beginDriveAudit(
   action: DriveAction,
   kind: DriveKind,
   id: string,
-  sandbox: string | null,
+  instance: string,
   viewer: SessionsViewer,
   target: SessionTarget,
 ): Promise<DriveAudit> {
   const actor = auditActorOf(viewer.principal, viewer.effectiveUserId)
   const actingAs = actor.onBehalfOfUserId ? { actingAsUserId: actor.onBehalfOfUserId } : {}
-  const instance = sandbox ?? SHARED_INSTANCE
   const audit: DriveAudit = {
     entry: {
       ...actorFields(actor),

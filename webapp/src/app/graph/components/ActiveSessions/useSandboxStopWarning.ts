@@ -22,7 +22,7 @@ export function stopWarningText(stopAtEpochS: number): string {
 /**
  * When the signed-in person's own Kali sandbox will stop, once it warns (group 1, OQ-G1-9 A: the
  * sandbox's person only; GET /api/agent/sandbox/status decides whose sandbox from the session). Null
- * when it does not warn, in shared mode, or when the status cannot be read: the banner is a hint and
+ * when it does not warn, or when the status cannot be read: the banner is a hint and
  * never an error of the panel.
  */
 export function useSandboxStopWarning(enabled: boolean): number | null {

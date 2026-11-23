@@ -4,8 +4,7 @@ replacement (group 1: D22, D24).
 
 Driven like the lifecycle tests: the in-memory FakeDocker, the `world` fixture and
 the helpers of test_sandbox_manager_lifecycle.py, a real ReservationLedger, and a
-fake clock the test moves by hand. Every test sets KALI_SANDBOX_MODE explicitly
-(the `env` fixture sets per_user; a test that needs shared sets it itself).
+fake clock the test moves by hand.
 
 Two fidelity patches of the fake, applied to every test here: a container's
 endpoint reports its GwPriority as the engine does (0 when none was asked for,
@@ -576,9 +575,9 @@ async def test_a_missing_servers_folder_drains_nothing(world, tmp_path):
     assert state_of(world, ALICE, a["instance"]) == "running"
 
 
-async def test_idle_loop_runs_in_shared_mode(world):
+async def test_the_idle_loop_ignores_the_old_mode_switch(world):
     a = await world.mgr.ensure(ALICE, ["projA"])
-    world.mp.setenv(sc.MODE_ENV, sc.MODE_SHARED)
+    world.mp.setenv("KALI_SANDBOX_MODE", "shared")
     world.clock.now += IDLE_S - 1
     await world.mgr.idle_tick()
     assert state_of(world, ALICE, a["instance"]) == "running"

@@ -96,7 +96,7 @@ const listReq = () => new NextRequest('http://x/api/agent/workspace/list?project
 // Interact and kill look their target up in the session list first (HD-01). The lookup
 // answers, so the error under test is the drive's own.
 const SESSION_LIST = {
-  sessions: [{ id: 1, chat_session_id: 's1' }, { id: 3, chat_session_id: 's1' }],
+  sessions: [{ id: 1, chat_session_id: 's1', sandbox: 'aaaaa1' }, { id: 3, chat_session_id: 's1', sandbox: 'aaaaa1' }],
   jobs: [],
   non_msf_sessions: [],
 }
@@ -132,8 +132,8 @@ describe('agent never answered', () => {
 describe('agent answered with an error', () => {
   test('a 5xx gets the fixed message, the code and the agent status, not its text', async () => {
     answer = drive(async () => jsonResponse(500, { error: SECRET }))
-    const res = await sessionKill.POST(new NextRequest('http://x', { method: 'POST' }), { params: Promise.resolve({ id: '3' }) })
-    expect(calls[1]).toMatch(/\/sessions\/3\/kill$/)
+    const res = await sessionKill.POST(new NextRequest('http://x?sandbox=aaaaa1', { method: 'POST' }), { params: Promise.resolve({ id: '3' }) })
+    expect(calls[1]).toMatch(/\/sessions\/3\/kill\?sandbox=aaaaa1$/)
     expect(res.status).toBe(502)
     const body = await res.json()
     expect(body).toEqual({ error: 'Failed to kill session', code: 'agent_error', upstreamStatus: 500 })
@@ -166,9 +166,9 @@ describe('agent answered with an error', () => {
 
   test('a session manager timeout reaches the terminal as the upstream status', async () => {
     answer = drive(async () => jsonResponse(504, { error: 'Session interaction timeout' }))
-    const req = new NextRequest('http://x', { method: 'POST', body: JSON.stringify({ command: 'id' }) })
+    const req = new NextRequest('http://x?sandbox=aaaaa1', { method: 'POST', body: JSON.stringify({ command: 'id' }) })
     const res = await sessionInteract.POST(req, { params: Promise.resolve({ id: '1' }) })
-    expect(calls[1]).toMatch(/\/sessions\/1\/interact$/)
+    expect(calls[1]).toMatch(/\/sessions\/1\/interact\?sandbox=aaaaa1$/)
     expect(res.status).toBe(502)
     expect(await res.json()).toMatchObject({ error: 'Failed to interact with session', upstreamStatus: 504 })
   })

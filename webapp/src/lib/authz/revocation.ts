@@ -21,7 +21,7 @@
  * The person's Kali sandboxes follow last (group 1, lib/sandbox/lifecycle.ts), once the agent has
  * ended the work running in them: a project reason stops their instances that mount a project they
  * may no longer use (both views, own and act-as); a disable, a deletion, a capability removal or a
- * credentials reset (and the sign-in of its link) stops both views; nothing is asked in shared mode.
+ * credentials reset (and the sign-in of its link) stops both views.
  * Scans already running finish (OQ-13). The person's MCP tokens fail on their next call (every MCP
  * tool asks projectAccess() and can() per call); an Agent in the Loop driver's step leases end with
  * the run they belong to; open pages follow the stale-access poll.
@@ -83,7 +83,7 @@ export interface LiveWorkStopped {
   navigator?: Counted<'stopped'>
   /** The account's Tradecraft ingestion jobs flagged as cancelled; absent when the plan keeps them. */
   tradecraft?: Counted<'cancelled'>
-  /** The person's Kali sandbox instances stopped; absent when the plan leaves them or in shared mode. */
+  /** The person's Kali sandbox instances stopped; absent when the plan leaves them. */
   sandbox?: Counted<'stopped'>
   /** The steps that failed, each logged. */
   failed: RevocationStep[]
@@ -358,8 +358,7 @@ export async function onAccessReduced(
   }
   if (plan.sandbox !== 'none') {
     const outcome = await sandboxStep(plan.sandbox, reason, userId, actor)
-    if ('error' in outcome) out.sandbox = fail('sandbox', outcome.error)
-    else if (outcome.mode === 'per_user') out.sandbox = { stopped: outcome.stopped }
+    out.sandbox = 'error' in outcome ? fail('sandbox', outcome.error) : { stopped: outcome.stopped }
   }
 
   const n = (c: Counted<string> | undefined) => (c && !('error' in c) ? Object.values(c)[0] : 0)

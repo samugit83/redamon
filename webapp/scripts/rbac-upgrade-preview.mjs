@@ -506,7 +506,7 @@ export const MEMBER_CHANGES = [
   },
   { step: '1.10', text: () => 'Tunnel: only admins and members keeping the tunnel grant change it; the others see its status.' },
   { step: '1.13', text: () => "Shell sessions: they see their own projects' sessions; the all-sessions console needs the sessions grant." },
-  { step: '1.14', text: () => "Kali terminal: needs the terminal grant, and warns that other projects' files are visible there." },
+  { step: '1.14', text: () => "Kali terminal: needs the terminal grant, and opens in their own Kali sandbox." },
   { step: '1.9', text: () => 'MCP servers: only admins add, test or load stdio servers.' },
 ]
 

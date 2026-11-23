@@ -4,10 +4,9 @@ I11, D24, D22).
 
 PhaseAwareToolExecutor.execute() is the one chokepoint every path reaches: the single
 tool node, the plan wave, a Fireteam member (which reuses those nodes) and a background
-job's runner. In per-user mode it takes the run's handle from the sandbox router (one
-`run` lease per chat run, acquired lazily), or a job's own `job` lease, and calls the
-tool on that person's own MCP client: never the shared manager, never another person's
-client. The owner's keys injected into a call (WPScan, URLScan, PDCP), the capture tag
+job's runner. It takes the run's handle from the sandbox router (one `run` lease per
+chat run, acquired lazily), or a job's own `job` lease, and calls the tool on that
+person's own MCP client: never the shared manager, never another person's client. The owner's keys injected into a call (WPScan, URLScan, PDCP), the capture tag
 and proxy_brain's run credential therefore reach only the sandbox of the person running
 the agent (I11, T7, S5). Both nodes read the Hydra and Metasploit progress and post the
 session-manager links to that same sandbox with its own bearer. Stopping a run asks the
@@ -15,7 +14,7 @@ sandboxes it used; the emergency stop asks every running sandbox at once and is 
 held by a hung one (D22).
 
 The webapp gateway is the httpx.MockTransport stub of test_sandbox_router.py; each
-person's MCP client is a fake that records what it was sent. Every test sets the mode.
+person's MCP client is a fake that records what it was sent.
 
 Run: ./agentic/run_tests.sh tests/test_sandbox_executor_routing.py
 """
@@ -189,11 +188,9 @@ class Registry:
 # =============================================================================
 
 class Routing(unittest.IsolatedAsyncioTestCase):
-    mode = contract.MODE_PER_USER
-
     async def asyncSetUp(self):
-        self.gateway = Gateway(mode=self.mode)
-        router._reset(mode=self.mode)
+        self.gateway = Gateway()
+        router._reset()
         self.clients = Clients()
         self.shared = FakeClient("shared", SHARED_TOKEN)
         Recorder.calls = []
@@ -223,7 +220,7 @@ class Routing(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await router._shutdown()
-        router._reset(mode=None)
+        router._reset()
         getattr(sandbox_runs, "_reset", lambda: None)()
 
     async def run_as(self, person, body, *, tenant=None, project="p1", session=None,
@@ -287,8 +284,7 @@ class TestRoutesToThePerson(Routing):
                 config = {"configurable": {"user_id": person, "project_id": "p1",
                                            "session_id": f"sess-{person}", "tenant_user_id": "alice"}}
                 return await plan_mod.execute_plan_node(
-                    state, config, tool_executor=self.executor, streaming_callbacks={},
-                    session_manager_base="http://kali-sandbox:8013")
+                    state, config, tool_executor=self.executor, streaming_callbacks={})
             return body
 
         a, b = await asyncio.gather(self.run_as("alice", wave("alice")),
@@ -705,8 +701,7 @@ class TestNodesFollowTheHandle(Routing):
         config = {"configurable": {"user_id": person, "project_id": "p1", "session_id": session,
                                    "tenant_user_id": "alice"}}
         return await tool_mod.execute_tool_node(
-            state, config, tool_executor=self.executor, streaming_callbacks={session: self._cb()},
-            session_manager_base="http://kali-sandbox:8013")
+            state, config, tool_executor=self.executor, streaming_callbacks={session: self._cb()})
 
     async def _plan(self, person, tool_name, tool_args):
         session = f"sess-{person}"
@@ -715,8 +710,7 @@ class TestNodesFollowTheHandle(Routing):
         config = {"configurable": {"user_id": person, "project_id": "p1", "session_id": session,
                                    "tenant_user_id": "alice"}}
         return await plan_mod.execute_plan_node(
-            state, config, tool_executor=self.executor, streaming_callbacks={session: self._cb()},
-            session_manager_base="http://kali-sandbox:8013")
+            state, config, tool_executor=self.executor, streaming_callbacks={session: self._cb()})
 
     def _host(self, person):
         handle_key = next(k for k in self.clients.by_key if k[0] == person)
@@ -893,7 +887,7 @@ class TestRunStop(Routing):
 
 
 # =============================================================================
-# The shared manager holds the user servers only in per-user mode (WI-S10-1)
+# The shared manager holds the user servers only (WI-S10-1)
 # =============================================================================
 
 class LoadedTool:
@@ -908,7 +902,7 @@ class LoadedTool:
 class SharedManager:
     """The orchestrator's MCPToolsManager over fake servers: what each load connected."""
 
-    TOOLS = {"network_recon": ["kali_shell"], "srv-a": ["create_issue"]}
+    TOOLS = {"srv-a": ["create_issue"]}
 
     def __init__(self):
         self.generation = 0
@@ -945,13 +939,9 @@ class TestSharedManagerHoldsNoSystemServer(Routing):
 
     async def asyncSetUp(self):
         await super().asyncSetUp()
-        import mcp_registry
         import mcp_toolset_guard
         from orchestrator import AgentOrchestrator
-        system = [mcp_registry.MCPServer(id="network_recon", name="n", transport="sse",
-                                         url="http://kali.test:8000/sse")]
         patches = [
-            mock.patch("tools._build_system_mcp_servers", return_value=system),
             mock.patch("prompts.tool_registry.apply_mcp_manifests_to_registry",
                        side_effect=lambda servers: {t.name for srv in servers for t in srv.tools}),
             mock.patch("orchestrator_helpers.llm_url_guard._resolve_ips", return_value=[]),
@@ -964,114 +954,48 @@ class TestSharedManagerHoldsNoSystemServer(Routing):
         orch._initialized = True
         orch._mcp_manager = SharedManager()
         orch.tool_executor = tools.PhaseAwareToolExecutor(orch._mcp_manager, None)
-        orch.tool_executor.shared_system_loader = orch._load_shared_system_servers
-        orch._system_servers_loaded = False
         self.orch = orch
 
-    async def test_per_user_loads_the_user_servers_only(self):
+    async def test_it_loads_the_user_servers_only(self):
         out = await self.orch.reload_mcp_manifests([SRV_A], "owner-a")
         self.assertTrue(out["loaded"])
         self.assertEqual(self.orch._mcp_manager.loads, [["srv-a"]])
         self.assertIn("create_issue", self.orch.tool_executor._all_tools)
         self.assertNotIn("kali_shell", self.orch.tool_executor._all_tools)
-        self.assertEqual({s["id"] for s in out["servers"]}, {"network_recon", "srv-a"},
-                         "the manifest still lists the system servers")
+        self.assertEqual({s["id"] for s in out["servers"]}, {"srv-a"})
 
-    async def test_per_user_without_a_user_server_holds_nothing(self):
+    async def test_without_a_user_server_it_holds_nothing(self):
         out = await self.orch.reload_mcp_manifests([], "owner-a")
         self.assertTrue(out["loaded"])
         self.assertEqual((self.orch._mcp_manager.loads, self.orch._mcp_manager.disconnects), ([], 1))
 
-    async def test_shared_mode_loads_them_as_today(self):
-        router._reset(mode=contract.MODE_SHARED)
-        await self.orch.reload_mcp_manifests([SRV_A], "owner-a")
-        self.assertEqual(self.orch._mcp_manager.loads, [["network_recon", "srv-a"]])
+    async def test_the_loaded_set_is_kept_across_runs(self):
+        await self.orch._ensure_mcp_toolset([SRV_A], "owner-a")
+        await self.orch._ensure_mcp_toolset([SRV_A], "owner-a")
+        self.assertEqual(self.orch._mcp_manager.loads, [["srv-a"]])
 
-    async def test_a_mode_change_reloads_at_the_next_run(self):
+    async def test_a_kali_call_never_loads_a_system_server_here(self):
         await self.orch._ensure_mcp_toolset([SRV_A], "owner-a")
-        await self.orch._ensure_mcp_toolset([SRV_A], "owner-a")
-        self.assertEqual(self.orch._mcp_manager.loads, [["srv-a"]], "the loaded set is kept")
-        router._note_mode(contract.MODE_SHARED)
-        await self.orch._ensure_mcp_toolset([SRV_A], "owner-a")
-        self.assertEqual(self.orch._mcp_manager.loads, [["srv-a"], ["network_recon", "srv-a"]])
-        router._note_mode(contract.MODE_PER_USER)
-        await self.orch._ensure_mcp_toolset([SRV_A], "owner-a")
-        self.assertEqual(self.orch._mcp_manager.loads[-1], ["srv-a"])
-
-    async def test_a_shared_answer_loads_the_system_servers_on_demand(self):
-        await self.orch._ensure_mcp_toolset([SRV_A], "owner-a")
-        self.gateway.mode = contract.MODE_SHARED
         self.executor = self.orch.tool_executor
 
         async def bob():
             return await self.call("kali_shell")
 
         result = await self.run_as("bob", bob)
-        self.assertEqual(result, {"success": True, "output": "ok from network_recon", "error": None})
-        self.assertEqual(self.orch._mcp_manager.loads[-1], ["network_recon", "srv-a"])
+        self.assertEqual(result["output"], f"ok from {self.clients.of('bob').label}")
+        self.assertEqual(self.orch._mcp_manager.loads, [["srv-a"]])
 
-    async def test_a_shared_answer_loads_them_for_tradecraft_s_browser(self):
-        """A roll-back to shared after a per-user load: Tradecraft's browser, before any
-        chat call, loads the system servers through the same loader."""
+    async def test_tradecraft_s_browser_renders_in_the_persons_own_sandbox(self):
         from tradecraft import jobs, net
 
         await self.orch._ensure_mcp_toolset([SRV_A], "owner-a")
-        self.orch._mcp_manager.TOOLS = {**SharedManager.TOOLS,
-                                        "network_recon": ["kali_shell", "execute_playwright"]}
-        self.gateway.mode = contract.MODE_SHARED
         with mock.patch.dict(sys.modules, {"api": SimpleNamespace(orchestrator=self.orch)}):
             with jobs.sandbox_person("bob"):
                 rendered = await net.GuardedFetcher(jobs._agent_mcp_manager()).run_browser_script("print(1)")
-        self.assertEqual(rendered, ("ok from network_recon", ""))
-        self.assertEqual(self.orch._mcp_manager.loads, [["srv-a"], ["network_recon", "srv-a"]])
-        self.assertEqual(self.clients.by_key, {}, "no per-user client in shared mode")
-
-
-# =============================================================================
-# Shared mode: exactly as today
-# =============================================================================
-
-class TestSharedModeUnchanged(Routing):
-    mode = contract.MODE_SHARED
-
-    async def test_shared_mode_unchanged(self):
-        async def bob():
-            out = await self.call("kali_shell")
-            state = {"messages": [], "current_iteration": 1, "current_phase": "exploitation",
-                     "execution_trace": [], "_current_step": {"tool_name": "metasploit_console",
-                                                              "tool_args": {"command": "sessions -l"}}}
-            config = {"configurable": {"user_id": "bob", "project_id": "p1", "session_id": "sess-bob",
-                                       "tenant_user_id": "alice"}}
-            await tool_mod.execute_tool_node(state, config, tool_executor=self.executor,
-                                             streaming_callbacks={}, session_manager_base="http://kali-sandbox:8013")
-            return out
-
-        result = await self.run_as("bob", bob, tenant="alice")
-        self.assertEqual(result["output"], "ok from shared")
-        self.assertEqual([c["tool"] for c in self.shared.calls], ["kali_shell", "metasploit_console"])
-        self.assertEqual(self.clients.by_key, {}, "no per-user client in shared mode")
-        self.assertEqual(self.gateway.leases(), [])
-        posts = [(u, h) for m, u, _j, h in Recorder.calls if m == "POST"]
-        self.assertEqual(posts, [("http://kali-sandbox:8013/session-chat-map",
-                                  {"Authorization": f"Bearer {SHARED_TOKEN}"})])
-
-    async def test_shared_stop_uses_todays_address(self):
-        seen = []
-        real = httpx.AsyncClient
-
-        def client(*args, **kwargs):
-            if kwargs.get("transport") is None:
-                kwargs["transport"] = httpx.MockTransport(
-                    lambda r: seen.append(str(r.url)) or httpx.Response(200, json={"signalled": 1}))
-            return real(*args, **kwargs)
-
-        async def bob():
-            await self.call("kali_shell")
-            with mock.patch.object(httpx, "AsyncClient", client):
-                return await sandbox_runs.stop_sandbox_run("sess-bob")
-
-        self.assertEqual(await self.run_as("bob", bob), 1)
-        self.assertEqual(seen, ["http://kali-sandbox:8000/redamon/runs/stop"])
+        bob = self.clients.of("bob")
+        self.assertEqual(rendered, (f"ok from {bob.label}", ""))
+        self.assertEqual([c["tool"] for c in bob.calls], ["execute_playwright"])
+        self.assertEqual(self.orch._mcp_manager.loads, [["srv-a"]])
 
 
 if __name__ == "__main__":

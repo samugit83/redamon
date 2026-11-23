@@ -618,8 +618,8 @@ export interface WebSocketState {
 // =============================================================================
 // ACTIVE SESSIONS (REST polling, not WebSocket)
 // =============================================================================
-// With per-user Kali sandboxes every console numbers its sessions from 1: a row is the pair
-// (`sandbox` instance, `id`), and a row without `sandbox` is the shared container's (group 1, TD-11).
+// Every person's Kali sandbox runs its own console, which numbers its sessions from 1: a row is the
+// pair (`sandbox` instance, `id`) (group 1, TD-11).
 
 export interface MsfSession {
   id: number
@@ -648,13 +648,23 @@ export interface NonMsfSession {
   chat_session_id: string | null
 }
 
+/**
+ * What a reader that keeps the last answer adds to a row (useActiveSessions `nextSessionLists`, S16b):
+ * `listedAt` (ms), the last answer that listed it, and `staleSince` (ms) on a row kept from an
+ * earlier answer because its sandbox did not answer this time. Never the sandbox's own fields.
+ */
+export interface KeptRowMarks {
+  listedAt?: number
+  staleSince?: number
+}
+
 export interface SessionsData {
-  sessions: MsfSession[]
-  jobs: MsfJob[]
-  non_msf_sessions: NonMsfSession[]
+  sessions: Array<MsfSession & KeptRowMarks>
+  jobs: Array<MsfJob & KeptRowMarks>
+  non_msf_sessions: Array<NonMsfSession & KeptRowMarks>
   cache_age_seconds: number
   agent_busy: boolean
-  /** How many sandboxes did not answer: their sessions are missing from the lists. */
+  /** How many sandboxes did not answer: their sessions may be out of date or missing from the lists. */
   unavailable_count?: number
   /** Their instance ids, for holders of every session only. */
   unavailable?: string[]

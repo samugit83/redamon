@@ -55,7 +55,6 @@ const read = (query = '') => GET(new NextRequest(`http://x${SESSION_ROUTE_STATUS
 beforeEach(() => {
   h.guard.mockReset().mockResolvedValue(as('alice'))
   h.status.mockReset().mockResolvedValue({
-    mode: 'per_user',
     instances: [instance({}), instance({ instance: 'aaaaa2', view: 'act_as', warn: false, stop_at: 1_790_001_300 })],
   })
 })
@@ -66,7 +65,6 @@ describe('the person and the view come from the session', () => {
     expect(res.status).toBe(200)
     expect(res.headers.get('cache-control')).toBe('no-store')
     expect(await res.json()).toEqual({
-      mode: 'per_user',
       instances: [{ state: 'running', stop_at: 1_790_028_900, stop_reason: null, warn: true }],
     })
     expect(h.status).toHaveBeenCalledWith('alice')
@@ -80,7 +78,7 @@ describe('the person and the view come from the session', () => {
   })
 
   test('no token, host, instance, project hash, lease or port reaches the browser', async () => {
-    h.status.mockResolvedValue({ mode: 'per_user', instances: [{ ...instance({}), token: 'tok-secret', host: 'redamon-kali-x' }] })
+    h.status.mockResolvedValue({ instances: [{ ...instance({}), token: 'tok-secret', host: 'redamon-kali-x' }] })
     const text = await (await read()).text()
     for (const leak of ['tok-secret', 'redamon-kali', 'aaaaa1', '0123456789abcdef', 'hold', '4444', 'created_at', 'last_used']) {
       expect(text).not.toContain(leak)
@@ -94,9 +92,9 @@ describe('the person and the view come from the session', () => {
     expect(body.instances).toEqual([{ state: 'running', stop_at: 1_790_001_300, stop_reason: null, warn: false }])
   })
 
-  test('shared mode, or no sandbox running: no instance', async () => {
-    h.status.mockResolvedValue({ mode: 'shared', instances: [] })
-    expect(await (await read()).json()).toEqual({ mode: 'shared', instances: [] })
+  test('no sandbox running: no instance, and no mode is named', async () => {
+    h.status.mockResolvedValue({ mode: 'per_user', instances: [] })
+    expect(await (await read()).json()).toEqual({ instances: [] })
   })
 })
 

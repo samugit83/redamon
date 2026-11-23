@@ -75,8 +75,6 @@ export const POST = withRouteErrors(FAILED, async () => {
     after: { scope: who.scope, count, via: who.via },
     source: 'ui',
   })
-  // Shared mode stops no sandbox and the answer stays the one before group 1.
-  const sandboxes = 'error' in sandbox ? { sandboxes: { error: sandbox.error } }
-    : sandbox.mode === 'per_user' ? { sandboxes: { stopped: sandbox.stopped } } : {}
+  const sandboxes = 'error' in sandbox ? { sandboxes: { error: sandbox.error } } : { sandboxes: { stopped: sandbox.stopped } }
   return NextResponse.json({ scope: who.scope, stopped: count, ...sandboxes })
 })

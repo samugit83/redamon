@@ -168,9 +168,10 @@ class TestOneRequestOnly:
         executor._all_tools = {"execute_curl": _Tool()}
         executor._mcp_tool_names = set()
         values = {"AUTH_PROFILE": PROFILE}
-        # The shared sandbox's path: shared mode is named, since the default is
-        # per_user and no gateway answers here.
-        with mock.patch.object(tools.sandbox_router, "_last_mode", tools.sandbox_contract.MODE_SHARED), \
+        from one_sandbox import routed
+
+        # The call runs in the person's sandbox, whose client serves the tool.
+        with routed(executor._all_tools), \
              mock.patch.object(tools, "get_setting", side_effect=lambda k, d=None: values.get(k, d)), \
              mock.patch("project_settings.auth_scope_patterns", return_value=["*.target.test"]), \
              mock.patch.object(tools.output_offload, "maybe_offload", side_effect=lambda pid, name, out, **kw: out):

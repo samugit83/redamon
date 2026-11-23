@@ -1,10 +1,9 @@
 /**
  * Which shell sessions a person sees and drives (HD-01, HD-02).
  *
- * The Kali sandbox runs one msfconsole for the whole instance, so the agent's session
- * list holds every user's Metasploit sessions, the background jobs (the handlers that
- * catch them) and the netcat/socat listeners. A session belongs to the chat whose run
- * opened it (the session manager's session-to-chat map), the chat to its conversation
+ * The agent's session list gathers every running Kali sandbox's Metasploit sessions, background
+ * jobs (the handlers that catch them) and netcat/socat listeners. A session belongs to the chat
+ * whose run opened it (the session manager's session-to-chat map), the chat to its conversation
  * (`Conversation.sessionId`, unique) and the conversation to its project.
  *
  * - A session or listener of a project the effective user owns is visible, and of a
@@ -12,7 +11,7 @@
  *   Exploitation & shells, which counts only with the owner's consent; step 5.10),
  *   as `projectAccess()` answers it now. An admin acting as a collaborator reaches the
  *   share at read (D-22) and sees none of its sessions that way.
- * - Every other one, the untagged ones and all jobs need `shell_sessions_all`
+ * - Every other one, the unattributed ones and all jobs need `shell_sessions_all`
  *   (admins, the `shell_sessions` legacy grant, the escape hatch for pre-upgrade
  *   accounts), judged on the signed-in account: acting as someone never borrows
  *   their grant.
@@ -21,25 +20,24 @@
  * kill look their target up in the same list and refuse anything else, so an id that
  * is not in the caller's list does not exist for them (404).
  *
- * With per-user Kali sandboxes (group 1, TD-11) every sandbox runs its own console, which numbers
- * its sessions from 1: the agent tags each session, job and listener with its `sandbox` instance (the
- * shared container's as `shared`), and a target is the pair (instance, number). The pair is looked up
- * whole and its own project authorized, so a number the caller may drive in one sandbox never
- * reaches the same number in another. A row without a tag is the shared container of shared mode,
- * reached only when no instance is named.
+ * Every person's sandbox runs its own console, which numbers its sessions from 1 (group 1, TD-11):
+ * the agent tags each session, job and listener with its `sandbox` instance, and a target is the
+ * pair (instance, number). The pair is looked up whole and its own project authorized, so a number
+ * the caller may drive in one sandbox never reaches the same number in another. A row without an
+ * instance tag stands for no project and is never a drive target.
  *
  * A sandbox's root answers its session manager, chat ids included, so a per-user row counts for its
  * chat's project only when the agent's own tags (`sandbox_user`, `sandbox_view`, which the agent adds
  * from the sandbox handle after the sandbox's row) name the person who wrote that chat AND the project
  * is one that person's sandbox mounts for that view (the gateway's mount list, read fresh). Otherwise
- * the row is unattributed, as an untagged one: only holders of every session see and drive it. The
+ * the row is unattributed: only holders of every session see it. The
  * tags never reach the browser (the instance stays opaque, TD-11). Rows whose id is not the session
  * manager's shape are dropped: the id goes into a browser URL.
  */
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { getEffectiveUser, requireSession } from '@/lib/session'
-import { SHARED_INSTANCE, VIEWS, type SandboxView } from '@/lib/sandbox/contract'
+import { VIEWS, type SandboxView } from '@/lib/sandbox/contract'
 import { sandboxProjectsFor } from '@/lib/sandbox/gateway'
 import { orchestratorList, validInstance, validUserId } from '@/lib/sandbox/orchestratorClient'
 import { PERMISSIONS } from './permissions'
@@ -57,7 +55,7 @@ export interface VisibleSessions {
   non_msf_sessions: ProjectRow[]
   cache_age_seconds?: unknown
   agent_busy?: unknown
-  /** How many sandboxes the agent could not ask (per-user mode): their sessions are missing. */
+  /** How many sandboxes the agent could not ask: their sessions may be out of date or missing. */
   unavailable_count?: number
   /**
    * Their instance ids: all of them for holders of every session; for anyone else only those that
@@ -98,12 +96,12 @@ function withoutPerson<T extends Row>(row: T): T {
   return rest as T
 }
 
-/** A sandbox instance as the agent and the drive routes name it: six hex characters, or `shared`. */
+/** A sandbox instance as the agent and the drive routes name it: six hex characters. */
 export function isSandboxInstance(value: unknown): value is string {
-  return value === SHARED_INSTANCE || validInstance(value)
+  return validInstance(value)
 }
 
-/** The instance a row of the agent's list belongs to; null for the untagged rows of shared mode. */
+/** The instance a row of the agent's list belongs to; null for a row without one. */
 function rowSandbox(row: Row): string | null {
   return typeof row.sandbox === 'string' && row.sandbox ? row.sandbox : null
 }
@@ -169,11 +167,11 @@ async function chatProjects(chatIds: (string | null)[]): Promise<Map<string, Cha
 }
 
 /**
- * Whether a row's chat may stand for its project. The shared container's rows (untagged or `shared`)
- * keep the chat rule they always had. A per-user row counts only when the agent's person tag names
- * the chat's author and the project is that person's own or in their sandbox's mount list for the
- * tagged view (read once per person and view; a failed read attributes nothing). Each call makes one
- * judge, so a list is judged against one read of the mount lists.
+ * Whether a row's chat may stand for its project. A row counts only when it names its sandbox
+ * instance, the agent's person tag names the chat's author, and the project is that person's own or
+ * in their sandbox's mount list for the tagged view (read once per person and view; a failed read
+ * attributes nothing). A row without an instance attributes nothing. Each call makes one judge, so a
+ * list is judged against one read of the mount lists.
  */
 export function chatAttribution(): (row: Row, chat: ChatProject | undefined) => Promise<ChatProject | undefined> {
   const mounts = new Map<string, Promise<string[] | null>>()
@@ -187,8 +185,7 @@ export function chatAttribution(): (row: Row, chat: ChatProject | undefined) => 
     return list
   }
   return async (row, chat) => {
-    if (!chat) return undefined
-    if (!validInstance(row.sandbox)) return chat
+    if (!chat || !validInstance(row.sandbox)) return undefined
     const person = sandboxPersonOf(row)
     if (!person || chat.authorId !== person.userId) return undefined
     if (chat.ownerId === person.userId) return chat
@@ -283,20 +280,19 @@ export async function visibleSessions(payload: unknown, viewer: SessionsViewer):
  * for its chat's project only when that project is in the sandbox person's mount list for its view
  * (`chatAttribution`), so an instance can hold such a row only when it is the viewer's own, or its
  * mount list holds a project whose sessions the viewer may see (her own, or shared with her at the
- * sessions level, as `visibleSessions` judges a row). `shared` names no person. No other instance id
- * is sent (S16 F3); when the running sandboxes cannot be read, only `shared` is named.
+ * sessions level, as `visibleSessions` judges a row). No other instance id is sent (S16 F3); when the
+ * running sandboxes cannot be read, none is named.
  */
 async function unavailableForViewer(instances: string[], viewer: SessionsViewer): Promise<string[]> {
-  const named = new Set<string>(instances.filter((i) => i === SHARED_INSTANCE))
-  const perUser = instances.filter((i) => i !== SHARED_INSTANCE)
-  if (perUser.length > 0) {
+  const named = new Set<string>()
+  if (instances.length > 0) {
     let running = new Map<string, RunningSandbox[]>()
     try {
       running = await runningByInstance()
     } catch {
       running = new Map()
     }
-    for (const instance of perUser) {
+    for (const instance of instances) {
       for (const sandbox of running.get(instance) ?? []) {
         if (await holdsViewerRows(viewer, sandbox)) {
           named.add(instance)
@@ -386,7 +382,7 @@ async function judgeViewerRows(viewer: SessionsViewer, { userId, view }: Running
 
 /**
  * Whether `viewer` may drive the session or job `id` of sandbox `sandbox` in the agent's list, and
- * through what. The pair is matched whole: `sandbox` null matches only an untagged row (shared mode).
+ * through what. The pair is matched whole; a row without an instance is never a target.
  * Null when it is not in the caller's view (the route answers 404). Driving another project's
  * session under the escape hatch is a use, recorded as such.
  */
@@ -395,14 +391,15 @@ export async function authorizeSessionTarget(
   viewer: SessionsViewer,
   kind: 'session' | 'job',
   id: string,
-  sandbox: string | null = null,
+  sandbox: string,
 ): Promise<SessionTarget | null> {
+  if (!validInstance(sandbox)) return null
   const { sessions, jobs } = payloadParts(payload)
   const matches = (kind === 'session' ? sessions : jobs).filter(r => String(r.id) === id && rowSandbox(r) === sandbox)
   // One console never lists a number twice; two rows for one pair is an answer this cannot trust.
   if (matches.length !== 1) return null
   const row = matches[0]
-  const person = validInstance(row.sandbox) ? sandboxPersonOf(row) : null
+  const person = sandboxPersonOf(row)
   const sandboxUser = person ? { sandboxUser: person.userId } : {}
   let projectId: string | null = null
   if (kind === 'session') {

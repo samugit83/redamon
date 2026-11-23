@@ -31,7 +31,8 @@ STAGING_DIRNAME = ".staging"
 SWAP_RECORD = "swap.json"
 SWAP_ENTRY = "entry"
 # A real record is `{"target_rel": ...}`, a few hundred bytes at most. The boot read is
-# bounded because a shell in the shared Kali container could write .staging (D16, TD-18).
+# bounded so a planted record can never make it unbounded (D16, TD-18); no sandbox
+# mounts .staging.
 SWAP_RECORD_MAX_BYTES = 65_536
 
 # Injectable for tests; must return an object with a `.free` attribute.

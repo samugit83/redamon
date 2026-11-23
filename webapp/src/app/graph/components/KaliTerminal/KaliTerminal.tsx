@@ -23,9 +23,6 @@ function getWsUrl(ticket?: string): string {
   return buildAgentWsUrl('/ws/kali-terminal', ticket)
 }
 
-/** Always on screen: the sandbox, its /workspace and its shell history are one for every project. */
-export const SHARED_ENVIRONMENT_NOTICE = "Shared environment: other projects' files are visible here."
-
 /**
  * The line for a ticket the terminal could not use: the mint's own refusal
  * (no terminal grant, expired session, no project access, a version activation
@@ -503,7 +500,6 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
           </button>
         </div>
       </div>
-      <div className={styles.sharedNotice} role="note">{SHARED_ENVIRONMENT_NOTICE}</div>
       {sandboxBanner && <div className={styles.sandboxBanner} role="status">{sandboxBanner}</div>}
       <div ref={termRef} className={styles.terminal} role="application" aria-label="Kali Linux terminal" />
     </div>

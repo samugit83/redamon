@@ -12,16 +12,8 @@
 
 export const CONTRACT_VERSION = 1
 
-// The switch. The orchestrator reads KALI_SANDBOX_MODE; the webapp only relays the
-// mode the orchestrator answers.
-export const MODES = ['shared', 'per_user'] as const
-export const DEFAULT_MODE = 'per_user'
-
 // `act_as` is the separate sandbox an admin acting as a person works in.
 export const VIEWS = ['own', 'act_as'] as const
-
-// The instance name of the shared redamon-kali container's sessions while it still runs.
-export const SHARED_INSTANCE = 'shared'
 
 // Orchestrator routes (orchestrator key). `{user_id}` and `{lease_id}` are path
 // segments the caller fills and encodes.
@@ -34,13 +26,11 @@ export const ROUTE_STOP_PROJECT = '/sandboxes/stop-project'
 export const ROUTE_STOP_ALL = '/sandboxes/stop-all'
 export const ROUTE_STATUS = '/sandboxes/{user_id}'
 export const ROUTE_LIST = '/sandboxes'
-export const ROUTE_MODE = '/sandboxes/mode'
 
 // The keys of an `ensure` answer (EnsureRunning, EnsureStarting below). Both carry
 // `fresh`: a non-waiting call (the warm-up) is often the one that creates the
 // instance, and a fresh start writes `sandbox.started` and turns tunnels off.
 export const ENSURE_RUNNING_KEYS = [
-  'mode',
   'user_id',
   'view',
   'instance',
@@ -56,7 +46,7 @@ export const ENSURE_RUNNING_KEYS = [
   'stop_reason',
   'warn',
 ] as const
-export const ENSURE_STARTING_KEYS = ['mode', 'state', 'instance', 'fresh'] as const
+export const ENSURE_STARTING_KEYS = ['state', 'instance', 'fresh'] as const
 
 // Agent -> webapp internal routes (master key), the browser's status route, and the
 // agent routes the webapp calls (master key).
@@ -121,8 +111,8 @@ export const MODAL_REFUSED_BODY =
   'You cannot use the Kali sandbox on this project. Ask its owner for Use AI agent or Exploitation & shells.'
 export const MODAL_RETRY_LABEL = 'Retry'
 export const MODAL_CLOSE_LABEL = 'Close'
-export const PARTIAL_ANSWER_ONE = '1 sandbox did not answer; its sessions are not shown'
-export const PARTIAL_ANSWER_MANY = '{n} sandboxes did not answer; their sessions are not shown'
+export const PARTIAL_ANSWER_ONE = '1 sandbox did not answer; its sessions may be out of date or missing'
+export const PARTIAL_ANSWER_MANY = '{n} sandboxes did not answer; their sessions may be out of date or missing'
 export const SHARE_KEYS_LENT_TEXT =
   "This person's agent runs on this project use your WPScan, URLScan and ProjectDiscovery keys inside a Kali sandbox, where this person can read them while their runs use them."
 
@@ -134,7 +124,6 @@ export const START_TIMEOUT_S = 300
 // own wait on the webapp.
 export const ORCHESTRATOR_ENSURE_TIMEOUT_S = 315
 
-export type SandboxMode = (typeof MODES)[number]
 export type SandboxView = (typeof VIEWS)[number]
 export type SandboxState = (typeof STATES)[number]
 export type LeaseKind = (typeof LEASE_KINDS)[number]
@@ -200,7 +189,6 @@ export interface EnsureRequest {
 }
 
 export interface EnsureRunning {
-  mode: 'per_user'
   user_id: string
   view: SandboxView
   instance: string
@@ -220,18 +208,13 @@ export interface EnsureRunning {
 
 /** The 202 of a call that did not wait (`wait: false` or `touch`). */
 export interface EnsureStarting {
-  mode: 'per_user'
   state: 'starting'
   instance: string
   /** This call created the instance: the same rule as EnsureRunning.fresh. */
   fresh: boolean
 }
 
-export interface EnsureShared {
-  mode: 'shared'
-}
-
-export type EnsureAnswer = EnsureRunning | EnsureStarting | EnsureShared
+export type EnsureAnswer = EnsureRunning | EnsureStarting
 
 export interface LeaseRequest {
   instance: string
@@ -262,7 +245,6 @@ export interface SandboxInstanceStatus {
 }
 
 export interface SandboxStatusAnswer {
-  mode: SandboxMode
   instances: SandboxInstanceStatus[]
 }
 
@@ -277,7 +259,6 @@ export interface SandboxListEntry {
 }
 
 export interface SandboxListAnswer {
-  mode: SandboxMode
   sandboxes: SandboxListEntry[]
 }
 

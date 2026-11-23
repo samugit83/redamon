@@ -67,10 +67,10 @@ const reached = (fn: ReturnType<typeof vi.fn>, at: number) => fn.mock.calls.flat
 
 beforeEach(() => {
   h.agentUp = false
-  h.accessChanged.mockReset().mockResolvedValue({ mode: 'per_user', stopped: 1 })
-  h.accountEnded.mockReset().mockResolvedValue({ mode: 'per_user', stopped: 1 })
-  h.accountsEnded.mockReset().mockResolvedValue({ mode: 'per_user', stopped: 1 })
-  h.backstop.mockReset().mockResolvedValue({ mode: 'per_user', stopped: 0 })
+  h.accessChanged.mockReset().mockResolvedValue({ stopped: 1 })
+  h.accountEnded.mockReset().mockResolvedValue({ stopped: 1 })
+  h.accountsEnded.mockReset().mockResolvedValue({ stopped: 1 })
+  h.backstop.mockReset().mockResolvedValue({ stopped: 0 })
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(console, 'info').mockImplementation(() => {})
 })

@@ -297,7 +297,8 @@ class WhoGetsTheGuard(unittest.TestCase):
     def test_user_servers_connect_through_the_guard_system_servers_do_not(self):
         from tools import _build_system_mcp_servers
         user = mcp_registry.MCPServer.model_validate(_server("https://mcp.example.test/sse"))
-        cfg, _ = mcp_registry.to_mcp_servers_dict([user, *_build_system_mcp_servers()])
+        host = contract.container_name("bob", "own", "a1b2c3")
+        cfg, _ = mcp_registry.to_mcp_servers_dict([user, *_build_system_mcp_servers(host, "t" * 43)])
         self.assertIs(cfg["srv-x"]["httpx_client_factory"], mcp_registry.user_server_http_client)
         for sid in mcp_registry.SYSTEM_SERVER_IDS:
             self.assertNotIn("httpx_client_factory", cfg[sid])
@@ -313,7 +314,7 @@ class WhoGetsTheGuard(unittest.TestCase):
         handle = sandbox_router.SandboxHandle(
             user_id="bob", view="own", instance="a1b2c3",
             host=contract.container_name("bob", "own", "a1b2c3"), token="t" * 43, tunnel_token="",
-            ports=contract.PORTS, reverse_port=4444, mode=contract.MODE_PER_USER)
+            ports=contract.PORTS, reverse_port=4444)
         cfg = sandbox_router.server_configs_for(handle)
         self.assertEqual(set(cfg), set(mcp_registry.SYSTEM_SERVER_IDS))
         for entry in cfg.values():

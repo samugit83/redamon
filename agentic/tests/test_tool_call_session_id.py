@@ -130,7 +130,7 @@ class TheWaveToolsSeeTheChat(unittest.IsolatedAsyncioTestCase):
         }
         with _settings():
             await execute_plan_node(state, _CONFIG, tool_executor=_recording_executor(seen),
-                                    streaming_callbacks={}, session_manager_base="http://x")
+                                    streaming_callbacks={})
         self.assertEqual(seen, ["chat-1", "chat-1"])
 
     async def test_a_fireteam_members_wave_uses_the_session_id_its_state_carries(self):
@@ -141,7 +141,7 @@ class TheWaveToolsSeeTheChat(unittest.IsolatedAsyncioTestCase):
         seen: list = []
         graph = build_fireteam_member_graph(
             llm_getter=lambda: None, tool_executor=_recording_executor(seen),
-            streaming_callbacks={}, session_manager_base="http://x", neo4j_creds=None,
+            streaming_callbacks={}, neo4j_creds=None,
         )
         state = {
             "messages": [], "current_iteration": 1, "max_iterations": 5,

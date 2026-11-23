@@ -1,7 +1,7 @@
 /**
  * POST /api/internal/agent/sandbox/ensure (group 1, B.10): the agent asks for the Kali sandbox of
  * the person it works for, `{userId, projectId?, wait?, actingAs?}`, and gets its address and
- * per-instance tokens (200), a start in progress (202), or shared mode (200 `{mode: "shared"}`).
+ * per-instance tokens (200) or a start in progress (202).
  *
  * The master key only (isInternalRequest; the scanner key is refused). The person is the agent's
  * claim, taken from a ticket, token or job it verified; this route cannot check who the agent acts

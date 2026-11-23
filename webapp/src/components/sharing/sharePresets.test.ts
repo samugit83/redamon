@@ -17,7 +17,6 @@ import {
   RAW_DATA_WARNING,
   SPEND_TOGGLE_IDS,
   READ_SHOWS_FINDINGS_WARNING,
-  SANDBOX_NOTICE,
   SHARE_PRESETS,
   SHARE_TOGGLES,
   TARGET_CREDENTIALS_WARNING,
@@ -94,22 +93,21 @@ describe('toggles and their warnings (HD-22, SH-29)', () => {
     ])
   })
 
-  test('Use AI agent and Exploitation name the shared sandbox (the registry labels kali_exec sandboxShared)', () => {
+  test('no toggle says the sandbox is shared: each person runs in their own Kali sandbox (group 1)', () => {
     const notices = Object.fromEntries(SHARE_TOGGLES.map(t => [t.id, t.notices]))
-    expect(notices.useAgent).toContain(SANDBOX_NOTICE)
-    expect(notices.exploit).toContain(SANDBOX_NOTICE)
+    for (const list of Object.values(notices)) expect(list.join(' ')).not.toMatch(/shared by every project|sandbox shared/)
+    expect(notices.useAgent).toEqual([SHARE_KEYS_LENT_TEXT, TARGET_CREDENTIALS_WARNING])
+    expect(notices.exploit).toEqual([SHARE_KEYS_LENT_TEXT])
     expect(notices.rawData).toEqual([RAW_DATA_WARNING])
-    expect(SANDBOX_NOTICE).toMatch(/sandbox shared by every project on this server/)
   })
 
   // Group 1, I11 (OD-G1-k): the owner's WPScan, URLScan and ProjectDiscovery keys reach the sandbox
-  // of a collaborator who runs the agent on the project, so both run toggles say so, right after the
-  // sandbox notice, whatever the sandbox mode (the text is true in both).
+  // of a collaborator who runs the agent on the project, so both run toggles say so, first.
   test('Use AI agent and Exploitation say the owner\'s third-party keys are lent (I11)', () => {
     const notices = Object.fromEntries(SHARE_TOGGLES.map(t => [t.id, t.notices]))
     for (const id of ['useAgent', 'exploit']) {
       expect(notices[id]).toContain(SHARE_KEYS_LENT_TEXT)
-      expect(notices[id].indexOf(SHARE_KEYS_LENT_TEXT)).toBe(notices[id].indexOf(SANDBOX_NOTICE) + 1)
+      expect(notices[id].indexOf(SHARE_KEYS_LENT_TEXT)).toBe(0)
     }
     for (const id of ['rawData', 'runScans', 'manage']) expect(notices[id]).not.toContain(SHARE_KEYS_LENT_TEXT)
     expect(SHARE_KEYS_LENT_TEXT).toMatch(/WPScan, URLScan and ProjectDiscovery keys inside a Kali sandbox/)

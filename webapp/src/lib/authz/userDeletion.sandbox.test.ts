@@ -27,7 +27,7 @@ const WORK = { sockets: { closed: 0 }, failed: [] }
 
 beforeEach(() => {
   h.onAccessReduced.mockReset().mockResolvedValue(WORK)
-  h.accountEnded.mockReset().mockResolvedValue({ mode: 'per_user', stopped: 1 })
+  h.accountEnded.mockReset().mockResolvedValue({ stopped: 1 })
 })
 afterEach(() => setFlagsForTests(null))
 

@@ -8,10 +8,11 @@
  */
 import { describe, test, expect, beforeEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
-// The Kali sandbox mode the orchestrator names: shared (group 1, D.2: every test sets it).
-vi.mock('@/lib/sandbox/gateway', () => ({ sandboxMode: async () => 'shared' }))
-
 const h = vi.hoisted(() => ({
+  ensureSandbox: vi.fn(),
+  sandboxStatus: vi.fn(),
+  push: vi.fn(),
+  agentFetch: vi.fn(),
   findUnique: vi.fn(),
   upsert: vi.fn(),
   executeRaw: vi.fn(),
@@ -26,6 +27,7 @@ vi.mock('@/lib/prisma', () => ({
     userSettings: {
       findUnique: (...a: unknown[]) => h.findUnique(...a),
       upsert: (...a: unknown[]) => h.upsert(...a),
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
     apiKeyRotationConfig: { findMany: (...a: unknown[]) => h.rotationFindMany(...a) },
     $executeRaw: (...a: unknown[]) => h.executeRaw(...a),
@@ -39,8 +41,19 @@ vi.mock('@/lib/session', () => ({
   isInternalRequest: () => false,
   isScannerRequest: () => false,
   getSession: async () => h.session,
+  authzIdentityOf: async (s: unknown) => ({ session: s, principal: {}, actingAs: null }),
 }))
 vi.mock('@/lib/orchestrator', () => ({ orchestratorFetch: vi.fn() }))
+// The tunnel goes to the person's own Kali sandbox, through the agent (group 1).
+vi.mock('@/lib/sandbox/gateway', () => ({
+  ensureSandbox: (...a: unknown[]) => h.ensureSandbox(...a),
+  sandboxStatus: (...a: unknown[]) => h.sandboxStatus(...a),
+}))
+vi.mock('@/lib/sandbox/agentCalls', () => ({ pushSandboxTunnel: (...a: unknown[]) => h.push(...a) }))
+vi.mock('@/lib/agentFetch', async (orig) => ({
+  ...(await orig() as Record<string, unknown>),
+  agentFetch: (...a: unknown[]) => h.agentFetch(...a),
+}))
 // The step-up's own outcomes are proved in stepUp.test.ts; here the double answers as
 // requireStepUp does: no password 403 step_up_required, a wrong one 403 step_up_failed.
 const mockStepUp = vi.hoisted(() => vi.fn(async (_req: unknown, password: unknown) => {
@@ -72,6 +85,10 @@ beforeEach(() => {
   h.rotationFindMany.mockResolvedValue([])
   h.upsert.mockImplementation(async ({ update }: { update: Record<string, unknown> }) => ({ ...STORED, ...update }))
   h.session = { userId: 'u1', role: 'standard' }
+  h.ensureSandbox.mockResolvedValue({ state: 'running', fresh: false, instance: 'a1b2c3' })
+  h.sandboxStatus.mockResolvedValue({ instances: [{ instance: 'a1b2c3', view: 'own', state: 'running' }] })
+  h.push.mockResolvedValue({ ok: true, status: 200 })
+  h.agentFetch.mockResolvedValue(new Response(JSON.stringify({ ngrok: { active: false }, chisel: { active: true } })))
 })
 
 describe('settings PUT: re-entry when an endpoint changes', () => {
@@ -110,16 +127,20 @@ describe('settings PUT: re-entry when an endpoint changes', () => {
     expect(res.status).toBe(400)
     expect((await res.json()).field).toBe('chiselAuth')
     expect(h.upsert).not.toHaveBeenCalled()
+    expect(h.push).not.toHaveBeenCalled()
     expect(h.fetch).not.toHaveBeenCalled()
   })
 
-  test('a new chisel URL with the auth typed again is saved and pushed', async () => {
+  test('a new chisel URL with the auth typed again is saved and pushed to the person\'s own sandbox', async () => {
     h.session = { userId: 'u1', role: 'admin' }
     // ID-25: re-pointing also takes the signed-in user's password (review of 1.6)
     const res = await put({ chiselServerUrl: 'http://vps2.example.com:9090', chiselAuth: 'user:typed', stepUpPassword: 'right-password' })
     expect(res.status).toBe(200)
-    const pushed = JSON.parse(h.fetch.mock.calls[0][1].body)
+    expect(h.push).toHaveBeenCalledTimes(1)
+    const [userId, pushed] = h.push.mock.calls[0]
+    expect(userId).toBe('u1')
     expect(pushed).toMatchObject({ chiselServerUrl: 'http://vps2.example.com:9090', chiselAuth: 'user:typed' })
+    expect(h.fetch).not.toHaveBeenCalled()
   })
 
   test('a whole-form save with nothing re-pointed keeps every masked secret', async () => {
@@ -148,6 +169,7 @@ describe('settings PUT: re-pointing a configured endpoint takes the password too
     const res = await put({ chiselServerUrl: 'http://collector.example.net:9090', chiselAuth: 'user:junk' })
     expect(res.status).toBe(403)
     expect(h.upsert).not.toHaveBeenCalled()
+    expect(h.push).not.toHaveBeenCalled()
     expect(h.fetch).not.toHaveBeenCalled()
     await put({ chiselServerUrl: 'http://collector.example.net:9090', chiselAuth: 'user:junk', stepUpPassword: 'right-password' })
     expect('stepUpPassword' in h.upsert.mock.calls[0][0].update).toBe(false)

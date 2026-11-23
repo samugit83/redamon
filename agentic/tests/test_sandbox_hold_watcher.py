@@ -16,7 +16,6 @@ not use, so the orchestrator's 8-hour no-use cap still applies; the watcher neve
 - The tunnel manager is read only with the instance's own tunnel token (the gateway's list
   carries none: the tunnel push hands it over through note_tunnel); the session manager only
   with the instance's own MCP token.
-- Shared mode: the list answers no instance and nothing else is done.
 - No token, user id or session content is logged.
 
 The webapp gateway and the sandboxes are stubbed with one httpx.MockTransport; time is a
@@ -59,8 +58,7 @@ NON_MSF = {"id": "nc-1", "type": "netcat", "info": "SECRET-NON-MSF-CONTENT"}
 class World:
     """The webapp's internal sandbox routes and every sandbox's session and tunnel managers."""
 
-    def __init__(self, mode=contract.MODE_PER_USER):
-        self.mode = mode
+    def __init__(self):
         self.instances = {}
         self.requests = []      # (method, host, port, path, body, headers, t)
         self.lease_answer = None
@@ -86,7 +84,7 @@ class World:
             user_id=person, view=view, instance=instance,
             host=contract.container_name(person, view, instance),
             token=self.inst(key)["token"], tunnel_token=self.inst(key)["tunnel_token"],
-            ports=contract.PORTS, reverse_port=4444, mode=contract.MODE_PER_USER)
+            ports=contract.PORTS, reverse_port=4444)
 
     def by_host(self, host):
         for key, data in self.instances.items():
@@ -130,9 +128,7 @@ class World:
         if path == contract.INTERNAL_ROUTE_LIST:
             if self.list_fails:
                 return httpx.Response(503, json={"code": "orchestrator_unavailable"})
-            if self.mode == contract.MODE_SHARED:
-                return httpx.Response(200, json={"mode": "shared", "sandboxes": []})
-            return httpx.Response(200, json={"mode": "per_user", "sandboxes": [
+            return httpx.Response(200, json={"sandboxes": [
                 {"user_id": p, "view": v, "instance": i, "host": contract.container_name(p, v, i),
                  "token": d["token"], "state": d["state"]}
                 for (p, v, i), d in self.instances.items()]})
@@ -178,7 +174,7 @@ class HoldTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.world = World()
         transport = httpx.MockTransport(self.world.handler)
-        router._reset(mode=None)
+        router._reset()
         self._patches = [
             mock.patch.object(router, "_transport", transport),
             mock.patch.object(sandbox_hold, "_transport", transport),
@@ -195,7 +191,7 @@ class HoldTest(unittest.IsolatedAsyncioTestCase):
         await router._shutdown()
         for p in reversed(self._patches):
             p.stop()
-        router._reset(mode=None)
+        router._reset()
 
     def lease_id(self, key):
         return sandbox_hold.hold_lease_id(self.world.handle(key))
@@ -581,13 +577,8 @@ class TestTokens(HoldTest):
         self.assertEqual(self.world.reads("tunnel"), [])
         self.assertEqual(self.world.leases(), [])
 
-    async def test_note_tunnel_ignores_shared_and_malformed_handles(self):
+    async def test_note_tunnel_ignores_malformed_handles(self):
         key = self.world.add("alice", tunnel="ngrok")
-        shared = router.SandboxHandle(
-            user_id="alice", view="own", instance=contract.SHARED_INSTANCE, host="kali-sandbox",
-            token="x" * 20, tunnel_token="y" * 20, ports=contract.PORTS, reverse_port=4444,
-            mode=contract.MODE_SHARED)
-        self.watcher.note_tunnel(shared)
         bad = self.world.handle(key)
         bad.tunnel_token = "has space\r\n"
         self.watcher.note_tunnel(bad)
@@ -613,16 +604,7 @@ class TestTokens(HoldTest):
             self.assertNotIn(secret, text)
 
 
-class TestModes(HoldTest):
-
-    async def test_shared_mode_does_nothing(self):
-        self.world.mode = contract.MODE_SHARED
-        self.world.add("alice", sessions=[SESSION])
-        await self.watcher.watch_once()
-        await self.watcher.renew_once()
-        self.assertEqual(self.world.reads("sessions"), [])
-        self.assertEqual(self.world.leases(), [])
-        self.assertEqual(self.world.releases(), [])
+class TestGatewayDown(HoldTest):
 
     async def test_a_gateway_that_is_down_raises_nothing(self):
         with mock.patch.dict(router.INTERNAL_HEADERS, {"X-Internal-Key": ""}):
@@ -630,7 +612,7 @@ class TestModes(HoldTest):
             await self.watcher.renew_once()
         self.world.add("alice", sessions=[SESSION])
         self.world.list_fails = True
-        router._reset(mode=contract.MODE_PER_USER)
+        router._reset()
         await self.watcher.watch_once()
         self.assertEqual(self.world.leases(), [])
 

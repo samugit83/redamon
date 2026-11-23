@@ -17,7 +17,7 @@ const AUTH_COOKIE_NAME = 'redamon-auth'
 // It must NOT be written as '/api/mcp': matching is
 // `pathname === p || pathname.startsWith(p + '/')`, so that entry would make
 // the OUTBOUND plugin-admin routes (/api/mcp/manifest|reload|test) public too.
-const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/auth/logout', '/api/health', '/api/version/check', '/api/global/tunnel-config/sync', '/api/mcp-server']
+const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/auth/logout', '/api/health', '/api/version/check', '/api/mcp-server']
 
 // Invite links (step 2.9): the page a link opens and its API are sessionless while
 // RBAC_IDENTITY_ENABLED is on; with it off they do not exist and answer as any unknown path

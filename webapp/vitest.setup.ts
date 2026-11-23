@@ -11,15 +11,15 @@ import { vi } from 'vitest'
 // The Kali sandbox lifecycle hooks (group 1, src/lib/sandbox/lifecycle.ts) call the recon
 // orchestrator after every access loss, project deletion, emergency stop and RBAC sweep; a test that
 // does not stub fetch would reach whatever answers on its URL (a dev stack takes the default key).
-// Every test gets them answering shared mode, the product before per-user sandboxes; a test of a hook
-// mocks the module itself, and lifecycle.test.ts asks for the real one with vi.unmock.
+// Every test gets them answering "none stopped" without asking anybody; a test of a hook mocks the
+// module itself, and lifecycle.test.ts asks for the real one with vi.unmock.
 vi.mock('@/lib/sandbox/lifecycle', async (importOriginal) => {
   const real = await importOriginal<typeof import('@/lib/sandbox/lifecycle')>()
-  const shared = async () => ({ mode: 'shared' as const })
+  const noneStopped = async () => ({ stopped: 0 })
   return {
     ...real,
-    sandboxAccessChanged: shared, sandboxAccountEnded: shared, sandboxAccountsEnded: shared, sandboxProjectDeleted: shared,
-    sandboxEmergencyStop: shared, reconcileRunningSandboxes: shared,
+    sandboxAccessChanged: noneStopped, sandboxAccountEnded: noneStopped, sandboxAccountsEnded: noneStopped,
+    sandboxProjectDeleted: noneStopped, sandboxEmergencyStop: noneStopped, reconcileRunningSandboxes: noneStopped,
   }
 })
 

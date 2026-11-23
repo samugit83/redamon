@@ -1,7 +1,8 @@
 """Doubles for the agent's per-user sandbox routes (group 1, S11): the webapp's internal
 sandbox routes and every sandbox's own HTTP servers (the session manager on 8013, the
-tunnel manager on 8015), plus the shared ``kali-sandbox`` container, behind one
-``httpx.MockTransport``. Not a test file (no ``test_`` prefix).
+tunnel manager on 8015), behind one ``httpx.MockTransport``. An old shared container
+still answers at the ``kali-sandbox`` address with its old token, so a test can prove
+nothing reaches it. Not a test file (no ``test_`` prefix).
 
 A ``Fleet`` holds the instances; the gateway answers from it exactly as B.9/B.10 say
 (``ensure`` 200/202, ``lease``, ``release``, ``list`` with the MCP token and no tunnel
@@ -107,7 +108,8 @@ class Sandbox:
 
 
 class SharedContainer(Sandbox):
-    """Today's ``redamon-kali`` (``kali-sandbox``), with the shared MCP token."""
+    """The old ``redamon-kali`` (``kali-sandbox``) with its shared MCP token: nothing may
+    reach it."""
 
     def __init__(self):
         super().__init__("shared-container")
@@ -122,8 +124,7 @@ class SharedContainer(Sandbox):
 class Fleet:
     """The webapp gateway and every sandbox behind it."""
 
-    def __init__(self, mode: str = contract.MODE_PER_USER):
-        self.mode = mode
+    def __init__(self):
         self.sandboxes: List[Sandbox] = []
         self.shared = SharedContainer()
         self.gateway_requests: List[tuple] = []
@@ -216,8 +217,6 @@ class Fleet:
             answer = self.ensure_answer(body) if callable(self.ensure_answer) else self.ensure_answer
             if answer is not None:
                 return answer
-        if self.mode == contract.MODE_SHARED:
-            return 200, {"mode": "shared"}
         person = body["userId"]
         view = contract.VIEW_ACT_AS if body.get("actingAs") else contract.VIEW_OWN
         box = self.current(person, view)
@@ -230,20 +229,17 @@ class Fleet:
             # A cold start: every non-waiting ensure answers 202 until a waiting one
             # sees the instance healthy.
             if not body.get("wait"):
-                return 202, {"mode": "per_user", "state": "starting",
-                             "instance": box.instance, "fresh": True}
+                return 202, {"state": "starting", "instance": box.instance, "fresh": True}
             box.starting = False
         return 200, {
-            "mode": "per_user", "user_id": person, "view": view, "instance": box.instance,
+            "user_id": person, "view": view, "instance": box.instance,
             "host": box.host, "token": box.token, "tunnel_token": box.tunnel_token,
             "ports": dict(contract.PORTS), "reverse_port": box.reverse_port,
             "projects": box.projects, "state": "running", "fresh": False,
             "stop_at": 2e10, "stop_reason": None, "warn": False}
 
     def listing(self) -> dict:
-        if self.mode == contract.MODE_SHARED:
-            return {"mode": "shared", "sandboxes": []}
-        return {"mode": "per_user", "sandboxes": [
+        return {"sandboxes": [
             {"user_id": b.person, "view": b.view, "instance": b.instance, "host": b.host,
              "token": b.token, "state": b.state}
             for b in self.sandboxes]}

@@ -102,7 +102,7 @@ class SandboxBrowser:
     """The sandbox's browser, for the person bound to the work when it renders (group 1):
     a job's owner, a synchronous route's account, a chat run's person (the run actor, in the
     `act_as` view under act-as). No person, no browser: a page is never rendered in someone
-    else's sandbox. In shared mode the agent's own MCP manager renders it, as before."""
+    else's sandbox."""
 
     async def get_tools(self) -> list:
         from sandbox_router import sandbox_user
@@ -114,41 +114,15 @@ class _SandboxBrowserTool:
     name = BROWSER_TOOL
 
     async def ainvoke(self, args: dict) -> Any:
-        import sandbox_contract
         import sandbox_router
 
         # One `tradecraft` lease for the render, ended with it.
         async with sandbox_router.using(sandbox_router.sandbox_user(), project_id=None,
                                         kind="tradecraft") as handle:
-            if handle.mode == sandbox_contract.MODE_PER_USER:
-                tool = await sandbox_router.tool_for(BROWSER_TOOL, handle)
-            else:
-                tool = await _shared_browser_tool()
+            tool = await sandbox_router.tool_for(BROWSER_TOOL, handle)
             if tool is None:
                 raise LookupError("browser_unavailable")
             return await tool.ainvoke(args)
-
-
-async def _shared_browser_tool() -> Any:
-    """The agent's own manager's browser. A manager loaded before any mode was answered, or
-    reloaded in per-user mode, holds no system server: the executor's shared loader connects
-    them first, as its shared call path does."""
-    tool = await _manager_browser_tool()
-    if tool is None:
-        loader = getattr(getattr(_orchestrator(), "tool_executor", None), "shared_system_loader", None)
-        if loader is not None:
-            try:
-                await loader()
-            except Exception as exc:  # noqa: BLE001 - the render reports the browser missing
-                logger.warning(f"[tradecraft] loading the shared system servers failed: {type(exc).__name__}")
-            tool = await _manager_browser_tool()
-    return tool
-
-
-async def _manager_browser_tool() -> Any:
-    manager = _orchestrator_mcp_manager()
-    tools = await manager.get_tools() if manager is not None else []
-    return next((t for t in tools or [] if getattr(t, "name", "") == BROWSER_TOOL), None)
 
 
 @contextlib.contextmanager

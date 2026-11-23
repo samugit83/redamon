@@ -104,13 +104,24 @@ COMPOSE_LABEL_OVERRIDES = {sc.COMPOSE_PROJECT_LABEL: "", sc.COMPOSE_SERVICE_LABE
 # compose project), and adoption, removal and network reuse touch only their own:
 # a test stack or a second checkout on the same daemon keeps its sandboxes.
 LABEL_OWNER = "redamon.sandbox.owner"
+# The image the orchestrator starts the capture proxy from (ContainerManager.
+# _capture_image; a test pins the two). Only a proxy on its current id joins a
+# sandbox network: an older one may predate the egress guard it relies on there.
+CAPTURE_PROXY_IMAGE_ENV = "CAPTURE_PROXY_IMAGE"
+CAPTURE_PROXY_IMAGE_DEFAULT = "redamon-capture-proxy:latest"
+
+
+def capture_proxy_image() -> str:
+    return os.environ.get(CAPTURE_PROXY_IMAGE_ENV, CAPTURE_PROXY_IMAGE_DEFAULT)
+
+
 # An older image of the sandbox is one these labels of the current image match
 # (compose stamps them at build); the broker label already rules out a scan's.
 IMAGE_LINEAGE_LABELS = (sc.COMPOSE_SERVICE_LABEL, "description")
 # Host-config fields the manager never sets: adoption requires each empty.
 NEUTRAL_HOST_KEYS = (
     "Binds", "VolumesFrom", "Devices", "DeviceCgroupRules", "DeviceRequests", "Links",
-    "ExtraHosts", "GroupAdd", "DnsOptions", "DnsSearch", "Tmpfs", "Sysctls", "Ulimits",
+    "GroupAdd", "DnsOptions", "DnsSearch", "Tmpfs", "Sysctls", "Ulimits",
     "CapDrop", "Privileged", "PublishAllPorts", "OomKillDisable", "PidMode", "UTSMode",
     "UsernsMode", "Cgroup", "CgroupParent", "VolumeDriver", "StorageOpt")
 
@@ -355,9 +366,6 @@ class SandboxManager:
 
     # --- Small helpers --------------------------------------------------------
 
-    def mode(self) -> str:
-        return sc.mode_from_env(os.environ.get(sc.MODE_ENV))
-
     def _user_lock(self, user_id: str) -> asyncio.Lock:
         lock = self._user_locks.get(user_id)
         if lock is None:
@@ -510,9 +518,6 @@ class SandboxManager:
                     raise ValueError(sc.ERR_INVALID_PROJECT_ID)
         except ValueError as e:
             raise SandboxInvalid(str(e)) from None
-        mode = self.mode()
-        if mode == sc.MODE_SHARED:
-            return {"mode": sc.MODE_SHARED}
         if touch:
             wait = False
         # Registered before the first await, so a stop called in the same loop pass
@@ -524,20 +529,19 @@ class SandboxManager:
                 self._ensure_locked(user_id, view, tuple(projects), need_project, pending))
             if inst.state == "starting":
                 if not wait:
-                    return {"mode": mode, "state": "starting", "instance": inst.instance,
-                            "fresh": fresh}
+                    return {"state": "starting", "instance": inst.instance, "fresh": fresh}
                 await self._wait_ready(inst)
             inst.last_used = self.clock()
-            return self._running_answer(inst, fresh, mode)
+            return self._running_answer(inst, fresh)
         except SandboxError as e:
             if not touch:
                 raise
             logger.info(f"[sandbox] warm-up for key={sc.sandbox_key(user_id, view)} not started: {e.code}")
-            return {"mode": mode, "state": "unavailable", "instance": None, "fresh": False}
+            return {"state": "unavailable", "instance": None, "fresh": False}
 
-    def _running_answer(self, inst: Instance, fresh: bool, mode: str) -> dict:
+    def _running_answer(self, inst: Instance, fresh: bool) -> dict:
         now = self.clock()
-        return {"mode": mode, "user_id": inst.user_id, "view": inst.view,
+        return {"user_id": inst.user_id, "view": inst.view,
                 "instance": inst.instance, "host": inst.host, "token": inst.token,
                 "tunnel_token": inst.tunnel_token, "ports": dict(sc.PORTS),
                 "reverse_port": inst.reverse_port, "projects": list(inst.projects),
@@ -704,11 +708,19 @@ class SandboxManager:
         # docker-py 7.2 drops it anyway; the start polls at the 2 s interval.
         healthcheck.pop("start_interval", None)
         kwargs = dict(
-            image=sc.IMAGE, name=inst.host, hostname=sc.CONTAINER_HOSTNAME, detach=True,
+            # The hostname is a DNS name on the sandbox network the agent and the proxy
+            # join, so it is the sandbox's own unique name; sc.SELF_NAME resolves only
+            # inside, to the sandbox itself.
+            image=sc.IMAGE, name=inst.host, hostname=inst.host, extra_hosts=dict(sc.EXTRA_HOSTS),
+            detach=True,
             environment=env, labels=labels, mounts=self._mounts(inst, custom),
             network=inst.network, cap_add=list(sc.CAP_ADD), security_opt=list(sc.SECURITY_OPT),
             dns=list(sc.DNS), restart_policy=dict(sc.RESTART_POLICY), healthcheck=healthcheck,
             cpu_shares=SANDBOX_CPU_SHARES,
+            # Docker's init as PID 1 reaps what a shell leaves behind; the image's
+            # PID 1 (run_servers.py) does not, so orphans would stay zombies and
+            # count against the pids limit until the sandbox stops.
+            init=True,
             **sc.limits(self._envelope(), self.cpu_count()))
         pool = self._pool()
         if inst.pool_port is not None and pool is not None:
@@ -912,7 +924,7 @@ class SandboxManager:
                         "stop_at": self._stop_at(inst, now),
                         "stop_reason": self._shown_stop_reason(inst),
                         "warn": self._warn(inst, now), "reverse_port": inst.reverse_port})
-        return {"mode": self.mode(), "instances": out}
+        return {"instances": out}
 
     def list_running(self) -> list:
         """Running and draining instances with their address and token, for the
@@ -1092,8 +1104,7 @@ class SandboxManager:
     # --- The idle loop (B.7) --------------------------------------------------
 
     async def run_idle_loop(self, sleep: Optional[Callable] = None) -> None:
-        """Every ``IDLE_CHECK_S``, in both modes, until cancelled: per-user
-        instances left after a switch back to ``shared`` stop as they go idle."""
+        """Every ``IDLE_CHECK_S``, until cancelled."""
         sleep = sleep or asyncio.sleep
         while True:
             await sleep(sc.IDLE_CHECK_S)
@@ -1261,7 +1272,12 @@ class SandboxManager:
                                 f"[sandbox] the capture proxy's CAPTURE_BLOCKED_IPS does not hold "
                                 f"{sc.SUBNET_POOL}; it is left off sandbox networks")
             else:
-                eligible.append((proxy, None))
+                problem = self._proxy_build_problem(proxy)
+                if problem:
+                    self._warn_once(f"proxy-build:{proxy.id}",
+                                    f"[sandbox] the capture proxy {problem}; it is left off sandbox networks")
+                else:
+                    eligible.append((proxy, None))
         ids = frozenset(c.id for c, _ in eligible)
         cached = self._guest_cache.get(network)
         if not force and cached and self.clock() - cached[0] < sc.IDLE_CHECK_S and ids <= cached[1]:
@@ -1350,6 +1366,27 @@ class SandboxManager:
             if net.version == pool.version and pool.subnet_of(net):
                 return True
         return False
+
+    def _proxy_build_problem(self, container) -> Optional[str]:
+        """Why the proxy is not the one the orchestrator starts, or None: it must
+        run the current proxy image's id, and mitmdump with raw TCP relaying off
+        (a stream after CONNECT that is not HTTP would pass the egress guard,
+        which reads HTTP only, to any address another sandbox's included)."""
+        try:
+            current = self.client.images.get(capture_proxy_image())
+        except (ImageNotFound, NotFound, APIError):
+            return "image is missing, so its code cannot be checked"
+        attrs = container.attrs or {}
+        if attrs.get("Image") != current.id:
+            return "does not run the current capture proxy image"
+        config = attrs.get("Config") or {}
+        cmd = [str(t) for t in config.get("Cmd") or []]
+        if config.get("Entrypoint") or not cmd or cmd[0] != "mitmdump":
+            return "does not run mitmdump as the orchestrator starts it"
+        rawtcp = [i for i, token in enumerate(cmd) if "rawtcp" in token]
+        if len(rawtcp) != 1 or cmd[rawtcp[0]] != "rawtcp=false" or cmd[rawtcp[0] - 1] != "--set":
+            return "may relay raw TCP (its command does not set rawtcp=false once)"
+        return None
 
     def _connect_sync(self, net, container, aliases) -> None:
         api = self.client.api
@@ -1726,8 +1763,9 @@ class SandboxManager:
         """B.7 at orchestrator start, over this stack's sandboxes only (its owner
         label: another RedAmon stack on the same daemon keeps its own). A running,
         healthy sandbox exactly as this orchestrator starts it is kept; one that
-        differs only by an older Kali image or a changed port pool is kept
-        draining (it stops when unused, reason ``replaced``); every other one is
+        differs only by an older Kali image, a changed port pool, no init process or
+        the hostname every sandbox once shared (``sc.SELF_NAME``, no ExtraHosts) is
+        kept draining (it stops when unused, reason ``replaced``); every other one is
         removed, and so is every network of this stack no kept instance uses. The
         templates refresher is left to finish."""
         current = await asyncio.to_thread(self._image_sync)
@@ -1740,7 +1778,10 @@ class SandboxManager:
             labels = c.labels or {}
             if labels.get(LABEL_OWNER) != self.owner:
                 continue
-            if labels.get(sc.LABEL_ROLE) == sc.ROLE_TEMPLATES and not labels.get(sc.LABEL_USER):
+            # A scan's broker can create a container with any labels, but always
+            # with its own: a look-alike is no refresher of ours, and goes.
+            if (labels.get(sc.LABEL_ROLE) == sc.ROLE_TEMPLATES and not labels.get(sc.LABEL_USER)
+                    and not labels.get(BROKER_OWNED_LABEL)):
                 continue
             own_image = await asyncio.to_thread(self._image_by_id_sync, (c.attrs or {}).get("Image"))
             inst, problem, drain = self._adoptable(c, current, own_image, daemon)
@@ -1832,7 +1873,8 @@ class SandboxManager:
     def _adoptable(self, c, current, own_image, daemon: Mapping) -> tuple:
         """(Instance, None, drain) when ``c`` is a sandbox exactly as this
         orchestrator starts it, ``drain`` naming why it must drain (an older
-        image, a changed port pool) or None; else (None, why, None). Labels
+        image, a changed port pool, no init process, the shared hostname) or None;
+        else (None, why, None). Labels
         alone prove nothing: a scan container can ask the broker for any label,
         but never without the broker's own. The host config is compared with what
         ``_container_kwargs`` makes for the same instance, and every field the
@@ -1905,7 +1947,15 @@ class SandboxManager:
         skip = {sc.LABEL_CREATED, sc.LABEL_SERVERS, sc.LABEL_PORT}
         if any(labels.get(k) != v for k, v in expected["labels"].items() if k not in skip):
             return refused("labels differ from the plan")
-        if config.get("Hostname") != expected["hostname"]:
+        extra_hosts = list(hc.get("ExtraHosts") or [])
+        if config.get("Hostname") == expected["hostname"]:
+            if extra_hosts != [f"{k}:{v}" for k, v in sorted(expected["extra_hosts"].items())]:
+                return refused("extra hosts differ")
+        elif config.get("Hostname") == sc.SELF_NAME and not extra_hosts:
+            # Started when every sandbox had this hostname: a DNS name all of them
+            # shared on networks the agent joins. Kept until unused, never current.
+            drain = drain or "shared hostname"
+        else:
             return refused("hostname changed")
         if _norm_caps(hc.get("CapAdd")) != _norm_caps(expected["cap_add"]) or \
                 set(hc.get("SecurityOpt") or []) != set(expected["security_opt"]):
@@ -1916,6 +1966,9 @@ class SandboxManager:
         if hc.get("CpuShares") != expected["cpu_shares"] or hc.get("NanoCpus") != expected["nano_cpus"] \
                 or hc.get("PidsLimit") != expected["pids_limit"]:
             return refused("limits differ")
+        if hc.get("Init") is not expected["init"]:
+            # Started before the spec had an init: its zombies stay until it stops.
+            drain = drain or "no init process"
         memory = int(hc.get("Memory") or 0)
         if memory <= 0 or int(hc.get("MemorySwap") or 0) != memory:
             return refused("limits differ")

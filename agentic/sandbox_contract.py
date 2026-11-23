@@ -1,7 +1,7 @@
 """The contract for per-user Kali sandboxes.
 
 This module is the contract every per-user sandbox part is built against: the
-switch, names, labels and keys, the mount plan, the container and network
+names, labels and keys, the mount plan, the container and network
 specification, the governor keys, lifecycle states, lease kinds, routes, error
 codes, messages, environment variables and timings. It exists in three copies:
 
@@ -32,24 +32,6 @@ from typing import Iterable, Mapping, NamedTuple, Optional
 
 CONTRACT_VERSION = 1
 
-# --- The switch -------------------------------------------------------------------
-
-MODE_ENV = "KALI_SANDBOX_MODE"
-MODE_SHARED = "shared"
-MODE_PER_USER = "per_user"
-MODES = (MODE_SHARED, MODE_PER_USER)
-DEFAULT_MODE = MODE_PER_USER
-
-
-def mode_from_env(value: Optional[str]) -> str:
-    """The mode named by ``value`` (trimmed, lower-cased), else ``DEFAULT_MODE``."""
-    if isinstance(value, str):
-        mode = value.strip().lower()
-        if mode in MODES:
-            return mode
-    return DEFAULT_MODE
-
-
 # --- Ids --------------------------------------------------------------------------
 
 # The character classes are explicit ASCII ranges and the checks use fullmatch:
@@ -65,7 +47,7 @@ _INSTANCE = re.compile(INSTANCE_RE)
 
 # The single-segment orchestrator routes under /sandboxes/: a user id equal to
 # one of them would make GET /sandboxes/{user_id} unreachable for that person.
-RESERVED_USER_IDS = ("ensure", "mode", "stop-all", "stop-project")
+RESERVED_USER_IDS = ("ensure", "stop-all", "stop-project")
 # A folder with a device name cannot be created on a Windows host.
 _WINDOWS_DEVICE_NAMES = frozenset(
     ["CON", "PRN", "AUX", "NUL"]
@@ -267,9 +249,6 @@ GUEST_GATEWAY_PRIORITY = -1000
 # A guest (the agent, the capture proxy) joins a sandbox network only when its
 # HostConfig.Sysctls holds these: it must never route between its networks.
 GUEST_SYSCTLS = MappingProxyType({"net.ipv4.ip_forward": "0"})
-# The instance under which the agent lists and drives the sessions of the shared
-# redamon-kali container while it still runs in per-user mode.
-SHARED_INSTANCE = "shared"
 
 # --- The mount plan ---------------------------------------------------------------
 
@@ -371,7 +350,14 @@ def projects_from_destinations(destinations: Iterable) -> list:
 
 # --- The container ----------------------------------------------------------------
 
-CONTAINER_HOSTNAME = "kali-sandbox"
+# The name tools and prompts inside a sandbox use for the sandbox itself. Docker makes
+# a container's hostname a DNS name on the network it is created on, and the agent and
+# the capture proxy join every sandbox network: a hostname all sandboxes shared would
+# resolve, from them, to whichever sandbox came first. So a sandbox's hostname is its
+# own container name, and this name resolves only inside the sandbox, to itself, from
+# its own /etc/hosts (EXTRA_HOSTS).
+SELF_NAME = "kali-sandbox"
+EXTRA_HOSTS = MappingProxyType({SELF_NAME: "127.0.0.1"})
 CONTAINER_ENV_FIXED = MappingProxyType({
     "PYTHONUNBUFFERED": "1",
     "PYTHONPATH": "/opt:/opt/mcp_servers",
@@ -391,7 +377,9 @@ CONTAINER_ENV_FIXED = MappingProxyType({
     "NUCLEI_AUTO_UPDATE": "false",
     "REDAMON_AGENT_URL": "http://agent:8080",
     "WEBAPP_API_URL": "",
-    "REDAMON_SANDBOX_MODE": MODE_PER_USER,
+    # Read by the servers inside (mcp/servers/tunnel_manager.py, metasploit_server.py):
+    # one person's sandbox, whose tunnels the agent pushes.
+    "REDAMON_SANDBOX_MODE": "per_user",
 })
 ENV_MCP_AUTH_TOKEN = "MCP_AUTH_TOKEN"
 ENV_TUNNEL_AUTH_TOKEN = "TUNNEL_AUTH_TOKEN"
@@ -605,17 +593,16 @@ ROUTE_STOP_PROJECT = "/sandboxes/stop-project"
 ROUTE_STOP_ALL = "/sandboxes/stop-all"
 ROUTE_STATUS = "/sandboxes/{user_id}"
 ROUTE_LIST = "/sandboxes"
-ROUTE_MODE = "/sandboxes/mode"
 ROUTE_SYSTEM_STATS = "/system/stats"
 
 # The keys of an `ensure` answer: 200 with a running instance, 202 when the call
 # did not wait. Both carry `fresh` (this call created the instance), because the
 # webapp writes the start's audit row and turns the person's tunnels off on it,
 # and a non-waiting call (the warm-up) is often the one that creates it.
-ENSURE_RUNNING_KEYS = ("mode", "user_id", "view", "instance", "host", "token",
+ENSURE_RUNNING_KEYS = ("user_id", "view", "instance", "host", "token",
                        "tunnel_token", "ports", "reverse_port", "projects", "state",
                        "fresh", "stop_at", "stop_reason", "warn")
-ENSURE_STARTING_KEYS = ("mode", "state", "instance", "fresh")
+ENSURE_STARTING_KEYS = ("state", "instance", "fresh")
 
 ERR_IMAGE_MISSING = "sandbox_image_missing"
 ERR_START_FAILED = "sandbox_start_failed"
@@ -684,8 +671,8 @@ MODAL_REFUSED_BODY = ("You cannot use the Kali sandbox on this project. Ask its 
                       "Use AI agent or Exploitation & shells.")
 MODAL_RETRY_LABEL = "Retry"
 MODAL_CLOSE_LABEL = "Close"
-PARTIAL_ANSWER_ONE = "1 sandbox did not answer; its sessions are not shown"
-PARTIAL_ANSWER_MANY = "{n} sandboxes did not answer; their sessions are not shown"
+PARTIAL_ANSWER_ONE = "1 sandbox did not answer; its sessions may be out of date or missing"
+PARTIAL_ANSWER_MANY = "{n} sandboxes did not answer; their sessions may be out of date or missing"
 
 # --- Environment variables --------------------------------------------------------
 
@@ -693,7 +680,7 @@ IDLE_MINUTES_ENV = "KALI_SANDBOX_IDLE_MINUTES"
 MAX_CONCURRENT_ENV = "KALI_SANDBOX_MAX_CONCURRENT"
 PORT_POOL_ENV = "KALI_SANDBOX_PORT_POOL"
 # Every one is optional and read by the orchestrator only.
-ENV_VARS = (IDLE_MINUTES_ENV, MAX_CONCURRENT_ENV, PORT_POOL_ENV, MODE_ENV)
+ENV_VARS = (IDLE_MINUTES_ENV, MAX_CONCURRENT_ENV, PORT_POOL_ENV)
 IDLE_MINUTES_DEFAULT = 20
 
 
@@ -719,8 +706,10 @@ class PortPool:
     first: int
     last: int
 
-    def ports(self) -> range:
-        return range(self.first, self.last + 1)
+    def ports(self) -> tuple:
+        """The pool's ports, never ``DEFAULT_REVERSE_PORT``: a sandbox without a pool port
+        listens there, so the agent reads that port as "nothing published"."""
+        return tuple(p for p in range(self.first, self.last + 1) if p != DEFAULT_REVERSE_PORT)
 
 
 _PORT_RANGE = re.compile(r"([0-9]{1,5})-([0-9]{1,5})")

@@ -1,7 +1,7 @@
 /**
- * The Kali terminal is one shared sandbox (HD-04): it says so in a banner that
- * stays up whatever the connection does, mints a ticket that names the terminal
- * socket, and a refused mint says the terminal is not available instead of
+ * The Kali terminal opens the person's own Kali sandbox (group 1; HD-04 before it): no banner says
+ * the environment is shared, whatever the connection does. It mints a ticket that names the
+ * terminal socket, and a refused mint says the terminal is not available instead of
  * "authentication failed".
  *
  * Run: npx vitest run src/app/graph/components/KaliTerminal/KaliTerminal.banner.test.tsx
@@ -34,7 +34,8 @@ vi.mock('@/hooks/agentWsUrl', () => ({
 // The terminal shows the sandbox modal through useAlertModal, so it renders under
 // the provider the app shell gives it.
 import { AlertProvider } from '@/components/ui'
-import { KaliTerminal, ticketFailureLine, SHARED_ENVIRONMENT_NOTICE } from './KaliTerminal'
+import * as terminalModule from './KaliTerminal'
+import { KaliTerminal, ticketFailureLine } from './KaliTerminal'
 import { ApiError } from '@/lib/apiError'
 
 class FakeSocket {
@@ -74,26 +75,23 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('KaliTerminal shared-environment banner', () => {
-  test('the banner text', () => {
-    expect(SHARED_ENVIRONMENT_NOTICE).toBe("Shared environment: other projects' files are visible here.")
-  })
-
-  test('shown before and after the socket connects, as a labelled note', async () => {
+describe('KaliTerminal: no shared-environment banner (each person has their own sandbox)', () => {
+  test('no banner says other projects\' files are visible, before or after the socket connects', async () => {
+    expect('SHARED_ENVIRONMENT_NOTICE' in terminalModule).toBe(false)
     mint(200, { ticket: 'tkt' })
-    render(<AlertProvider><KaliTerminal userId="u1" projectId="p1" /></AlertProvider>)
-    const note = screen.getByRole('note')
-    expect(note.textContent).toBe(SHARED_ENVIRONMENT_NOTICE)
+    const { container } = render(<AlertProvider><KaliTerminal userId="u1" projectId="p1" /></AlertProvider>)
+    expect(screen.queryByRole('note')).toBeNull()
     await waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
     act(() => { FakeSocket.instances[0].onopen?.() })
-    expect(screen.getByRole('note').textContent).toBe(SHARED_ENVIRONMENT_NOTICE)
+    expect(screen.queryByRole('note')).toBeNull()
+    expect(container.textContent).not.toMatch(/Shared environment|other projects/)
   })
 
-  test('still shown when the terminal is refused', async () => {
+  test('nor when the terminal is refused', async () => {
     mint(403, { error: 'The Kali terminal is open to administrators and to accounts that kept it at the upgrade.', code: 'forbidden', permission: 'platform:kali_terminal' })
     render(<AlertProvider><KaliTerminal userId="u1" projectId="p1" /></AlertProvider>)
     await waitFor(() => expect(written.some(l => plain(l).includes('Kali terminal is open to administrators'))).toBe(true))
-    expect(screen.getByRole('note').textContent).toBe(SHARED_ENVIRONMENT_NOTICE)
+    expect(screen.queryByRole('note')).toBeNull()
   })
 })
 

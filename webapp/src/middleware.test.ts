@@ -61,20 +61,18 @@ describe('middleware - public paths', () => {
 })
 
 /* ------------------------------------------------------------------ */
-/*  Tunnel-config sync allowlist (security boundary)                   */
+/*  Tunnel-config routes stay gated (security boundary)                */
 /* ------------------------------------------------------------------ */
 
-describe('middleware - tunnel-config sync allowlist', () => {
-  test('allows POST /api/global/tunnel-config/sync without auth (public trigger)', async () => {
+describe('middleware - tunnel-config routes', () => {
+  test('the shared container\'s sync trigger is gone: POST /api/global/tunnel-config/sync is no longer public', async () => {
     const req = makeRequest('/api/global/tunnel-config/sync')
     const res = await middleware(req)
-    expect(res.status).not.toBe(401)
-    expect(res.headers.get('location')).toBeNull()
+    expect(res.status).toBe(401)
   })
 
   test('does NOT expose the secret-returning GET /api/global/tunnel-config', async () => {
-    // The parent path returns unmasked tunnel credentials and must stay gated.
-    // Allowlisting the /sync subpath must not leak it.
+    // The path returns unmasked tunnel credentials and must stay gated.
     const req = makeRequest('/api/global/tunnel-config')
     const res = await middleware(req)
     expect(res.status).toBe(401)

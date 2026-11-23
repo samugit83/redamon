@@ -81,10 +81,13 @@ const putBodies = () => fetchMock.mock.calls
   .filter(c => (c[1] as RequestInit | undefined)?.method === 'PUT')
   .map(c => JSON.parse(String((c[1] as RequestInit).body)) as Record<string, unknown>)
 
+// Every tunnel is its person's own, in their own Kali sandbox (group 1): an answer without the
+// `tunnelScope` hint is read the same way.
 describe('Tunneling for an account that may not change it', () => {
-  test('tunnel section read-only without access', async () => {
+  test('tunnel section read-only without access: the person\'s own status, never "managed by an administrator"', async () => {
     renderPage()
-    expect(await screen.findByText('The tunnel is managed by an administrator.')).toBeInTheDocument()
+    expect(await screen.findByText(/Turning one on needs the Tunnels permission/)).toBeInTheDocument()
+    expect(screen.queryByText('The tunnel is managed by an administrator.')).toBeNull()
     expect(await screen.findByText(/On \(chisel\)/)).toBeInTheDocument()
     expect(screen.queryByPlaceholderText(URL_PLACEHOLDER)).toBeNull()
     expect(screen.queryByLabelText('Enable tunnels')).toBeNull()
@@ -102,12 +105,12 @@ describe('Tunneling for an account that may not change it', () => {
     routes['GET /api/agent/tunnel-status'] = () => { throw new TypeError('Failed to fetch') }
     renderPage()
     expect(await screen.findByText(/Status unavailable/)).toBeInTheDocument()
-    expect(screen.getByText('The tunnel is managed by an administrator.')).toBeInTheDocument()
+    expect(screen.getByText(/Turning one on needs the Tunnels permission/)).toBeInTheDocument()
   })
 
   test('a save of their own keys leaves the four tunnel fields out', async () => {
     renderPage()
-    await screen.findByText('The tunnel is managed by an administrator.')
+    await screen.findByText(/Turning one on needs the Tunnels permission/)
     fireEvent.change(await screen.findByPlaceholderText('Enter shodan api key'), { target: { value: 'new-shodan-key' } })
     fireEvent.click(await screen.findByRole('button', { name: 'Save Settings' }))
     await waitFor(() => expect(putBodies()).toHaveLength(1))
@@ -118,7 +121,7 @@ describe('Tunneling for an account that may not change it', () => {
 })
 
 describe('Tunneling for an account that may change it', () => {
-  test('the controls are there and a save sends them', async () => {
+  test('the controls are there and a save sends them (the toggle only once touched)', async () => {
     routes[`GET ${BASE}/settings`] = { status: 200, body: settingsBody(true) }
     routes[`PUT ${BASE}/settings`] = { status: 200, body: settingsBody(true) }
     renderPage()
@@ -127,7 +130,21 @@ describe('Tunneling for an account that may change it', () => {
     fireEvent.change(url, { target: { value: 'http://vps2.example:9090' } })
     fireEvent.click(await screen.findByRole('button', { name: 'Save Settings' }))
     await waitFor(() => expect(putBodies()).toHaveLength(1))
-    expect(putBodies()[0]).toMatchObject({ chiselServerUrl: 'http://vps2.example:9090', tunnelsEnabled: true })
+    expect(putBodies()[0]).toMatchObject({ chiselServerUrl: 'http://vps2.example:9090' })
+    expect(putBodies()[0]).not.toHaveProperty('tunnelsEnabled')
+  })
+
+  test('the identity switch on (`sharedSettingsAt: instance`) moves no tunnel: the controls stay the person\'s own, nothing goes to the instance settings', async () => {
+    routes[`GET ${BASE}/settings`] = { status: 200, body: { ...settingsBody(true), sharedSettingsAt: 'instance' } }
+    routes[`PUT ${BASE}/settings`] = { status: 200, body: settingsBody(true) }
+    renderPage()
+    const url = await screen.findByPlaceholderText(URL_PLACEHOLDER)
+    expect(screen.queryByText(/shared by the whole instance|Instance page/)).toBeNull()
+    fireEvent.change(url, { target: { value: 'http://vps2.example:9090' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Save Settings' }))
+    await waitFor(() => expect(putBodies()).toHaveLength(1))
+    expect(putBodies()[0]).toMatchObject({ chiselServerUrl: 'http://vps2.example:9090' })
+    expect(fetchMock.mock.calls.some(([u]) => String(u) === '/api/admin/instance-settings')).toBe(false)
   })
 
   test('an answer without the hint keeps the controls: the PUT decides', async () => {

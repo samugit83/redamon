@@ -24,8 +24,9 @@ export function useSessionsAccess(): SessionsAccess {
 }
 
 /**
- * A session or job to drive: its number and, with per-user Kali sandboxes, the instance it runs in
- * (every console numbers from 1; group 1, TD-11). No instance: the shared container's row.
+ * A session or job to drive: its number and the Kali sandbox instance it runs in (every console
+ * numbers from 1; group 1, TD-11). A row without an instance is no drive target (the route answers
+ * 400 `sandbox_required`).
  */
 export interface SessionRef {
   id: number
@@ -88,10 +89,10 @@ function instanceOf(row: { sandbox?: unknown }): string | null {
 /**
  * The lists to show after `answer`, given those `shown` before (group 1, S16b).
  *
- * In per-user mode the agent asks every sandbox with a short budget each and answers without the
- * rows of one that did not answer: replacing the lists would drop the very row someone is typing
- * into. So a row shown before is kept, marked `staleSince`, when its sandbox (a tagged instance; never
- * a shared-mode row) lists nothing in this answer and the answer names it in `unavailable`. The
+ * The agent asks every sandbox with a short budget each and answers without the rows of one that
+ * did not answer: replacing the lists would drop the very row someone is typing into. So a row shown
+ * before is kept, marked `staleSince`, when its sandbox (a tagged instance; never a row without one)
+ * lists nothing in this answer and the answer names it in `unavailable`. The
  * webapp names to each viewer only the silent instances that could hold rows that viewer may see
  * (agentSessionsAccess `visibleSessions`); a count without names keeps nothing.
  *

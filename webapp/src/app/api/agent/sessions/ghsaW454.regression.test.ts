@@ -51,9 +51,7 @@ vi.mock('@/lib/agentFetch', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/agentFetch')>()),
   agentFetch: (...a: unknown[]) => mockAgentFetch(...a),
 }))
-const mockMode = vi.fn()
 vi.mock('@/lib/sandbox/gateway', () => ({
-  sandboxMode: (...a: unknown[]) => mockMode(...a),
   sandboxProjectsFor: async (userId: string) => [`project-${userId}`],
 }))
 
@@ -74,13 +72,18 @@ function signedIn(id: string) {
   mockEffectiveUser.mockResolvedValue({ userId: id })
 }
 
-/** The agent's whole-instance list: Alice's session 1 and her handler job 7, Bob's session 2. */
+/**
+ * The agent's list across the sandboxes: Alice's session 1 and her handler job 7 in her own sandbox
+ * `a11ce0`, Bob's session 2 in his `b0b000`, each tagged by the agent with its sandbox's person.
+ */
+const ALICE_OWN = { sandbox: 'a11ce0', sandbox_user: 'alice', sandbox_view: 'own' }
+const BOB_OWN = { sandbox: 'b0b000', sandbox_user: 'bob', sandbox_view: 'own' }
 const AGENT_LIST = {
   sessions: [
-    { id: 1, type: 'meterpreter', info: "Alice's live post-exploitation shell", connection: `172.28.0.2:4444 -> ${ALICE_TARGET}:51000`, target_ip: ALICE_TARGET, chat_session_id: 'chat-alice' },
-    { id: 2, type: 'shell', info: '', connection: '172.28.0.2:4445 -> 203.0.113.9:40000', target_ip: '203.0.113.9', chat_session_id: 'chat-bob' },
+    { id: 1, type: 'meterpreter', info: "Alice's live post-exploitation shell", connection: `172.28.0.2:4444 -> ${ALICE_TARGET}:51000`, target_ip: ALICE_TARGET, chat_session_id: 'chat-alice', ...ALICE_OWN },
+    { id: 2, type: 'shell', info: '', connection: '172.28.0.2:4445 -> 203.0.113.9:40000', target_ip: '203.0.113.9', chat_session_id: 'chat-bob', ...BOB_OWN },
   ],
-  jobs: [{ id: 7, name: 'Exploit: multi/handler', payload: 'linux/x64/meterpreter/reverse_tcp', port: 4444 }],
+  jobs: [{ id: 7, name: 'Exploit: multi/handler', payload: 'linux/x64/meterpreter/reverse_tcp', port: 4444, ...ALICE_OWN }],
   non_msf_sessions: [],
   cache_age_seconds: 0.5,
   agent_busy: false,
@@ -89,7 +92,8 @@ const AGENT_LIST = {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 const params = (id: string) => ({ params: Promise.resolve({ id }) })
-const post = (body?: unknown) => new NextRequest('http://x/api', {
+/** A drive naming `sandbox` (Alice's instance unless said otherwise; null: none named). */
+const post = (body?: unknown, sandbox: string | null = 'a11ce0') => new NextRequest(`http://x/api${sandbox === null ? '' : `?sandbox=${sandbox}`}`, {
   method: 'POST',
   ...(body === undefined ? {} : { body: JSON.stringify(body), headers: { 'content-type': 'application/json' } }),
 })
@@ -109,7 +113,6 @@ beforeEach(() => {
   mockAgentFetch.mockReset().mockImplementation(async (path: string) => (
     path === '/sessions' ? json(AGENT_LIST) : json({ busy: false, output: 'uid=0(root) alice-target' })
   ))
-  mockMode.mockReset().mockResolvedValue('shared')
   resetSharedToolsForTests()
   setFlagsForTests({})
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -134,9 +137,14 @@ describe('GHSA-w454-6hwp-fm58: Bob against Alice by sequential id', () => {
 
   test("IMPACT 2: Bob's command never reaches Alice's session, whatever the id spelling", async () => {
     signedIn('bob')
-    for (const id of ['1', '01', '1.0', ' 1', '-1', '%31']) {
-      const res = await interact(post({ command: 'id; hostname' }), params(id))
-      expect(res.status, `id ${JSON.stringify(id)}`).toBe(404)
+    for (const sandbox of ['a11ce0', 'b0b000']) {
+      for (const id of ['1', '01', '1.0', ' 1', '-1', '%31']) {
+        const res = await interact(post({ command: 'id; hostname' }, sandbox), params(id))
+        expect(res.status, `${sandbox} id ${JSON.stringify(id)}`).toBe(404)
+      }
+    }
+    for (const sandbox of [null, 'shared', 'A11CE0']) {
+      expect((await interact(post({ command: 'id; hostname' }, sandbox), params('1'))).status, String(sandbox)).toBe(400)
     }
     expect(drives()).toEqual([])
     expect(mockWriteAudit).not.toHaveBeenCalled()
@@ -154,10 +162,10 @@ describe('GHSA-w454-6hwp-fm58: Bob against Alice by sequential id', () => {
     signedIn('alice')
     const res = await interact(post({ command: 'id; hostname' }), params('1'))
     expect(res.status).toBe(200)
-    expect(drives()).toEqual(['/sessions/1/interact'])
+    expect(drives()).toEqual(['/sessions/1/interact?sandbox=a11ce0'])
     const row = mockWriteAudit.mock.calls[0][0]
     expect(row.action).toBe('agent.session_interact')
-    expect(row.targetId).toBe('shared:1')
+    expect(row.targetId).toBe('a11ce0:1')
     expect(JSON.stringify(row)).not.toContain('hostname')
   })
 
@@ -188,7 +196,6 @@ describe('GHSA-w454-6hwp-fm58 replayed across per-user sandboxes', () => {
   }
 
   beforeEach(() => {
-    mockMode.mockResolvedValue('per_user')
     mockAgentFetch.mockImplementation(async (path: string) => (
       path === '/sessions' ? json(PER_USER) : json({ busy: false, output: 'uid=0(root)' })
     ))
@@ -203,7 +210,7 @@ describe('GHSA-w454-6hwp-fm58 replayed across per-user sandboxes', () => {
 
   test("Bob against Alice's instance, or without an instance: refused, nothing typed or killed", async () => {
     signedIn('bob')
-    expect((await interact(post({ command: 'id' }), params('1'))).status).toBe(400)
+    expect((await interact(post({ command: 'id' }, null), params('1'))).status).toBe(400)
     const aliceInstance = new NextRequest('http://x/api?sandbox=a11ce0', { method: 'POST', body: '{"command":"id"}', headers: { 'content-type': 'application/json' } })
     expect((await interact(aliceInstance, params('1'))).status).toBe(404)
     expect((await killSession(new NextRequest('http://x/api?sandbox=a11ce0', { method: 'POST' }), params('1'))).status).toBe(404)

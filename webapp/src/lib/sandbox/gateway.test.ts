@@ -71,7 +71,7 @@ vi.mock('@/lib/prisma', () => ({
 
 import {
   assertSandboxUser, ensureSandbox, ensureStatus, leaseSandbox, listSandboxes, agentSandboxList, reconcileSandbox,
-  releaseSandboxLease, resetSandboxGatewayForTests, sandboxMode, sandboxProjectsFor, sandboxStatus, stopAllSandboxes,
+  releaseSandboxLease, resetSandboxGatewayForTests, sandboxProjectsFor, sandboxStatus, stopAllSandboxes,
   stopProjectSandboxes, stopSandbox, touchSandbox,
 } from './gateway'
 import { SandboxError, PROJECT_ID_PATTERN, USER_ID_PATTERN, INSTANCE_PATTERN, RESERVED_USER_IDS } from './orchestratorClient'
@@ -167,7 +167,7 @@ function buildDb() {
 
 function running(body: Row, over: Row = {}): Row {
   return {
-    mode: 'per_user', user_id: body.user_id, view: body.view, instance: INSTANCE,
+    user_id: body.user_id, view: body.view, instance: INSTANCE,
     host: `redamon-kali-0123456789abcdef-${INSTANCE}`, token: TOKEN, tunnel_token: TUNNEL, ports: PORTS,
     reverse_port: 4444, projects: body.projects, state: 'running', fresh: false, stop_at: 1e10,
     stop_reason: null, warn: false, ...over,
@@ -218,7 +218,6 @@ beforeEach(() => {
   h.writeAudit.mockClear()
   h.settingsUpdate.mockClear()
   h.userReads.mockClear()
-  on('GET /sandboxes/mode', () => [200, { mode: 'per_user' }])
   on('POST /sandboxes/ensure', (b) => [200, running(b as Row)])
   setFlagsForTests(WRITE_SHARING)
   clearSharingPolicyCacheForTests()
@@ -340,12 +339,12 @@ describe('ensureSandbox', () => {
   })
 
   test('a call that does not wait keeps the default timeout, and its 202 is answered as a 202', async () => {
-    on('POST /sandboxes/ensure', () => [202, { mode: 'per_user', state: 'starting', instance: INSTANCE, fresh: false }])
+    on('POST /sandboxes/ensure', () => [202, { state: 'starting', instance: INSTANCE, fresh: false }])
     const answer = await ensureSandbox('bob', { wait: false })
     const [call] = callsTo('POST', '/sandboxes/ensure')
     expect(call.body).toMatchObject({ wait: false, touch: false, need_project: null })
     expect(call.opts).toBeUndefined()
-    expect(answer).toEqual({ mode: 'per_user', state: 'starting', instance: INSTANCE, fresh: false })
+    expect(answer).toEqual({ state: 'starting', instance: INSTANCE, fresh: false })
     expect(ensureStatus(answer)).toBe(202)
   })
 
@@ -372,7 +371,7 @@ describe('ensureSandbox', () => {
     expect(ensures()).toEqual([])
   })
 
-  test('in per-user mode a refusal is a 403, never answered as shared', async () => {
+  test('a refusal is a 403, never answered as shared', async () => {
     on('POST /sandboxes/ensure', () => [200, { mode: 'shared' }])
     setUser('bob', { status: 'disabled' })
     expect((await refusal(ensureSandbox('bob'))).code).toBe('sandbox_user_refused')
@@ -395,7 +394,7 @@ describe('ensureSandbox', () => {
   })
 
   test('the 202 of a fresh start does the same (the warm-up is often the call that starts it)', async () => {
-    on('POST /sandboxes/ensure', () => [202, { mode: 'per_user', state: 'starting', instance: INSTANCE, fresh: true }])
+    on('POST /sandboxes/ensure', () => [202, { state: 'starting', instance: INSTANCE, fresh: true }])
     await ensureSandbox('bob', { wait: false })
     expect(h.settingsUpdate).toHaveBeenCalledTimes(1)
     expect(audits('sandbox.started')).toHaveLength(1)
@@ -423,11 +422,26 @@ describe('ensureSandbox', () => {
     expect(h.writeAudit).not.toHaveBeenCalled()
   })
 
-  test('a shared answer from the orchestrator answers shared and writes nothing', async () => {
-    on('POST /sandboxes/ensure', () => [200, { mode: 'shared' }])
-    expect(await ensureSandbox('bob')).toEqual({ mode: 'shared' })
+  test('an orchestrator answering the old shared mode is no answer: 503 orchestrator_unavailable, nothing written', async () => {
+    for (const status of [200, 202]) {
+      on('POST /sandboxes/ensure', () => [status, { mode: 'shared' }])
+      const err = await refusal(ensureSandbox('bob'))
+      expect([status, err.status, err.code]).toEqual([status, 503, 'orchestrator_unavailable'])
+    }
     expect(h.writeAudit).not.toHaveBeenCalled()
     expect(h.settingsUpdate).not.toHaveBeenCalled()
+  })
+
+  test('no mode is asked: the ensure is the only orchestrator call', async () => {
+    await ensureSandbox('bob', { needProject: 'PC' })
+    expect(h.calls.map((c) => `${c.method} ${c.path}`)).toEqual(['POST /sandboxes/ensure'])
+  })
+
+  test('an answer of an orchestrator that still names its mode is handed on without the mode', async () => {
+    on('POST /sandboxes/ensure', (b) => [200, { ...running(b as Row), mode: 'per_user' }])
+    const answer = await ensureSandbox('bob')
+    expect(answer).toEqual(running({ user_id: 'bob', view: 'own', projects: ['PB', 'PC', 'PD'] }))
+    expect('mode' in answer).toBe(false)
   })
 
   test('a memory refusal is a 409 carrying the governor payload, wrapped or not', async () => {
@@ -459,9 +473,9 @@ describe('ensureSandbox', () => {
 
   test('a malformed answer is a 503 orchestrator_unavailable, never handed on', async () => {
     for (const bad of [
-      { mode: 'per_user', state: 'running', instance: INSTANCE, fresh: false },
-      { mode: 'per_user', state: 'starting', instance: '../x', fresh: true },
-      { mode: 'per_user', state: 'running', instance: INSTANCE, token: TOKEN, fresh: 'yes' },
+      { state: 'running', instance: INSTANCE, fresh: false },
+      { state: 'starting', instance: '../x', fresh: true },
+      { state: 'running', instance: INSTANCE, token: TOKEN, fresh: 'yes' },
       { mode: 'whatever' },
       ['not', 'an', 'object'],
     ]) {
@@ -482,26 +496,8 @@ describe('ensureSandbox', () => {
   })
 })
 
-describe('shared mode answers before the person checks, as today; per-user mode refuses', () => {
-  const sharedMode = () => on('GET /sandboxes/mode', () => [200, { mode: 'shared' }])
-
-  test('shared mode + a person without agent:chat, agent:kali_exec or platform:kali_terminal: shared, nothing read', async () => {
-    sharedMode()
-    setUser('carol', { permissionSets: [{ setId: 'builtin:automation' }] })
-    expect(await ensureSandbox('analyst')).toEqual({ mode: 'shared' })
-    expect(await ensureSandbox('carol', { needProject: 'PC' })).toEqual({ mode: 'shared' })
-    expect(h.userReads).not.toHaveBeenCalled()
-    expect(ensures()).toEqual([])
-  })
-
-  test('shared mode + a project outside the list (a read share, another tenant\'s, act-as on a share): shared', async () => {
-    sharedMode()
-    for (const [needProject, actingAs] of [['PE', false], ['PA', false], ['PC', true]] as Array<[string, boolean]>) {
-      expect([needProject, await ensureSandbox('bob', { needProject, actingAs })]).toEqual([needProject, { mode: 'shared' }])
-    }
-  })
-
-  test('per-user mode + the same: 403 with the contract\'s codes, the orchestrator\'s ensure never asked', async () => {
+describe('a person or project outside the rules is refused before the orchestrator is asked', () => {
+  test('a person without agent:chat, agent:kali_exec or platform:kali_terminal, and a project outside the list: 403 with the contract\'s codes', async () => {
     setUser('carol', { permissionSets: [{ setId: 'builtin:automation' }] })
     expect((await refusal(ensureSandbox('analyst'))).code).toBe('sandbox_user_refused')
     expect((await refusal(ensureSandbox('carol', { needProject: 'PC' }))).code).toBe('sandbox_user_refused')
@@ -509,93 +505,27 @@ describe('shared mode answers before the person checks, as today; per-user mode 
       const err = await refusal(ensureSandbox('bob', { needProject, actingAs }))
       expect([needProject, err.status, err.code]).toEqual([needProject, 403, 'sandbox_project_refused'])
     }
-    expect(ensures()).toEqual([])
-  })
-
-  test('an outage: 503 orchestrator_unavailable, never an invented mode', async () => {
-    h.down = true
-    for (const userId of ['analyst', 'bob']) {
-      const err = await refusal(ensureSandbox(userId, { needProject: 'PA' }))
-      expect([userId, err.status, err.code]).toEqual([userId, 503, 'orchestrator_unavailable'])
-    }
-  })
-
-  test('the mode is asked fresh in every call: a switch between two calls counts at once', async () => {
-    sharedMode()
-    expect(await ensureSandbox('analyst')).toEqual({ mode: 'shared' })
-    on('GET /sandboxes/mode', () => [200, { mode: 'per_user' }])
-    expect((await refusal(ensureSandbox('analyst'))).code).toBe('sandbox_user_refused')
-    expect(callsTo('GET', '/sandboxes/mode')).toHaveLength(2)
-  })
-
-  test('invalid ids are still 400s before the mode is asked', async () => {
-    sharedMode()
-    expect((await refusal(ensureSandbox('../bob'))).code).toBe('invalid_user_id')
-    expect((await refusal(ensureSandbox('bob', { needProject: '..' }))).code).toBe('invalid_project_id')
     expect(h.calls).toEqual([])
   })
 })
 
-describe('the orchestrator down: the webapp never invents a mode (the agent decides from its own last answer)', () => {
-  const seen = async (mode: 'shared' | 'per_user') => {
-    on('GET /sandboxes/mode', () => [200, { mode }])
-    expect(await sandboxMode({ fresh: true })).toBe(mode)
-  }
+describe('the orchestrator down: 503 orchestrator_unavailable, never a sandbox nobody named', () => {
   const unavailable = async (p: Promise<unknown>) => {
     const err = await refusal(p)
     expect([err.status, err.code, err.limit]).toEqual([503, 'orchestrator_unavailable', null])
   }
 
-  test('no mode seen since the webapp started + an outage: 503 orchestrator_unavailable, never shared', async () => {
+  test('an outage: 503 orchestrator_unavailable', async () => {
     h.down = true
     await unavailable(ensureSandbox('bob'))
+    await unavailable(ensureSandbox('bob', { needProject: 'PC' }))
   })
 
-  test('per-user mode seen + an outage: 503', async () => {
-    await seen('per_user')
-    h.down = true
-    await unavailable(ensureSandbox('bob'))
-  })
-
-  test('shared mode seen + an outage: 503 too, the agent keeps shared from its own memory', async () => {
-    await seen('shared')
-    h.down = true
-    await unavailable(ensureSandbox('bob'))
-    on('POST /sandboxes/ensure', () => [200, { mode: 'shared' }])
-    h.down = false
-    await ensureSandbox('bob')
-    h.down = true
-    await unavailable(ensureSandbox('bob'))
-  })
-
-  test('a refused account or a project outside the list + an outage: 503 too, whatever mode was seen (the mode comes first)', async () => {
+  test('a refused account or a project outside the list is refused first, whatever the orchestrator does', async () => {
     setUser('carol', { status: 'disabled' })
     h.down = true
-    for (const mode of [null, 'shared', 'per_user'] as const) {
-      if (mode) {
-        h.down = false
-        await seen(mode)
-        h.down = true
-      }
-      await unavailable(ensureSandbox('carol'))
-      await unavailable(ensureSandbox('bob', { needProject: 'PA' }))
-    }
-    expect(ensures()).toEqual([])
-  })
-
-  test('a server error, a refused orchestrator key, a missing mode route or any coded error from the mode route is not an answer: 503, never shared', async () => {
-    // The mode route answers only 200 {mode} (B.9): a contract code there is another route's answer
-    // (e.g. GET /sandboxes/{user_id} registered first, which refuses "mode" as a user id).
-    for (const [status, body] of [
-      [500, { detail: 'Internal Server Error' }], [401, { detail: 'Unauthorized' }], [404, { detail: 'Not Found' }],
-      [403, { detail: { code: 'sandbox_user_refused' } }], [409, { detail: { ...RAM, code: 'sandbox_ram' } }],
-      [503, { detail: { code: 'sandbox_start_failed' } }], [400, { detail: { code: 'invalid_user_id' } }],
-      [404, { detail: { code: 'unknown_instance' } }],
-    ] as Array<[number, unknown]>) {
-      on('GET /sandboxes/mode', () => [status, body])
-      await unavailable(ensureSandbox('bob'))
-      await unavailable(ensureSandbox('bob', { needProject: 'PA' }))
-    }
+    expect((await refusal(ensureSandbox('carol'))).code).toBe('sandbox_user_refused')
+    expect((await refusal(ensureSandbox('bob', { needProject: 'PA' }))).code).toBe('sandbox_project_refused')
     expect(ensures()).toEqual([])
   })
 
@@ -608,7 +538,7 @@ describe('the orchestrator down: the webapp never invents a mode (the agent deci
     await unavailable(ensureSandbox('bob'))
   })
 
-  test('the internal route answers the agent 503 orchestrator_unavailable, with no detail and no mode', async () => {
+  test('the internal route answers the agent 503 orchestrator_unavailable, with no detail; a shared answer is no answer', async () => {
     vi.stubEnv('INTERNAL_API_KEY', 'k'.repeat(40))
     const { POST } = await import('@/app/api/internal/agent/sandbox/ensure/route')
     const { NextRequest } = await import('next/server')
@@ -620,22 +550,13 @@ describe('the orchestrator down: the webapp never invents a mode (the agent deci
     }
     h.down = true
     expect(await ask({ userId: 'bob' })).toEqual([503, { error: expect.any(String), code: 'orchestrator_unavailable' }])
-    expect(await ask({ userId: 'bob', projectId: 'PA' })).toEqual([503, { error: expect.any(String), code: 'orchestrator_unavailable' }])
     h.down = false
     expect(await ask({ userId: 'bob', projectId: 'PA' })).toEqual([403, { error: expect.any(String), code: 'sandbox_project_refused' }])
-    on('GET /sandboxes/mode', () => [200, { mode: 'shared' }])
-    expect(await ask({ userId: 'bob', projectId: 'PA' })).toEqual([200, { mode: 'shared' }])
+    on('POST /sandboxes/ensure', () => [200, { mode: 'shared' }])
+    expect(await ask({ userId: 'bob', projectId: 'PC' })).toEqual([503, { error: expect.any(String), code: 'orchestrator_unavailable' }])
+    on('POST /sandboxes/ensure', () => [202, { state: 'starting', instance: INSTANCE, fresh: false }])
+    expect(await ask({ userId: 'bob', projectId: 'PC', wait: false })).toEqual([202, { state: 'starting', instance: INSTANCE, fresh: false }])
     vi.unstubAllEnvs()
-  })
-
-  test('a mode guessed from a missing route is shown to people but never becomes the mode last named', async () => {
-    await seen('per_user')
-    h.script.delete('GET /sandboxes/mode')
-    expect(await sandboxMode({ fresh: true })).toBe('shared')
-    const asked = callsTo('GET', '/sandboxes/mode').length
-    await touchSandbox('bob')
-    // The warm-up still runs (per-user mode is the last named), and its ensure answers 503 for the missing route.
-    expect(callsTo('GET', '/sandboxes/mode').length).toBe(asked + 1)
   })
 })
 
@@ -715,38 +636,17 @@ describe('a stop overtaken by an ensure in flight (R2-F7): the access is re-read
   })
 })
 
-describe('touchSandbox (the warm-up): never throws, never waits, quiet until per-user mode is known', () => {
-  test('mode not seen yet: nothing is read and nothing is called', async () => {
-    await touchSandbox('bob')
-    expect(h.calls).toEqual([])
-    expect(h.userReads).not.toHaveBeenCalled()
-  })
-
-  test('shared mode seen: nothing is started', async () => {
-    on('GET /sandboxes/mode', () => [200, { mode: 'shared' }])
-    await sandboxMode()
-    h.calls.length = 0
-    await touchSandbox('bob')
-    expect(h.calls).toEqual([])
-  })
-
-  test('per-user mode seen: an ensure that does not wait, marked touch, with the default timeout', async () => {
-    await sandboxMode()
-    on('POST /sandboxes/ensure', () => [202, { mode: 'per_user', state: 'starting', instance: INSTANCE, fresh: true }])
+describe('touchSandbox (the warm-up): never throws, never waits', () => {
+  test('an ensure that does not wait, marked touch, with the default timeout, and no other call', async () => {
+    on('POST /sandboxes/ensure', () => [202, { state: 'starting', instance: INSTANCE, fresh: true }])
     await touchSandbox('bob', { actingAs: true })
     const [call] = callsTo('POST', '/sandboxes/ensure')
     expect(call.body).toEqual({ user_id: 'bob', view: 'act_as', projects: ['PB'], need_project: null, wait: false, touch: true })
     expect(call.opts).toBeUndefined()
-  })
-
-  test('a mode seen in an ensure answer counts too', async () => {
-    await ensureSandbox('bob')
-    await touchSandbox('carol')
-    expect(ensures().map((b) => b.user_id)).toEqual(['bob', 'carol'])
+    expect(h.calls).toHaveLength(1)
   })
 
   test('a refusal, an orchestrator error and an unreachable orchestrator are swallowed and logged without a token', async () => {
-    await sandboxMode()
     setUser('bob', { status: 'disabled' })
     await expect(touchSandbox('bob')).resolves.toBeUndefined()
     setUser('bob', { status: 'active' })
@@ -796,7 +696,7 @@ describe('stops: orchestrator, then the agent\'s client, then one audit row', ()
   })
 
   test('stopAllSandboxes stops every sandbox and drops each person\'s clients', async () => {
-    on('GET /sandboxes', () => [200, { mode: 'per_user', sandboxes: [
+    on('GET /sandboxes', () => [200, { sandboxes: [
       { user_id: 'bob', view: 'own', instance: INSTANCE, host: 'h', token: TOKEN, state: 'running' },
       { user_id: 'bob', view: 'act_as', instance: 'b2c3d4', host: 'h', token: TOKEN, state: 'running' },
       { user_id: 'carol', view: 'own', instance: 'c3d4e5', host: 'h', token: TOKEN, state: 'running' },
@@ -846,39 +746,29 @@ describe('reconcileSandbox: both lists, best effort, for each person', () => {
   })
 })
 
-describe('reads: status, mode, lists, leases', () => {
-  test('sandboxStatus keeps the contract\'s fields only (no token)', async () => {
+describe('reads: status, lists, leases', () => {
+  test('sandboxStatus keeps the contract\'s fields only (no token, no mode)', async () => {
     on('GET /sandboxes/bob', () => [200, { mode: 'per_user', instances: [{
       instance: INSTANCE, view: 'own', state: 'running', projects_hash: 'f3ed1ec8bb40f7b4', created_at: 1, last_used: 2,
       lease_kinds: ['run'], stop_at: 3, stop_reason: null, warn: false, reverse_port: 4444, token: TOKEN, host: 'h',
     }] }])
     const status = await sandboxStatus('bob')
-    expect(status).toEqual({ mode: 'per_user', instances: [{
+    expect(status).toEqual({ instances: [{
       instance: INSTANCE, view: 'own', state: 'running', projects_hash: 'f3ed1ec8bb40f7b4', created_at: 1, last_used: 2,
       lease_kinds: ['run'], stop_at: 3, stop_reason: null, warn: false, reverse_port: 4444,
     }] })
   })
 
-  test('sandboxMode is cached 30 s; fresh reads again; a missing route is shared', async () => {
-    expect(await sandboxMode()).toBe('per_user')
-    expect(await sandboxMode()).toBe('per_user')
-    expect(callsTo('GET', '/sandboxes/mode')).toHaveLength(1)
-    on('GET /sandboxes/mode', () => [200, { mode: 'shared' }])
-    expect(await sandboxMode({ fresh: true })).toBe('shared')
-    h.script.delete('GET /sandboxes/mode')
-    expect(await sandboxMode({ fresh: true })).toBe('shared')
-  })
-
   test('listSandboxes (the Operations view) never carries a token or a host', async () => {
-    on('GET /sandboxes', () => [200, { mode: 'per_user', sandboxes: [
+    on('GET /sandboxes', () => [200, { sandboxes: [
       { user_id: 'bob', view: 'own', instance: INSTANCE, host: 'redamon-kali-x', token: TOKEN, state: 'running' },
     ] }])
-    on('GET /sandboxes/bob', () => [200, { mode: 'per_user', instances: [{
+    on('GET /sandboxes/bob', () => [200, { instances: [{
       instance: INSTANCE, view: 'own', state: 'running', projects_hash: 'f3ed1ec8bb40f7b4', created_at: 1, last_used: 2,
       lease_kinds: [], stop_at: 3, stop_reason: null, warn: false, reverse_port: 4444,
     }] }])
     const list = await listSandboxes()
-    expect(list).toEqual({ mode: 'per_user', sandboxes: [{
+    expect(list).toEqual({ sandboxes: [{
       user_id: 'bob', view: 'own', instance: INSTANCE, state: 'running', projects_hash: 'f3ed1ec8bb40f7b4',
       created_at: 1, last_used: 2, stop_at: 3,
     }] })
@@ -890,18 +780,24 @@ describe('reads: status, mode, lists, leases', () => {
     on('GET /sandboxes', () => [200, { mode: 'per_user', sandboxes: [
       { user_id: 'bob', view: 'own', instance: INSTANCE, host: 'redamon-kali-x', token: TOKEN, state: 'running', extra: 1 },
     ] }])
-    expect(await agentSandboxList()).toEqual({ mode: 'per_user', sandboxes: [
+    expect(await agentSandboxList()).toEqual({ sandboxes: [
       { user_id: 'bob', view: 'own', instance: INSTANCE, host: 'redamon-kali-x', token: TOKEN, state: 'running' },
     ] })
   })
 
-  test('an orchestrator without the routes: people see no sandbox; the agent\'s list is 503, never a guessed mode', async () => {
-    expect(await sandboxStatus('bob')).toEqual({ mode: 'shared', instances: [] })
-    expect(await listSandboxes()).toEqual({ mode: 'shared', sandboxes: [] })
+  test('an orchestrator without the routes, or answering the old shared mode only, is a failure, never "no sandbox"', async () => {
+    for (const read of [() => sandboxStatus('bob'), () => listSandboxes()]) {
+      const err = await refusal(read())
+      expect([err.status, err.code]).toEqual([404, 'sandbox_routes_missing'])
+    }
     const err = await refusal(agentSandboxList())
     expect([err.status, err.code]).toEqual([503, 'orchestrator_unavailable'])
-    await touchSandbox('bob')
-    expect(ensures()).toEqual([])
+    on('GET /sandboxes/bob', () => [200, { mode: 'shared' }])
+    on('GET /sandboxes', () => [200, { mode: 'shared' }])
+    for (const read of [() => sandboxStatus('bob'), () => listSandboxes(), () => agentSandboxList()]) {
+      const bad = await refusal(read())
+      expect([bad.status, bad.code]).toEqual([502, 'orchestrator_bad_answer'])
+    }
   })
 
   test('a lease re-checks the person, then takes or renews it at the orchestrator', async () => {
@@ -947,8 +843,10 @@ describe('agentCalls: the agent\'s drop and tunnel routes, with the master key',
   })
 })
 
-describe('the id patterns are the contract\'s (recon_orchestrator/sandbox_contract.py)', () => {
-  const py = readFileSync(path.resolve(__dirname, '../../../../recon_orchestrator/sandbox_contract.py'), 'utf8')
+// agentic/sandbox_contract.py is byte-identical to recon_orchestrator/sandbox_contract.py
+// (tests/test_sandbox_contract.py holds them so).
+describe('the id patterns are the contract\'s (agentic/sandbox_contract.py)', () => {
+  const py = readFileSync(path.resolve(__dirname, '../../../../agentic/sandbox_contract.py'), 'utf8')
   const pyConst = (name: string) => {
     const m = py.match(new RegExp(`^${name} = r"([^"]+)"$`, 'm'))
     if (!m) throw new Error(`${name} not found in the Python contract`)

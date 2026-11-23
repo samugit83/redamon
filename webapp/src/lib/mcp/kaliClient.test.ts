@@ -43,11 +43,15 @@ describe('kali_exec names the person whose sandbox runs the command', () => {
     expect(sentBody()).toEqual({ project_id: 'p1', user_id: 'person-7', command: 'id', wait_seconds: 5 })
   })
 
-  test('the poll and the cancel stay keyed by project and job only', async () => {
+  // The agent refuses a job recorded for another person (S11 F2): the poll and the cancel name the
+  // token's owner too, so a co-member of the project cannot read or stop someone else's command.
+  test('the poll and the cancel carry user_id, the argument they are given', async () => {
     agentAnswers({ job_id: jobId, status: 'running', next_cursor: 0 })
-    await kaliJobStatus('p1', jobId, 0)
-    await kaliJobCancel('p1', jobId)
-    for (const [url] of h.fetch.mock.calls) expect(String(url)).not.toMatch(/user_id/)
+    await kaliJobStatus('p1', jobId, 0, 'person-7')
+    await kaliJobCancel('p1', jobId, 'person-7')
+    const [poll, cancel] = h.fetch.mock.calls.map(([url]) => new URL(String(url)))
+    expect([poll.pathname, Object.fromEntries(poll.searchParams)]).toEqual([`/kali/exec/${jobId}`, { project_id: 'p1', cursor: '0', user_id: 'person-7' }])
+    expect([cancel.pathname, Object.fromEntries(cancel.searchParams)]).toEqual([`/kali/exec/${jobId}/cancel`, { project_id: 'p1', user_id: 'person-7' }])
   })
 })
 
@@ -65,19 +69,19 @@ describe('a per-user sandbox that is starting or could not be used', () => {
       job_id: jobId, status: 'failed', error_code: 'ram',
       error: 'not enough free memory to start this sandbox now',
     })
-    const job = await kaliJobStatus('p1', jobId, 0)
+    const job = await kaliJobStatus('p1', jobId, 0, 'person-7')
     expect(job.errorCode).toBe('ram')
     expect(job.failure).toBe('not enough free memory to start this sandbox now')
   })
 
   test('ram without a sentence still says why', async () => {
     agentAnswers({ job_id: jobId, status: 'failed', error_code: 'ram' })
-    expect((await kaliJobStatus('p1', jobId, 0)).failure).toBe(MODAL_RAM_BODY)
+    expect((await kaliJobStatus('p1', jobId, 0, 'person-7')).failure).toBe(MODAL_RAM_BODY)
   })
 
   test('sandbox_refused always reads as the contract\'s text, never the upstream one', async () => {
     agentAnswers({ job_id: jobId, status: 'failed', error_code: 'sandbox_refused', error: 'user cm0abc refused on p1' })
-    const job = await kaliJobStatus('p1', jobId, 0)
+    const job = await kaliJobStatus('p1', jobId, 0, 'person-7')
     expect(job.errorCode).toBe('sandbox_refused')
     expect(job.failure).toBe(SANDBOX_REFUSED)
   })
@@ -85,7 +89,7 @@ describe('a per-user sandbox that is starting or could not be used', () => {
   test('sandbox_error and sandbox_stopped are fixed lines', async () => {
     for (const code of ['sandbox_error', 'sandbox_stopped']) {
       agentAnswers({ job_id: jobId, status: 'failed', error_code: code, error: 'Traceback: /opt/x.py' })
-      const job = await kaliJobStatus('p1', jobId, 0)
+      const job = await kaliJobStatus('p1', jobId, 0, 'person-7')
       expect(job.errorCode).toBe(code)
       expect(job.failure).toMatch(/^The Kali sandbox /)
     }
@@ -93,7 +97,7 @@ describe('a per-user sandbox that is starting or could not be used', () => {
 
   test('a code outside the contract is not passed on as one', async () => {
     agentAnswers({ job_id: jobId, status: 'failed', error_code: 'disk_full', error: 'boom' })
-    const job = await kaliJobStatus('p1', jobId, 0)
+    const job = await kaliJobStatus('p1', jobId, 0, 'person-7')
     expect(job.errorCode).toBeUndefined()
     expect(job.failure).toBe('boom')
   })
@@ -135,29 +139,29 @@ describe('an agent 4xx reaches the caller', () => {
 
   test('a 409 conflict carries its reason instead of a generic message', async () => {
     agentSays(409, 'the job already finished and cannot be cancelled')
-    await expect(kaliJobCancel('p1', 'a'.repeat(32)))
+    await expect(kaliJobCancel('p1', 'a'.repeat(32), 'person-7'))
       .rejects.toThrow(/already finished and cannot be cancelled/)
   })
 
   test('an unenumerated 4xx carries its reason too', async () => {
     agentSays(422, 'cursor must be a whole number of bytes')
-    await expect(kaliJobStatus('p1', 'a'.repeat(32), 0))
+    await expect(kaliJobStatus('p1', 'a'.repeat(32), 0, 'person-7'))
       .rejects.toThrow(/whole number of bytes/)
   })
 
   test('a 5xx still degrades to a fixed line', async () => {
     // Those bodies are raw exception text: host paths and image names.
     agentSays(500, "FileNotFoundError: /opt/redamon/agentic/api.py line 42")
-    await expect(kaliJobStatus('p1', 'a'.repeat(32), 0))
+    await expect(kaliJobStatus('p1', 'a'.repeat(32), 0, 'person-7'))
       .rejects.toThrow(/The command could not be run\./)
-    await expect(kaliJobStatus('p1', 'a'.repeat(32), 0))
+    await expect(kaliJobStatus('p1', 'a'.repeat(32), 0, 'person-7'))
       .rejects.not.toThrow(/api\.py/)
   })
 
   test('404 stays deliberately uniform, for anti-enumeration', async () => {
     // A missing job and another project's job must read identically.
     agentSays(404, 'no such command')
-    await expect(kaliJobStatus('p1', 'a'.repeat(32), 0))
+    await expect(kaliJobStatus('p1', 'a'.repeat(32), 0, 'person-7'))
       .rejects.toThrow(/^No such command\.$/)
   })
 })

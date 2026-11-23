@@ -2,7 +2,8 @@
  * PUT /api/users/[id]/settings: a save that is stored but not applied.
  *
  * Two follow-up calls ride a settings save: the orchestrator's capture-proxy
- * start/stop (TrafficMind) and the kali-sandbox tunnel push. Both used to be
+ * start/stop (TrafficMind) and the tunnel push to the person's own Kali sandbox
+ * (through the agent, group 1). Both used to be
  * awaited without reading the answer, so a proxy that never started or a tunnel
  * the sandbox refused read as "Settings saved". The save still answers 200 (the
  * row is written) and lists each failed follow-up in `warnings` with a code and
@@ -14,8 +15,15 @@
  */
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
-// The Kali sandbox mode the orchestrator names: shared (group 1, D.2: every test sets it).
-vi.mock('@/lib/sandbox/gateway', () => ({ sandboxMode: async () => 'shared' }))
+const sandbox = vi.hoisted(() => ({ ensureSandbox: vi.fn(), sandboxStatus: vi.fn(), agentFetch: vi.fn() }))
+vi.mock('@/lib/sandbox/gateway', () => ({
+  ensureSandbox: (...a: unknown[]) => sandbox.ensureSandbox(...a),
+  sandboxStatus: (...a: unknown[]) => sandbox.sandboxStatus(...a),
+}))
+vi.mock('@/lib/agentFetch', async (orig) => ({
+  ...(await orig() as Record<string, unknown>),
+  agentFetch: (...a: unknown[]) => sandbox.agentFetch(...a),
+}))
 
 const mockFindUnique = vi.fn()
 const mockUpsert = vi.fn()
@@ -28,6 +36,7 @@ vi.mock('@/lib/prisma', () => ({
     userSettings: {
       findUnique: (...a: unknown[]) => mockFindUnique(...a),
       upsert: (...a: unknown[]) => mockUpsert(...a),
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
     apiKeyRotationConfig: {
       findMany: vi.fn().mockResolvedValue([]),
@@ -46,12 +55,14 @@ vi.mock('@/lib/session', () => ({
   isInternalRequest: vi.fn().mockReturnValue(false),
   isScannerRequest: vi.fn().mockReturnValue(false),
   getSession: (...a: unknown[]) => mockGetSession(...a),
+  authzIdentityOf: vi.fn(async (s: unknown) => ({ session: s, principal: {}, actingAs: null })),
 }))
 vi.mock('@/lib/orchestrator', () => ({
   orchestratorFetch: (...a: unknown[]) => mockOrchestratorFetch(...a),
 }))
 
 import { GET, PUT } from './route'
+import { AgentUnreachableError } from '@/lib/agentFetch'
 
 const EXISTING = {
   userId: 'u1', captureProxyEnabled: false, captureProxyPort: 8888, captureProxyRedactSecrets: true,
@@ -78,9 +89,15 @@ beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   vi.spyOn(console, 'error').mockImplementation(() => {})
   mockGetSession.mockResolvedValue({ userId: 'u1', role: 'admin' })
-  mockFindUnique.mockResolvedValue({ ...EXISTING })
-  mockUpsert.mockImplementation(({ update }: { update: Record<string, unknown> }) =>
-    Promise.resolve({ ...EXISTING, ...update }))
+  let row: Record<string, unknown> = { ...EXISTING }
+  mockFindUnique.mockImplementation(async () => ({ ...row }))
+  mockUpsert.mockImplementation(({ update }: { update: Record<string, unknown> }) => {
+    row = { ...row, ...update }
+    return Promise.resolve({ ...row })
+  })
+  sandbox.ensureSandbox.mockResolvedValue({ state: 'running', fresh: false, instance: 'a1b2c3' })
+  sandbox.sandboxStatus.mockResolvedValue({ instances: [{ instance: 'a1b2c3', view: 'own', state: 'running' }] })
+  sandbox.agentFetch.mockImplementation(async () => new Response('{}', { status: 200 }))
   mockOrchestratorFetch.mockImplementation(async () => new Response('{}', { status: 200 }))
   fetchMock.mockImplementation(async () => new Response('{}', { status: 200 }))
   vi.stubGlobal('fetch', fetchMock)
@@ -129,22 +146,25 @@ describe('settings PUT: follow-up failures become warnings', () => {
     expect(body.warnings[0]).toMatchObject({ code: 'orchestrator_timeout' })
   })
 
-  test('the kali-sandbox refused the tunnel push (token mismatch)', async () => {
-    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 }))
+  test('the agent refused the tunnel push to the person\'s sandbox: its status and code, never the configuration', async () => {
+    sandbox.agentFetch.mockImplementation(async () => new Response(JSON.stringify({ error: 'unauthorized tok' }), { status: 401 }))
     const res = await put({ tunnelsEnabled: true, ngrokAuthtoken: 'tok' })
     expect(res.status).toBe(200)
-    expect((await res.json()).warnings).toEqual([{
-      service: 'kali_sandbox', message: 'The tunnel configuration was not applied',
-      code: 'kali_sandbox_error', upstreamStatus: 401,
+    const body = await res.json()
+    expect(body.warnings).toEqual([{
+      service: 'agent', message: 'The tunnel configuration was not applied',
+      code: 'agent_401', upstreamStatus: 401,
     }])
+    expect(JSON.stringify(body.warnings)).not.toContain('tok')
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   test('both follow-ups failing are both listed', async () => {
     mockOrchestratorFetch.mockRejectedValue(refused('ECONNREFUSED'))
-    fetchMock.mockRejectedValue(refused('ENOTFOUND'))
+    sandbox.agentFetch.mockRejectedValue(new AgentUnreachableError(refused('ENOTFOUND')))
     const body = await (await put({ captureProxyEnabled: true, tunnelsEnabled: true })).json()
     expect(body.warnings.map((w: { code: string }) => w.code))
-      .toEqual(['orchestrator_unreachable', 'kali_sandbox_unreachable'])
+      .toEqual(['orchestrator_unreachable', 'agent_unreachable'])
   })
 })
 

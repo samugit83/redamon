@@ -55,11 +55,11 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def sandbox_handle(person, view, mode):
+def sandbox_handle(person, view):
     return router.SandboxHandle(
         user_id=person, view=view, instance="a1b2c3",
-        host=contract.container_name(person, view, "a1b2c3") if mode == contract.MODE_PER_USER else "kali-sandbox",
-        token="t" * 24, tunnel_token="", ports=contract.PORTS, reverse_port=4444, mode=mode)
+        host=contract.container_name(person, view, "a1b2c3"),
+        token="t" * 24, tunnel_token="", ports=contract.PORTS, reverse_port=4444)
 
 
 class Tool:
@@ -74,7 +74,8 @@ class Tool:
 
 
 class AgentManager:
-    """The orchestrator's MCP manager (shared mode's browser)."""
+    """The orchestrator's MCP manager: it holds user servers only, so it is never asked
+    for the browser."""
 
     def __init__(self):
         self.tool = Tool("execute_playwright", "shared")
@@ -86,8 +87,7 @@ class AgentManager:
 
 
 class Router:
-    def __init__(self, mode=contract.MODE_PER_USER, refuse=None):
-        self.mode = mode
+    def __init__(self, refuse=None):
         self.refuse = refuse
         self.used = []
         self.released = []
@@ -99,7 +99,7 @@ class Router:
         self.used.append({"user_id": user_id, "project_id": project_id, "kind": kind, "view": seen_view})
         if self.refuse:
             raise router.SandboxUnavailable(self.refuse)
-        h = sandbox_handle(user_id, seen_view, self.mode)
+        h = sandbox_handle(user_id, seen_view)
         try:
             yield h
         finally:
@@ -430,11 +430,11 @@ def test_a_bound_login_never_reaches_any_sandbox(agent_process):
 
 
 # --------------------------------------------------------------------------------------
-# Shared mode and outside the agent process
+# Never the agent's own manager, and outside the agent process
 # --------------------------------------------------------------------------------------
 
-def test_shared_mode_uses_the_agents_own_manager(agent_process):
-    r = Router(mode=contract.MODE_SHARED)
+def test_the_agents_own_manager_never_renders(agent_process):
+    r = Router()
 
     async def go():
         with jobs.sandbox_person("alice"):
@@ -442,70 +442,8 @@ def test_shared_mode_uses_the_agents_own_manager(agent_process):
 
     with r.installed():
         output, error = run(go())
-    assert (output, error) == ("rendered for shared", "")
-    assert agent_process.tool.calls == [{"script": "print(2)"}]
-    assert r.tools == [], "no per-user client in shared mode"
-
-
-class UnloadedManager(AgentManager):
-    """The agent's manager after a boot or a toolset reload in per-user mode: no system
-    server until the orchestrator's shared loader connects them."""
-
-    def __init__(self):
-        super().__init__()
-        self.loaded = False
-
-    async def get_tools(self, *a, **k):
-        self.asked += 1
-        return [Tool("kali_shell", "shared"), self.tool] if self.loaded else []
-
-
-def _unloaded_agent(monkeypatch, load):
-    manager = UnloadedManager()
-    fake_api = types.ModuleType("api")
-    fake_api.orchestrator = types.SimpleNamespace(
-        _mcp_manager=manager, tool_executor=types.SimpleNamespace(shared_system_loader=load))
-    monkeypatch.setitem(sys.modules, "api", fake_api)
-    return manager
-
-
-def test_shared_mode_loads_the_system_servers_the_manager_lacks(monkeypatch):
-    """A roll-back to shared: the gateway answers shared to a manager that holds no system
-    server (boot before any answer, or a reload in per-user mode). The loader runs once."""
-    loads = []
-
-    async def load():
-        loads.append(manager)
-        manager.loaded = True
-
-    manager = _unloaded_agent(monkeypatch, load)
-    r = Router(mode=contract.MODE_SHARED)
-
-    async def go():
-        with jobs.sandbox_person("alice"):
-            return [await browse("print(3)"), await browse("print(4)")]
-
-    with r.installed():
-        assert run(go()) == [("rendered for shared", ""), ("rendered for shared", "")]
-    assert loads == [manager]
-    assert manager.tool.calls == [{"script": "print(3)"}, {"script": "print(4)"}]
-    assert r.tools == []
-
-
-def test_shared_mode_after_a_failed_load_has_no_browser(monkeypatch):
-    async def load():
-        raise RuntimeError("toolset busy")
-
-    manager = _unloaded_agent(monkeypatch, load)
-    r = Router(mode=contract.MODE_SHARED)
-
-    async def go():
-        with jobs.sandbox_person("alice"):
-            return await browse()
-
-    with r.installed():
-        assert run(go()) == ("", "browser_error")
-    assert manager.tool.calls == []
+    assert (output, error) == ("rendered for alice/own", "")
+    assert agent_process.tool.calls == [] and agent_process.asked == 0
 
 
 def test_outside_the_agent_process_there_is_no_browser(monkeypatch):

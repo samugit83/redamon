@@ -69,14 +69,6 @@ import output_offload  # noqa: E402
 
 class ExecutorWiringTestBase(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        import sandbox_contract
-        import sandbox_router
-
-        # The shared sandbox's path: shared mode is named, since the default is
-        # per_user and no gateway answers here.
-        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
-        self.addCleanup(sandbox_router._reset)
-
         self.tmp = tempfile.mkdtemp(prefix="redamon-exec-")
         # Point all workspace modules at the temp root.
         self._orig_ws = workspace_fs.WORKSPACE_ROOT
@@ -103,6 +95,10 @@ class ExecutorWiringTestBase(unittest.IsolatedAsyncioTestCase):
             mcp_manager=MagicMock(),
             graph_tool=None,
         )
+        from one_sandbox import route_to
+
+        # A system tool runs in the person's sandbox, whose client serves this table.
+        route_to(self, lambda: self.executor._all_tools)
 
     async def asyncTearDown(self):
         # Cancel any in-flight jobs before restoring WORKSPACE_ROOT.

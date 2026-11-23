@@ -59,8 +59,9 @@ p2-enable-anon	2.3	anon	POST	/api/users/${MEMBER_C_ID}/enable	{}	401	req:ID-13
 # step 3.9 a member holding neither field group (no tunnel, no capture) and no administrator
 # account is refused naming platform:tunnels, with the permissions switch on or off
 # (instance:settings is Root's security policy, not this gate). The
-# tunnel sync takes only the sandbox's bearer whatever the switch (the accepted call:
-# tests/test_e2e_security_live.sh).
+# tunnel sync route is gone with the shared Kali sandbox (group 1, S20): an anonymous POST
+# is refused at the middleware (401, it is no longer a public path) and a signed-in one finds
+# no route (404).
 p2-instance-settings-off	2.4	admin_a	GET	/api/admin/instance-settings	-	404	req:ID-32 identity:off
 p2-instance-settings-off-put	2.4	admin_a	PUT	/api/admin/instance-settings	{"chiselServerUrl":42}	404	req:ID-32 identity:off
 p2-instance-settings-anon	2.4	anon	GET	/api/admin/instance-settings	-	401	req:ID-32
@@ -70,28 +71,24 @@ p2-instance-settings-admin	2.4	admin_a	GET	/api/admin/instance-settings	-	200;ha
 p2-instance-settings-admin-not-json	2.4	admin_a	PUT	/api/admin/instance-settings	-	415	req:ID-32 identity:on
 p2-instance-settings-admin-bad-field	2.4	admin_a	PUT	/api/admin/instance-settings	{"chiselServerUrl":42}	400;has=invalid_field	req:ID-32 identity:on
 p2-instance-settings-acting-admin	2.4	admin_a_as_member_c	PUT	/api/admin/instance-settings	{"chiselServerUrl":42}	400;has=invalid_field	req:ID-32 identity:on
-p2-instance-moved-tunnel-change-member	2.4	member_b	PUT	/api/users/${MEMBER_B_ID}/settings	{"chiselServerUrl":"http://127.0.0.1:9","githubEnterpriseHost":"127.0.0.1"}	409;has=moved_to_instance_settings;has=chiselServerUrl	req:ID-32 identity:on sandbox:shared
-p2-instance-moved-tunnel-enable-member	2.4	member_b	PUT	/api/users/${MEMBER_B_ID}/settings	{"tunnelsEnabled":true,"githubEnterpriseHost":"127.0.0.1"}	409;has=moved_to_instance_settings	req:ID-32 identity:on sandbox:shared
-p2-instance-moved-tunnel-change-admin	2.4	admin_a	PUT	/api/users/${ADMIN_A_ID}/settings	{"chiselServerUrl":"http://127.0.0.1:9","githubEnterpriseHost":"127.0.0.1"}	409;has=moved_to_instance_settings	req:ID-32 identity:on sandbox:shared
 p2-instance-moved-capture-admin	2.4	admin_a	PUT	/api/users/${ADMIN_A_ID}/settings	{"captureProxyPort":1,"githubEnterpriseHost":"127.0.0.1"}	409;has=captureProxyPort	req:ID-32 identity:on
-p2-instance-moved-hint-admin	2.4	admin_a	GET	/api/users/${ADMIN_A_ID}/settings	-	200;has="canManageTunnels":false;has="sharedSettingsAt":"instance"	req:ID-32 req:UI-04 identity:on sandbox:shared
 p2-instance-moved-hint-off	2.4	admin_a	GET	/api/users/${ADMIN_A_ID}/settings	-	200;lacks=sharedSettingsAt	req:ID-32 identity:off
-# Group 1 (S17): with per-user Kali sandboxes a tunnel is each person's own row whatever the
-# identity switch, and runs in their own sandbox, so the four rows above hold in shared mode only.
-# Per-user mode: a member's change or "on" is refused for platform:tunnels in its own words (403
+# Group 1 (S17): a tunnel is each person's own row whatever the identity switch, and runs in their
+# own Kali sandbox. A member's change or "on" is refused for platform:tunnels in its own words (403
 # tunnels_admin_only, "your own Kali sandbox"); an admin's change passes to the GitHub Enterprise
 # host check (400); the hint offers the admin their own tunnel (tunnelScope own_sandbox); the
-# instance tunnel group refuses any change but its "off" (409 tunnels_per_person); in shared mode
-# the same body stops at Root's security policy (403 root_only), so nothing is written in either
-# mode, assuming the stored minimum password length is not 71. Each mode's rows carry
-# sandbox:shared|per_user (tests/rbac_matrix_live.sh); S20 drops the shared ones.
-p2-g1-own-tunnel-change-member	g1	member_b	PUT	/api/users/${MEMBER_B_ID}/settings	{"chiselServerUrl":"http://127.0.0.1:9","githubEnterpriseHost":"127.0.0.1"}	403;has=tunnels_admin_only;has=chiselServerUrl;has=your own Kali sandbox	req:ID-32 req:I9 identity:on sandbox:per_user
-p2-g1-own-tunnel-enable-member	g1	member_b	PUT	/api/users/${MEMBER_B_ID}/settings	{"tunnelsEnabled":true,"githubEnterpriseHost":"127.0.0.1"}	403;has=tunnels_admin_only;has=tunnelsEnabled;has=your own Kali sandbox	req:ID-32 req:I9 identity:on sandbox:per_user
-p2-g1-own-tunnel-change-admin	g1	admin_a	PUT	/api/users/${ADMIN_A_ID}/settings	{"chiselServerUrl":"http://127.0.0.1:9","githubEnterpriseHost":"127.0.0.1"}	400;has=GitHub Enterprise Host;lacks=moved_to_instance_settings	req:ID-32 req:I9 identity:on sandbox:per_user
-p2-g1-own-tunnel-hint-admin	g1	admin_a	GET	/api/users/${ADMIN_A_ID}/settings	-	200;has="canManageTunnels":true;has="tunnelScope":"own_sandbox";has="sharedSettingsAt":"instance"	req:ID-32 req:UI-04 req:I9 identity:on sandbox:per_user
-p2-g1-instance-tunnel-per-person-admin	g1	admin_a	PUT	/api/admin/instance-settings	{"chiselServerUrl":"http://127.0.0.1:9","passwordMinLength":71}	409;has=tunnels_per_person;has=chiselServerUrl	req:ID-32 req:I9 identity:on sandbox:per_user
+# instance tunnel group refuses any change but its "off" (409 tunnels_per_person) before anything
+# is written, and only that refusal names both its code and the chisel field (a stored chisel URL
+# equal to the row's is no change, and fails the row).
+# A route that let the change through fails the row; the passwordMinLength in its body is then a
+# second stop (Root's security policy, 403 root_only, unless the stored minimum is already 71).
+p2-g1-own-tunnel-change-member	g1	member_b	PUT	/api/users/${MEMBER_B_ID}/settings	{"chiselServerUrl":"http://127.0.0.1:9","githubEnterpriseHost":"127.0.0.1"}	403;has=tunnels_admin_only;has=chiselServerUrl;has=your own Kali sandbox	req:ID-32 req:I9 identity:on
+p2-g1-own-tunnel-enable-member	g1	member_b	PUT	/api/users/${MEMBER_B_ID}/settings	{"tunnelsEnabled":true,"githubEnterpriseHost":"127.0.0.1"}	403;has=tunnels_admin_only;has=tunnelsEnabled;has=your own Kali sandbox	req:ID-32 req:I9 identity:on
+p2-g1-own-tunnel-change-admin	g1	admin_a	PUT	/api/users/${ADMIN_A_ID}/settings	{"chiselServerUrl":"http://127.0.0.1:9","githubEnterpriseHost":"127.0.0.1"}	400;has=GitHub Enterprise Host;lacks=moved_to_instance_settings	req:ID-32 req:I9 identity:on
+p2-g1-own-tunnel-hint-admin	g1	admin_a	GET	/api/users/${ADMIN_A_ID}/settings	-	200;has="canManageTunnels":true;has="tunnelScope":"own_sandbox";has="sharedSettingsAt":"instance"	req:ID-32 req:UI-04 req:I9 identity:on
+p2-g1-instance-tunnel-per-person-admin	g1	admin_a	PUT	/api/admin/instance-settings	{"chiselServerUrl":"http://127.0.0.1:9","passwordMinLength":71}	409;has=tunnels_per_person;has=chiselServerUrl	req:ID-32 req:I9 identity:on
 p2-tunnel-sync-no-bearer	2.4	anon	POST	/api/global/tunnel-config/sync	-	401	req:ID-33
-p2-tunnel-sync-session-no-bearer	2.4	admin_a	POST	/api/global/tunnel-config/sync	-	401	req:ID-33
+p2-tunnel-sync-session-no-bearer	2.4	admin_a	POST	/api/global/tunnel-config/sync	-	404	req:ID-33
 #
 # ---- step 2.6: only Root manages admins; the security policy; the Root transfer ----
 # rbac-admin-a is an admin, never Root (on the dev stack Root is the owner's own account), so with

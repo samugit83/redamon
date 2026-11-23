@@ -27,5 +27,5 @@ export const GET = withRouteErrors(FAILED, async (request: NextRequest) => {
   const instances = status.instances
     .filter((i) => i.view === view)
     .map((i) => ({ state: i.state, stop_at: i.stop_at, stop_reason: i.stop_reason, warn: i.warn }))
-  return NextResponse.json({ mode: status.mode, instances }, { headers: { 'Cache-Control': 'no-store' } })
+  return NextResponse.json({ instances }, { headers: { 'Cache-Control': 'no-store' } })
 })

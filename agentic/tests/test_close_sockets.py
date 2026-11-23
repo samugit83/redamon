@@ -480,13 +480,13 @@ class Route(unittest.TestCase):
         cls.client = TestClient(api_module.app)
 
     def setUp(self):
-        import sandbox_contract
         import sandbox_router
+        from one_sandbox import route_to
 
-        # The shared sandbox's path: shared mode is named, since the default is
-        # per_user and no gateway answers here.
-        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
+        # The terminal opens on its person's own sandbox (one_sandbox's handle).
+        sandbox_router._reset()
         self.addCleanup(sandbox_router._reset)
+        route_to(self, {})
 
         self._env = mock.patch.dict(os.environ, {
             "INTERNAL_API_KEY": MASTER, "SCANNER_API_KEY": SCANNER,
@@ -584,13 +584,14 @@ class Route(unittest.TestCase):
                 self.assertEqual(ws.receive_bytes(), b"hello")  # the proxy is bridging: it registered first
                 [entry] = PROXIED_SOCKETS.matching(kinds=["kali-terminal"], user_id="uT")
                 self.assertEqual((entry.pid, entry.sid), ("pT", "sT"))
-        # The sandbox is dialled with the agent's bearer and the verified identity.
+        # The person's sandbox is dialled with its instance's bearer and the verified identity.
         url = connect.call_args.args[0]
         self.assertIn("user_id=uT", url)
         self.assertIn("project_id=pT", url)
         # Plus the shell's graph run credential (step 1.15, test_run_credential.py).
         headers = connect.call_args.kwargs["additional_headers"]
-        self.assertEqual(headers["Authorization"], "Bearer mcp-token-for-test")
+        from one_sandbox import TOKEN
+        self.assertEqual(headers["Authorization"], f"Bearer {TOKEN}")
         self.assertEqual(sorted(headers), ["Authorization", "X-Redamon-Run"])
         for _ in range(50):
             if not PROXIED_SOCKETS.matching(kinds=["kali-terminal"], user_id="uT"):
@@ -598,11 +599,13 @@ class Route(unittest.TestCase):
             time.sleep(0.02)
         self.assertEqual(PROXIED_SOCKETS.matching(kinds=["kali-terminal"], user_id="uT"), [])
 
-    def test_the_terminal_proxy_sends_no_bearer_when_none_is_set(self):
-        # The terminal server then refuses the upgrade (fail closed there).
+    def test_the_terminal_proxy_sends_no_bearer_when_the_handle_holds_none(self):
+        # The terminal server then refuses the upgrade (fail closed there); the old shared
+        # MCP_AUTH_TOKEN in the environment is never a fallback.
+        from one_sandbox import route_to
+        route_to(self, {}, token="")
         connect = mock.MagicMock(side_effect=ConnectionRefusedError("refused"))
-        with mock.patch.dict(os.environ, {"MCP_AUTH_TOKEN": ""}), \
-                mock.patch.object(self.api.websockets, "connect", connect):
+        with mock.patch.object(self.api.websockets, "connect", connect):
             with self.client.websocket_connect(f"/ws/kali-terminal?ticket={_ticket('kali-terminal')}") as ws:
                 with self.assertRaises(WebSocketDisconnect):
                     ws.receive_text()

@@ -58,14 +58,9 @@
 #           governance:on | governance:off (the same for RBAC_GOVERNANCE_ENABLED, step 6.13,
 #           which reads off while the permissions switch is off, as flags.ts chains it; it
 #           needs neither sharing nor a policy, so nothing more is read),
-#           sandbox:shared | sandbox:per_user (group 1: run only while the orchestrator's Kali
-#           sandbox mode is so, read as the webapp reads it: GET /sandboxes/mode from inside
-#           the webapp container, with its own orchestrator URL and key, once and only when a
-#           selected row needs it; a 404 naming no code is an orchestrator without the sandbox
-#           routes, which runs only the shared container; no answer, or one naming no mode,
-#           fails the rows so tagged),
 #           origin:<url> (the Origin header
-#           the row sends instead of the webapp's own, e.g. a page of another site)
+#           the row sends instead of the webapp's own, e.g. a page of another site);
+#           a sandbox: tag is a LINT error (the Kali sandbox has one mode)
 #   path, body and expect take ${KEY} from the seed output (KEY=VALUE lines).
 #
 # Rows never start a scan or an agent run. A row that must prove "allowed" without
@@ -141,6 +136,11 @@ for f in "${FILES[@]}"; do
       lint_errors=$((lint_errors + 1)); continue
     fi
     SEEN_ID[$id]="$(basename "$f"):$n"
+    # A row written for one of the two Kali sandbox modes would now run in the only one.
+    if [[ " ${cols[7]} " =~ \ (sandbox:[^ ]*)\  ]]; then
+      echo "LINT $(basename "$f"):$n $id carries ${BASH_REMATCH[1]}: the Kali sandbox has one mode now; drop the tag (and the row, if it was written for the shared one)" >&2
+      lint_errors=$((lint_errors + 1)); continue
+    fi
     if [ -n "$ROW_FILTER" ] && ! [[ "$id" =~ $ROW_FILTER ]]; then continue; fi
     ROWS+=("$line")
   done < "$f"
@@ -326,32 +326,6 @@ read_sharing_policy() { # Root's sharing policy -> SHARING_POLICY = on | off | u
     *) SHARING_POLICY=unknown ;;
   esac
 }
-# orchestratorMode (webapp/src/lib/sandbox/orchestratorClient.ts) and sandboxMode (gateway.ts),
-# run in the webapp container so the orchestrator key never leaves it. Prints shared, per_user
-# or unknown.
-SANDBOX_MODE_JS='
-const obj = (v) => v !== null && typeof v === "object" && !Array.isArray(v)
-let mode = "unknown"
-try {
-  const res = await fetch((process.env.RECON_ORCHESTRATOR_URL || "http://localhost:8010") + "/sandboxes/mode", {
-    headers: { "X-Orchestrator-Key": process.env.ORCHESTRATOR_API_KEY || "changeme" },
-    signal: AbortSignal.timeout(15000),
-  })
-  const body = await res.json().catch(() => null)
-  const detail = obj(body) ? (obj(body.detail) ? body.detail : typeof body.code === "string" ? body : null) : null
-  if (res.status === 404 && typeof detail?.code !== "string") mode = "shared"
-  else if (res.ok && obj(body) && (body.mode === "shared" || body.mode === "per_user")) mode = body.mode
-} catch {}
-console.log(mode)'
-SANDBOX_MODE=""
-read_sandbox_mode() { # the orchestrator's Kali sandbox mode -> SANDBOX_MODE = shared | per_user | unknown, read once
-  [ -n "$SANDBOX_MODE" ] && return
-  case "$(cd "$ROOT" && printf '%s\n' "$SANDBOX_MODE_JS" | docker compose exec -T -w /app webapp node --input-type=module - 2>/dev/null)" in
-    shared) SANDBOX_MODE=shared ;;
-    per_user) SANDBOX_MODE=per_user ;;
-    *) SANDBOX_MODE=unknown ;;
-  esac
-}
 CACHE_SETTLE=""
 cache_settle() { # waits out the webapp's account cache when the identity switch is on
   if [ -z "$CACHE_SETTLE" ]; then
@@ -436,15 +410,6 @@ for line in "${ROWS[@]}"; do
   if [ -n "$policy_unread" ]; then
     echo "FAIL  $label  could not read Root's sharing policy (psql in the postgres container)  [$tags]"
     FAIL=$((FAIL + 1)); continue
-  fi
-  if [ -z "$off_switch" ] && [[ " $tags " =~ \ sandbox:(shared|per_user)\  ]]; then
-    want="${BASH_REMATCH[1]}"
-    read_sandbox_mode
-    if [ "$SANDBOX_MODE" = unknown ]; then
-      echo "FAIL  $label  could not read the orchestrator's Kali sandbox mode (GET /sandboxes/mode from the webapp container)  [$tags]"
-      FAIL=$((FAIL + 1)); continue
-    fi
-    [ "$want" = "$SANDBOX_MODE" ] || off_switch="sandbox mode $SANDBOX_MODE"
   fi
   if [ -n "$off_switch" ]; then
     echo "SKIP  $label  ($off_switch)  [$tags]"; SKIPPED=$((SKIPPED + 1)); continue

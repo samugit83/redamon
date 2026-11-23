@@ -39,7 +39,7 @@ _ABS_PATH = r'(/[^\s;"\'|&<>`$]+)'
 
 def _project_files(pattern: str, text: str, project_id: str):
     """The paths `pattern` finds in `text` that name a file of the run's project
-    workspace, in order; a path elsewhere (the shared sandbox's /tmp, another
+    workspace, in order; a path elsewhere (the sandbox's /tmp, another
     project's workspace, a `..` segment, a directory) is skipped."""
     from workspace_fs import sandbox_workspace_relative
 

@@ -10,7 +10,7 @@
  *
  * The session and the account read are mocked; sharedToolAccess is the real one. The Kali
  * sandboxes stop too (group 1, D22): every one for the global scope, the presser's own otherwise,
- * through the lifecycle hook (a double; shared mode unless a test says otherwise).
+ * through the lifecycle hook (a double; nothing stopped unless a test says otherwise).
  *
  * Run: npx vitest run src/app/api/agent/emergency-stop-all/route.test.ts
  *
@@ -90,7 +90,7 @@ beforeEach(() => {
   mockWriteAudit.mockReset().mockResolvedValue(undefined)
   mockCutoff.mockReset().mockResolvedValue({ createdAt: CUTOFF })
   mockAgentFetch.mockReset()
-  mockSandboxStop.mockReset().mockResolvedValue({ mode: 'shared' })
+  mockSandboxStop.mockReset().mockResolvedValue({ stopped: 0 })
   order.length = 0
   resetSharedToolsForTests()
   setFlagsForTests({})
@@ -109,7 +109,7 @@ describe('POST /api/agent/emergency-stop-all', () => {
     const res = await post()
 
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ scope: 'own', stopped: 2 })
+    expect(await res.json()).toEqual({ scope: 'own', stopped: 2, sandboxes: { stopped: 0 } })
     expect(agentCall()).toEqual({ path: '/agent-sessions/stop-for', method: 'POST', body: { user_id: 'member-1' } })
     expect(stopRows()).toEqual([{
       actorId: 'member-1', action: 'agent.emergency_stop', targetType: 'user', targetId: 'member-1',
@@ -123,7 +123,7 @@ describe('POST /api/agent/emergency-stop-all', () => {
 
     const res = await post()
 
-    expect(await res.json()).toEqual({ scope: 'all', stopped: 5 })
+    expect(await res.json()).toEqual({ scope: 'all', stopped: 5, sandboxes: { stopped: 0 } })
     expect(agentCall()).toEqual({ path: '/emergency-stop-all', method: 'POST', body: undefined })
     expect(stopRows()).toEqual([{
       actorId: 'admin-1', action: 'agent.emergency_stop', targetType: 'instance', targetId: null,
@@ -138,7 +138,7 @@ describe('POST /api/agent/emergency-stop-all', () => {
 
     const res = await post()
 
-    expect(await res.json()).toEqual({ scope: 'all', stopped: 1 })
+    expect(await res.json()).toEqual({ scope: 'all', stopped: 1, sandboxes: { stopped: 0 } })
     expect(agentCall().path).toBe('/emergency-stop-all')
     expect(stopRows()[0].after).toEqual({ scope: 'all', count: 1, via: 'compat' })
     expect(compatRows()).toEqual([expect.objectContaining({ actorId: 'old-member', targetId: 'emergency_stop_all' })])
@@ -149,7 +149,7 @@ describe('POST /api/agent/emergency-stop-all', () => {
     signedIn(principal('new-member', 'standard', [], AFTER_CUTOFF))
     agentAnswers({ stopped: 0 })
 
-    expect(await (await post()).json()).toEqual({ scope: 'own', stopped: 0 })
+    expect(await (await post()).json()).toEqual({ scope: 'own', stopped: 0, sandboxes: { stopped: 0 } })
     expect(agentCall().path).toBe('/agent-sessions/stop-for')
     expect(compatRows()).toEqual([])
   })
@@ -232,7 +232,7 @@ describe('the Kali sandboxes stop too (group 1, D22)', () => {
   test('admin → every sandbox, with the presser, after the agent stopped the runs in them', async () => {
     signedIn(principal('admin-1', 'admin'))
     agentAnswers({ stopped: 5 })
-    mockSandboxStop.mockResolvedValue({ mode: 'per_user', stopped: 3 })
+    mockSandboxStop.mockResolvedValue({ stopped: 3 })
 
     const res = await post()
 
@@ -246,17 +246,17 @@ describe('the Kali sandboxes stop too (group 1, D22)', () => {
   test('member → only their own sandboxes (both views), never anyone else\'s', async () => {
     signedIn(principal('member-1', 'standard'))
     agentAnswers({ stopped: 2 })
-    mockSandboxStop.mockResolvedValue({ mode: 'per_user', stopped: 1 })
+    mockSandboxStop.mockResolvedValue({ stopped: 1 })
 
     expect(await (await post()).json()).toEqual({ scope: 'own', stopped: 2, sandboxes: { stopped: 1 } })
     expect(mockSandboxStop).toHaveBeenCalledWith({ scope: 'own', userId: 'member-1' }, { actorId: 'member-1', ...nobody })
   })
 
-  test('shared mode: the answer is today\'s', async () => {
+  test('no sandbox running: the answer still says none stopped', async () => {
     signedIn(principal('admin-1', 'admin'))
     agentAnswers({ stopped: 5 })
 
-    expect(await (await post()).json()).toEqual({ scope: 'all', stopped: 5 })
+    expect(await (await post()).json()).toEqual({ scope: 'all', stopped: 5, sandboxes: { stopped: 0 } })
     expect(mockSandboxStop).toHaveBeenCalledTimes(1)
   })
 
@@ -271,7 +271,7 @@ describe('the Kali sandboxes stop too (group 1, D22)', () => {
   test('an agent that cannot be reached does not keep the sandboxes running (the answer stays the agent\'s)', async () => {
     signedIn(principal('admin-1', 'admin'))
     mockAgentFetch.mockRejectedValue(new AgentUnreachableError(Object.assign(new Error('x'), { code: 'ECONNREFUSED' })))
-    mockSandboxStop.mockResolvedValue({ mode: 'per_user', stopped: 2 })
+    mockSandboxStop.mockResolvedValue({ stopped: 2 })
 
     const res = await post()
 

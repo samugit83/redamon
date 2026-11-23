@@ -3,9 +3,8 @@
 # testing/e2e/tests/perUserSandbox.spec.ts one group at a time, each against the
 # orchestrator setting it needs.
 #
-#   bash testing/e2e/scripts/per-user-sandbox-e2e.sh              # groups A, B, C, D, per-user mode
+#   bash testing/e2e/scripts/per-user-sandbox-e2e.sh              # groups A, B, C, D
 #   bash testing/e2e/scripts/per-user-sandbox-e2e.sh --groups A,D
-#   bash testing/e2e/scripts/per-user-sandbox-e2e.sh --shared     # group A in shared mode: "fails before"
 #   bash testing/e2e/scripts/per-user-sandbox-e2e.sh --list       # list the tests; touches nothing
 #   bash testing/e2e/scripts/per-user-sandbox-e2e.sh --dry-run    # say, per group, what would be recreated
 #   bash testing/e2e/scripts/per-user-sandbox-e2e.sh --check-lock # take the lock as a run would, then exit
@@ -18,7 +17,9 @@
 # limits, port), so shell-only values survive. Before the first recreate the
 # originals go to a 0600 file beside the lock (secret values as SHA-256 only);
 # the exit trap puts them back and compares, and a run killed before that
-# puts them back at the start of the next one.
+# puts them back at the start of the next one. It stops and removes no sandbox and
+# no templates volume: the sandboxes a run starts are its test persons' own and
+# stop when idle, as anyone's.
 #
 # It fails (exit 1) when Docker, npx, curl, the orchestrator, the agent or the
 # webapp is missing, before doing anything; G1_E2E_ALLOW_SKIP=1 turns that into
@@ -35,6 +36,8 @@
 # screenshots) in its own folder, G1_E2E_RESULTS_DIR/<UTC time>-<pid>/group-<G>
 # (default testing/e2e/test-results-g1e2e, ignored by git): Playwright empties its
 # output folder at every start, so one folder per group would lose the earlier ones.
+# Playwright runs under `setpriv --pdeathsig TERM` where setpriv offers it, so it
+# ends with a wrapper killed by SIGKILL; the next run stops what is left of it first.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,24 +48,19 @@ BASE_URL="${REDAMON_BASE_URL:-http://localhost:3000}"
 LOCK_WAIT="${G1_E2E_LOCK_WAIT_S:-10800}"
 # Every variable a group may set. A group leaves the others at the values the
 # orchestrator had when the run started.
-MANAGED=(KALI_SANDBOX_MODE KALI_SANDBOX_IDLE_MINUTES OS_HEADROOM_MEM SERVICE_BASELINE_MEM)
-# The per-user groups leave KALI_SANDBOX_MODE empty, as a default stack runs it, so the stack's
-# contract default decides (it must be per_user); G1_E2E_PER_USER_MODE=per_user names it instead.
-PER_USER_MODE="${G1_E2E_PER_USER_MODE-}"
+MANAGED=(KALI_SANDBOX_IDLE_MINUTES OS_HEADROOM_MEM SERVICE_BASELINE_MEM)
 # Names whose values never reach the originals file (compared by hash instead).
 SECRET_NAME='(_KEY|_TOKEN|_SECRET|_PASSWORD|_PASS|DATABASE_URL)$'
 
-usage() { sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
 
 GROUPS_ARG="A,B,C,D"
-SHARED=0
 LIST=0
 DRY=0
 CHECK_LOCK=0
 EXTRA=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --shared) SHARED=1 ;;
         --groups) GROUPS_ARG="${2:?--groups needs a list such as A,C}"; shift ;;
         --groups=*) GROUPS_ARG="${1#--groups=}" ;;
         --list) LIST=1 ;;
@@ -87,9 +85,6 @@ if [[ $LIST -eq 1 ]]; then
     exec npx playwright test --list perUserSandbox
 fi
 
-if [[ $SHARED -eq 1 ]]; then
-    GROUPS_ARG="A"
-fi
 IFS=',' read -r -a GROUP_LIST <<< "${GROUPS_ARG^^}"
 for g in "${GROUP_LIST[@]}"; do
     [[ "$g" =~ ^[ABCD]$ ]] || { echo "unknown group: $g (A, B, C or D)" >&2; exit 2; }
@@ -264,8 +259,6 @@ persist_originals() {
             else echo "E $key=${ORIG_ENV[$key]}"; fi
         done
         for key in "${!ORIG_LIM[@]}"; do echo "L $key=${ORIG_LIM[$key]}"; done
-        echo "T TEMPLATES_BEFORE=$TEMPLATES_BEFORE"
-        echo "P SANDBOXES_BEFORE=$SANDBOXES_BEFORE"
       } > "$tmp" )
     chmod 600 "$tmp"
     mv -f "$tmp" "$ORIG_FILE"
@@ -274,14 +267,12 @@ persist_originals() {
 load_originals() {
     local kind rest
     ORIG_ENV=(); ORIG_HASH=(); ORIG_LIM=()
-    TEMPLATES_BEFORE=""; TEMPLATES_KNOWN=0; SANDBOXES_BEFORE=""; SANDBOXES_KNOWN=0
+    # A file an older wrapper wrote may also hold T and P lines (its sandbox records): ignored.
     while IFS=' ' read -r kind rest; do
         case "$kind" in
             E) ORIG_ENV["${rest%%=*}"]="${rest#*=}" ;;
             S) ORIG_HASH["${rest%%=*}"]="${rest#*=}" ;;
             L) ORIG_LIM["${rest%%=*}"]="${rest#*=}" ;;
-            T) TEMPLATES_BEFORE="${rest#*=}"; TEMPLATES_KNOWN=1 ;;
-            P) SANDBOXES_BEFORE="${rest#*=}"; SANDBOXES_KNOWN=1 ;;
         esac
     done < "$ORIG_FILE"
 }
@@ -347,16 +338,6 @@ compare_running() {
     return "$bad"
 }
 
-contract_default_mode() {
-    sed -n 's/^DEFAULT_MODE *= *MODE_\([A-Z_]*\).*/\1/p' "$STACK_DIR/recon_orchestrator/sandbox_contract.py" | tr '[:upper:]' '[:lower:]'
-}
-
-effective_mode() {   # how the orchestrator reads a KALI_SANDBOX_MODE value (contract B.1)
-    local v
-    v="$(tr '[:upper:]' '[:lower:]' <<< "${1// /}")"
-    if [[ "$v" == shared || "$v" == per_user ]]; then echo "$v"; else contract_default_mode; fi
-}
-
 # The pool of group C: two sandbox envelopes (2 GiB) plus half of a partial recon's
 # (768 MiB in resource_profile.default.json). Alice's sandbox and the scan are each the
 # first of their class (never refused); Bob's sandbox then finds 0.625 GiB left, under its
@@ -379,7 +360,6 @@ group_env() {
     local -A want=()
     local v pair
     for v in "${MANAGED[@]}"; do want[$v]="${ORIG_ENV[$v]-}"; done
-    if [[ $SHARED -eq 1 ]]; then want[KALI_SANDBOX_MODE]=shared; else want[KALI_SANDBOX_MODE]="$PER_USER_MODE"; fi
     case "$1" in
         B) want[KALI_SANDBOX_IDLE_MINUTES]=1 ;;
         C) for pair in $C_POOL; do want[${pair%%=*}]="${pair#*=}"; done ;;
@@ -387,18 +367,12 @@ group_env() {
     for v in "${MANAGED[@]}"; do echo "$v=${want[$v]}"; done
 }
 
-# Whether the running orchestrator already has the group's managed values (the mode as the orchestrator reads it).
+# Whether the running orchestrator already has the group's managed values.
 running_matches() {
-    local pair name value
+    local pair
     snapshot
     for pair in "$@"; do
-        name="${pair%%=*}"
-        value="${pair#*=}"
-        if [[ "$name" == KALI_SANDBOX_MODE ]]; then
-            [[ "$(effective_mode "$value")" == "$(effective_mode "${SNAP_ENV[$name]-}")" ]] || return 1
-        else
-            [[ "$value" == "${SNAP_ENV[$name]-}" ]] || return 1
-        fi
+        [[ "${pair#*=}" == "${SNAP_ENV[${pair%%=*}]-}" ]] || return 1
     done
     return 0
 }
@@ -409,17 +383,6 @@ if [[ ",${GROUP_LIST[*]}," == *C* ]]; then
 fi
 
 declare -A TITLE=([A]="Group A" [B]="Group B" [C]="Group C" [D]="Group D")
-
-# The mode the groups run in, read as the orchestrator reads the value they set.
-if [[ $SHARED -eq 1 ]]; then
-    GROUPS_MODE=shared
-else
-    GROUPS_MODE="$(effective_mode "$PER_USER_MODE")"
-    if [[ "$GROUPS_MODE" != per_user ]]; then
-        echo "FAIL: the per-user groups would run in '$GROUPS_MODE' mode (KALI_SANDBOX_MODE='$PER_USER_MODE'; the stack's contract default is '$(contract_default_mode)')" >&2
-        exit 1
-    fi
-fi
 
 if [[ $DRY -eq 1 ]]; then
     problem="$(readiness_problem)"
@@ -444,116 +407,6 @@ problem="$(readiness_problem)"
 
 take_lock
 echo "lock: $LOCK_STATE"
-
-# What a per-user orchestrator leaves behind when the run started from shared mode. In shared mode no
-# one uses a per-user sandbox: the orchestrator adopts it and stops it only once it is idle, holding its
-# memory until then; and the nuclei templates volume is made on the first sandbox start. Only this
-# stack's count (its compose project owns them, sandbox_manager.LABEL_OWNER), and only what the run
-# made: the sandboxes and volumes there before are recorded, in the originals file too, for the next
-# start after a killed run (a file that lacks a record stops or removes nothing of that kind).
-OWNER_LABEL="redamon.sandbox.owner=$STACK_PROJECT"
-ORIG_SHARED=0
-TEMPLATES_BEFORE=""
-TEMPLATES_KNOWN=0
-SANDBOXES_BEFORE=""
-SANDBOXES_KNOWN=0
-
-originals_mode() {
-    ORIG_SHARED=0
-    [[ "$(effective_mode "${ORIG_ENV[KALI_SANDBOX_MODE]-}")" == shared ]] && ORIG_SHARED=1
-    return 0
-}
-
-# This stack's per-user sandboxes, one "name user" per line.
-stack_sandboxes() {
-    docker ps -a --filter label=redamon.sandbox=1 --filter label=redamon.sandbox.user --filter "label=$OWNER_LABEL" \
-        --format '{{.Names}} {{.Label "redamon.sandbox.user"}}'
-}
-
-stack_templates() {
-    docker volume ls -q --filter label=redamon.sandbox.role=templates --filter "label=$OWNER_LABEL"
-}
-
-# The run's sandboxes ("name user" lines): this stack's, less those there before.
-new_sandboxes() {
-    local list name user
-    list="$(stack_sandboxes)" || return 1
-    while read -r name user; do
-        [[ -n "$name" && " $SANDBOXES_BEFORE " != *" $name "* ]] && echo "$name $user"
-    done <<< "$list"
-    return 0
-}
-
-# Stops the run's per-user sandboxes, person by person, through the running per-user orchestrator (the
-# key goes to curl on stdin, never on a command line). A person who also had a sandbox before the run is
-# not stopped (the stop takes all of their views) and the sweep names the new one. Only for a run that
-# started from shared mode: in per-user mode the sandboxes running are people's own and stay.
-stop_run_sandboxes() {
-    local list name user code users="" kept="" bad=0
-    [[ $ORIG_SHARED -eq 1 && $SANDBOXES_KNOWN -eq 1 ]] || return 0
-    is_running "$ORCH" || return 0
-    snapshot
-    [[ "$(effective_mode "${SNAP_ENV[KALI_SANDBOX_MODE]-}")" == per_user ]] || return 0
-    if ! list="$(stack_sandboxes)"; then
-        echo "FAIL: stopping the run's per-user sandboxes: they cannot be listed" >&2
-        return 1
-    fi
-    while read -r name user; do
-        [[ -n "$name" && " $SANDBOXES_BEFORE " == *" $name "* ]] && kept+=" $user "
-    done <<< "$list"
-    while read -r name user; do
-        [[ -n "$name" && " $SANDBOXES_BEFORE " != *" $name "* ]] || continue
-        [[ " $users " == *" $user "* || "$kept" == *" $user "* ]] || users+=" $user"
-    done <<< "$list"
-    for user in $users; do
-        if [[ ! "$user" =~ ^[A-Za-z0-9_-]{1,128}$ ]]; then
-            echo "FAIL: stopping the run's per-user sandboxes: an owner label is not a user id" >&2
-            bad=1
-            continue
-        fi
-        code="$(printf 'header = "X-Orchestrator-Key: %s"\n' "${SNAP_ENV[ORCHESTRATOR_API_KEY]-}" \
-            | curl -s -m 300 -o /dev/null -w '%{http_code}' -K - -H 'Content-Type: application/json' \
-                -d '{"reason":"operator"}' "http://127.0.0.1:${SNAP_LIM[Port]:-8010}/sandboxes/$user/stop" || true)"
-        if [[ "$code" == 200 ]]; then
-            echo "stopped one person's per-user sandboxes the run started, before shared mode comes back"
-        else
-            echo "FAIL: stopping one person's per-user sandboxes the run started answered HTTP ${code:-none}" >&2
-            bad=1
-        fi
-    done
-    return "$bad"
-}
-
-# After the switch back to shared mode: no sandbox the run started may be left, and a templates volume
-# the run made goes (best effort: a refresher still using it keeps it, and says so).
-sweep_after_shared() {
-    local left vols vol
-    [[ $ORIG_SHARED -eq 1 ]] || return 0
-    if [[ $SANDBOXES_KNOWN -eq 1 ]]; then
-        if ! left="$(new_sandboxes)"; then
-            echo "FAIL: the per-user sandboxes cannot be listed after the run" >&2
-            return 1
-        fi
-        if [[ -n "$left" ]]; then
-            echo "FAIL: per-user sandboxes left after the run: $(cut -d' ' -f1 <<< "$left" | tr '\n' ' ')" >&2
-            return 1
-        fi
-    fi
-    if [[ $TEMPLATES_KNOWN -eq 1 && -z "${TEMPLATES_BEFORE// /}" ]]; then
-        if ! vols="$(stack_templates)"; then
-            echo "FAIL: the templates volumes cannot be listed after the run" >&2
-            return 1
-        fi
-        for vol in $vols; do
-            if docker volume rm "$vol" >/dev/null 2>&1; then
-                echo "removed the templates volume $vol (absent before the run)"
-            else
-                echo "the templates volume $vol, absent before the run, is still in use: left" >&2
-            fi
-        done
-    fi
-    return 0
-}
 
 # The labs, chisel edges and their networks of a test that timed out or was killed (its finally never
 # ran); the spec labels every one g1e2e=1.
@@ -619,30 +472,17 @@ sweep_test_leftovers
 # A run killed after a recreate left its originals: put them back first, with what that run left.
 if [[ -f "$ORIG_FILE" ]]; then
     echo "an earlier run left $ORIG_FILE: putting $ORCH back first"
-    LEFT_RC=0
     load_originals
-    originals_mode
-    stop_run_sandboxes || LEFT_RC=1
     set_target
     if ! recreate || ! compare_running; then
         echo "FAIL: $ORCH could not be put back from $ORIG_FILE (kept); fix it by hand before the next run" >&2
         exit 1
     fi
     rm -f "$ORIG_FILE"
-    sweep_after_shared || LEFT_RC=1
-    if [[ $LEFT_RC -ne 0 ]]; then
-        echo "FAIL: what the earlier run left is not all cleaned up (above); fix it by hand before the next run" >&2
-        exit 1
-    fi
 fi
 
 # Read under the lock: these are the values the trap puts back.
 snapshot_originals
-originals_mode
-TEMPLATES_BEFORE="$(stack_templates | tr '\n' ' ')"
-SANDBOXES_BEFORE="$(stack_sandboxes | cut -d' ' -f1 | tr '\n' ' ')"
-TEMPLATES_KNOWN=1
-SANDBOXES_KNOWN=1
 CHANGED=0
 PW_PID=""
 
@@ -664,11 +504,9 @@ restore() {
     stop_playwright
     sweep_test_leftovers
     if [[ $CHANGED -eq 1 ]]; then
-        stop_run_sandboxes || rc=1
         set_target
         if recreate && compare_running; then
             rm -f "$ORIG_FILE"
-            sweep_after_shared || rc=1
         else
             echo "FAIL: $ORCH differs from what it was before this run (the originals stay in $ORIG_FILE; the next run puts them back)" >&2
             rc=1
@@ -694,15 +532,21 @@ close_inherited_fds() {
     return 0
 }
 
+# Playwright gets SIGTERM when this shell dies, where setpriv offers it (pdeathsig survives the
+# execs below; setsid does not fork here, this subshell leading no process group).
+PDEATH=()
+if command -v setpriv >/dev/null && [[ "$(setpriv --help 2>/dev/null || true)" == *--pdeathsig* ]]; then
+    PDEATH=(setpriv --pdeathsig TERM)
+fi
+
 # Playwright runs in its own process group in the background, so a signal reaches the trap at once
 # and the trap can stop the whole group (browsers and stub servers included). A shell started in the
 # background starts its children with SIGINT ignored; env --default-signal gives Playwright it back,
 # so the trap's INT lets it run the spec's afterAll hooks.
 run_group() {
-    local mode rc=0
-    mode="$([[ $SHARED -eq 1 ]] && echo shared || echo per_user)"
-    ( close_inherited_fds && cd "$E2E" && export G1_E2E_REQUIRE_LIVE=1 G1_E2E_MODE="$mode" \
-        && exec setsid env --default-signal=INT,QUIT npx playwright test perUserSandbox --grep "${TITLE[$1]} \\(" \
+    local rc=0
+    ( close_inherited_fds && cd "$E2E" && export G1_E2E_REQUIRE_LIVE=1 \
+        && exec "${PDEATH[@]}" setsid env --default-signal=INT,QUIT npx playwright test perUserSandbox --grep "${TITLE[$1]} \\(" \
             --output "$RESULTS/group-$1" "${EXTRA[@]}" ) &
     PW_PID=$!
     echo "$PW_PID $(proc_start "$PW_PID")" > "$PW_FILE"
@@ -724,7 +568,7 @@ for g in "${GROUP_LIST[@]}"; do
             exit 1
         fi
     fi
-    echo "== ${TITLE[$g]} (mode: $GROUPS_MODE) =="
+    echo "== ${TITLE[$g]} =="
     if run_group "$g"; then
         echo "== ${TITLE[$g]}: PASS =="
     else

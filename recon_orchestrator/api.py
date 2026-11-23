@@ -831,8 +831,7 @@ async def _adopt_sandboxes(manager: SandboxManager) -> bool:
 
 
 async def _run_sandboxes(manager: SandboxManager, adopted: bool) -> None:
-    """Retry a failed adoption until it succeeds, then run the idle loop (in both
-    modes: per-user sandboxes left after a switch back to shared stop when idle)."""
+    """Retry a failed adoption until it succeeds, then run the idle loop."""
     while not adopted:
         await _sandbox_retry_sleep(SANDBOX_ADOPT_RETRY_S)
         adopted = await _adopt_sandboxes(manager)
@@ -1117,32 +1116,21 @@ async def _sandbox_call(awaitable):
             "code": _ERR_INVALID_STOP_REASON, "detail": "not a stop reason"}) from None
 
 
-# Declared before GET /sandboxes/{user_id}, which would otherwise take "mode" as a
-# user id. Read from the environment: it needs neither the manager nor adoption.
-@app.get(sc.ROUTE_MODE)
-async def sandbox_mode():
-    return {"mode": sc.mode_from_env(os.environ.get(sc.MODE_ENV))}
-
-
 @app.get(sc.ROUTE_LIST)
 async def sandbox_list():
     """Every running and draining instance WITH its host and token: the agent's
     fan-out list, reached through the webapp only."""
     mgr = _adopted_sandbox_manager()
-    return {"mode": mgr.mode(), "sandboxes": mgr.list_running()}
+    return {"sandboxes": mgr.list_running()}
 
 
 @app.post(sc.ROUTE_ENSURE)
 async def sandbox_ensure(req: SandboxEnsureRequest):
-    if sandbox_manager is None:
-        raise _sandbox_unavailable()
-    # Shared mode starts nothing, so it answers without waiting for adoption.
-    mgr = sandbox_manager if sandbox_manager.mode() == sc.MODE_SHARED else _adopted_sandbox_manager()
+    mgr = _adopted_sandbox_manager()
     answer = await _sandbox_call(mgr.ensure(req.user_id, req.projects, view=req.view,
                                             need_project=req.need_project, wait=req.wait,
                                             touch=req.touch))
-    running = answer.get("mode") == sc.MODE_SHARED or answer.get("state") == "running"
-    return JSONResponse(status_code=200 if running else 202, content=answer)
+    return JSONResponse(status_code=200 if answer.get("state") == "running" else 202, content=answer)
 
 
 @app.post(sc.ROUTE_STOP_PROJECT)

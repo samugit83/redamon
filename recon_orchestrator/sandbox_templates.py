@@ -17,8 +17,7 @@ through this module:
   whatever the image baked, and writes the time into the volume
   (``STAMP_PATH``) only after an install.
 - ``refresh_loop`` refreshes on orchestrator start when the volume is missing,
-  empty or a day old, then daily. It does nothing in ``shared`` mode, where the
-  shared container keeps its own templates.
+  empty or a day old, then daily.
 
 The volume is shared by every RedAmon stack on the daemon (its name is fixed);
 each container made here carries the stack's owner label, so `./redamon.sh
@@ -314,11 +313,9 @@ async def _refresh_if_due(client, owner: str, clock: Callable[[], float], sleep:
 async def refresh_loop(manager, *, clock: Callable[[], float] = time.time,
                        sleep: Callable = asyncio.sleep) -> None:
     """The templates of ``manager``'s sandboxes, from orchestrator start until
-    shutdown (cancel). Returns at once in ``shared`` mode."""
+    shutdown (cancel)."""
     while True:
         try:
-            if manager.mode() != sc.MODE_PER_USER:
-                return
             wait = await _refresh_if_due(manager.client, manager.owner, clock, sleep)
         except Exception as e:  # noqa: BLE001 - the loop never dies
             logger.warning(f"[sandbox] the nuclei templates check failed ({type(e).__name__}); "

@@ -51,7 +51,7 @@ const RAM: SandboxLimit = {
   settingName: null, detail: 'not enough memory',
 }
 const RUNNING = {
-  mode: 'per_user', user_id: 'bob', view: 'own', instance: INSTANCE, host: 'redamon-kali-x', token: TOKEN,
+  user_id: 'bob', view: 'own', instance: INSTANCE, host: 'redamon-kali-x', token: TOKEN,
   tunnel_token: 'tun', ports: { network_recon: 8000 }, reverse_port: 4444, projects: ['PB'], state: 'running',
   fresh: false, stop_at: 1, stop_reason: null, warn: false,
 }
@@ -81,7 +81,7 @@ beforeEach(() => {
   h.ensure.mockResolvedValue(RUNNING)
   h.lease.mockResolvedValue({ expires_at: 10, state: 'running', stop_at: 20, warn: false })
   h.release.mockResolvedValue(undefined)
-  h.list.mockResolvedValue({ mode: 'per_user', sandboxes: [] })
+  h.list.mockResolvedValue({ sandboxes: [] })
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(console, 'info').mockImplementation(() => {})
@@ -134,11 +134,11 @@ describe('POST ensure', () => {
     expect(h.ensure).toHaveBeenLastCalledWith('bob', { needProject: null, wait: true, actingAs: false })
   })
 
-  test('a starting answer is a 202, a shared one a 200', async () => {
-    h.ensure.mockResolvedValueOnce({ mode: 'per_user', state: 'starting', instance: INSTANCE, fresh: true })
-    expect(await answer(await ensure({ userId: 'bob', wait: false }))).toEqual([202, { mode: 'per_user', state: 'starting', instance: INSTANCE, fresh: true }])
-    h.ensure.mockResolvedValueOnce({ mode: 'shared' })
-    expect(await answer(await ensure({ userId: 'bob' }))).toEqual([200, { mode: 'shared' }])
+  test('a starting answer is a 202, a running one a 200', async () => {
+    h.ensure.mockResolvedValueOnce({ state: 'starting', instance: INSTANCE, fresh: true })
+    expect(await answer(await ensure({ userId: 'bob', wait: false }))).toEqual([202, { state: 'starting', instance: INSTANCE, fresh: true }])
+    h.ensure.mockResolvedValueOnce(RUNNING)
+    expect(await answer(await ensure({ userId: 'bob' }))).toEqual([200, RUNNING])
   })
 
   test('an invalid body is a 400 and reaches nothing', async () => {
@@ -242,7 +242,7 @@ describe('POST release and GET list', () => {
   })
 
   test('the list answers what the gateway gives the agent', async () => {
-    const list = { mode: 'per_user', sandboxes: [{ user_id: 'bob', view: 'own', instance: INSTANCE, host: 'h', token: TOKEN, state: 'running' }] }
+    const list = { sandboxes: [{ user_id: 'bob', view: 'own', instance: INSTANCE, host: 'h', token: TOKEN, state: 'running' }] }
     h.list.mockResolvedValueOnce(list)
     expect(await answer(await listGET(req('GET', '/api/internal/agent/sandbox/list')))).toEqual([200, list])
   })

@@ -4,13 +4,13 @@
   - POST /sandboxes/{user_id}/tunnel pushes the person's own config to their own view
     with the instance's tunnel token, and an empty config stops every own-view
     instance's tunnels (draining ones too) without starting anything or counting as use;
-  - GET /tunnel-status needs the master key and `?user_id=` in per-user mode, reports
-    that person's current instance only, and never starts a sandbox;
+  - GET /tunnel-status needs the master key and `?user_id=`, reports that person's
+    current instance only, and never starts a sandbox;
   - the emergency stop asks every sandbox to stop the agent's runs BEFORE it cancels
     them (D22);
   - /mcp/test refuses a draft that names a sandbox address (R1-F6);
   - the agent's shutdown cancels the router's lease renewals;
-  - the LHOST/LPORT hints read the run's own sandbox, never the shared one.
+  - the LHOST/LPORT hints read the run's own sandbox, never another address.
 
 Runs in the agent image: ./agentic/run_tests.sh tests/test_sandbox_agent_routes.py
 """
@@ -58,12 +58,12 @@ def _dep_names(path, method):
 
 
 class _Base(unittest.TestCase):
-    mode = contract.MODE_PER_USER
-
     def setUp(self):
-        self.fleet = Fleet(self.mode)
-        self.fleet.shared.running = False
-        router._reset(mode=None)
+        self.fleet = Fleet()
+        # The old shared container still answers at its old address: nothing may ask it.
+        self.fleet.shared.running = True
+        self.addCleanup(lambda: self.assertEqual(self.fleet.shared.requests, [], "the old shared container was asked"))
+        router._reset()
         transport = self.fleet.transport()
         real_client = httpx.AsyncClient
 
@@ -83,7 +83,7 @@ class _Base(unittest.TestCase):
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
-        self.addCleanup(router._reset, None)
+        self.addCleanup(router._reset)
         self.addCleanup(sandbox_runs._reset)
         self.client = TestClient(api.app)
 
@@ -196,13 +196,22 @@ class TheTunnelPush(_Base):
         self.assertEqual(self.push("bob", {}, headers={}).status_code, 401)
 
 
-class TheTunnelPushInSharedMode(_Base):
-    mode = contract.MODE_SHARED
+class TheTunnelPushWithoutATunnelToken(_Base):
+    def test_a_handle_without_a_tunnel_token_pushes_nothing(self):
+        def no_tunnel_token(body):
+            box = self.fleet.current(body["userId"]) or self.fleet.add(body["userId"])
+            return 200, {"user_id": box.person, "view": box.view, "instance": box.instance,
+                         "host": box.host, "token": box.token, "tunnel_token": "",
+                         "ports": dict(contract.PORTS), "reverse_port": 4444, "projects": box.projects,
+                         "state": "running", "fresh": False, "stop_at": 2e10, "stop_reason": None,
+                         "warn": False}
 
-    def test_a_push_in_shared_mode_reaches_no_sandbox(self):
+        self.fleet.ensure_answer = no_tunnel_token
         resp = self.client.post("/sandboxes/bob/tunnel", json={"ngrokAuthtoken": NGROK_TOKEN}, headers=KEY)
-        self.assertEqual(resp.status_code, 409)
-        self.assertEqual(self.fleet.shared.requests, [])
+        self.assertEqual(resp.status_code, 502)
+        self.assertEqual(resp.json()["code"], "tunnel_push_failed")
+        self.assertEqual(self.tunnel_calls(self.fleet.current("bob")), [])
+        self.assertNotIn(NGROK_TOKEN, resp.text)
 
 
 # =============================================================================
@@ -213,7 +222,7 @@ class TheTunnelStatus(_Base):
     def status(self, query="?user_id=bob", headers=KEY):
         return self.client.get(f"/tunnel-status{query}", headers=headers)
 
-    def test_per_user_mode_needs_the_key_and_the_person(self):
+    def test_it_needs_the_key_and_the_person(self):
         self.fleet.add("bob")
         self.assertEqual(self.status("", headers={}).status_code, 401)
         self.assertEqual(self.status(headers={}).status_code, 401)
@@ -221,8 +230,8 @@ class TheTunnelStatus(_Base):
         self.assertEqual(self.status("?user_id=../x").status_code, 400)
 
     def test_an_unauthenticated_caller_never_reaches_the_gateway(self):
-        """Review finding 3: per-user mode is known, so a request without the key is
-        refused before the webapp (and the orchestrator behind it) is asked anything."""
+        """Review finding 3: a request without the key is refused before the webapp (and
+        the orchestrator behind it) is asked anything."""
         self.fleet.add("bob")
         self.status(headers=KEY)
         before = len(self.fleet.gateway_requests)
@@ -245,7 +254,7 @@ class TheTunnelStatus(_Base):
         resp = self.status()
         self.assertEqual(resp.json(), {
             "ngrok": {"active": True, "host": "0.tcp.ngrok.io", "port": 12345},
-            "chisel": {"active": True, "host": "vps.example", "port": 4444, "srvPort": 8080}})
+            "chisel": {"active": True, "host": "vps.example", "port": 4444}})
         [(path, bearer, _b)] = self.tunnel_calls(bob)
         self.assertEqual((path, bearer), ("/tunnel/status", f"Bearer {bob.token}"))
         self.assertEqual(self.fleet.ensures(), [])
@@ -269,21 +278,10 @@ class TheTunnelStatus(_Base):
                          {"ngrok": {"active": False}, "chisel": {"active": False}})
 
 
-class TheTunnelStatusInSharedMode(_Base):
-    mode = contract.MODE_SHARED
-
-    def test_shared_mode_answers_as_before_without_a_key(self):
-        router._reset(mode=contract.MODE_SHARED)
-        with mock.patch.object(utils, "_query_ngrok_tunnel", return_value={"host": "0.tcp.ngrok.io", "port": 1}), \
-                mock.patch.object(utils, "_query_chisel_tunnel", return_value=None):
-            resp = self.client.get("/tunnel-status")
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json(), {"ngrok": {"active": True, "host": "0.tcp.ngrok.io", "port": 1},
-                                       "chisel": {"active": False}})
-
-    def test_before_any_answer_the_key_is_checked_first(self):
-        # The default mode is per_user, so a caller without the key is refused before
-        # the gateway is asked, even when the orchestrator would answer shared.
+class TheTunnelStatusWithoutAKey(_Base):
+    def test_a_fresh_agent_checks_the_key_before_asking_anything(self):
+        # No answer has arrived since the agent started: still refused before the gateway
+        # is asked, and the old shared tunnel is never read (_Base checks the container).
         resp = self.client.get("/tunnel-status")
         self.assertEqual(resp.status_code, 401)
         self.assertEqual(self.fleet.gateway_requests, [])
@@ -355,7 +353,7 @@ class TheShutdown(unittest.IsolatedAsyncioTestCase):
     async def test_the_lifespan_cancels_the_routers_lease_renewals(self):
         fleet = Fleet()
         fleet.add("bob")
-        router._reset(mode=None)
+        router._reset()
 
         class _Orchestrator:
             async def initialize(self):
@@ -389,7 +387,7 @@ class TheShutdown(unittest.IsolatedAsyncioTestCase):
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
-        self.addCleanup(router._reset, None)
+        self.addCleanup(router._reset)
 
         async with api.lifespan(api.app):
             handle = await router.acquire("bob", project_id="p1", kind="terminal")
@@ -405,7 +403,7 @@ class TheShutdown(unittest.IsolatedAsyncioTestCase):
 class TheRouterFixes(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.fleet = Fleet()
-        router._reset(mode=None)
+        router._reset()
         self._patches = [
             mock.patch.object(router, "_transport", self.fleet.transport()),
             mock.patch.dict(router.INTERNAL_HEADERS, {"X-Internal-Key": "test-internal-key"}),
@@ -418,7 +416,7 @@ class TheRouterFixes(unittest.IsolatedAsyncioTestCase):
         await router.shutdown()
         for p in reversed(self._patches):
             p.stop()
-        router._reset(mode=None)
+        router._reset()
 
     async def test_an_instance_that_drains_before_its_first_lease_is_ensured_again(self):
         """Handed an instance that turned draining (replaced while it started): the lease
@@ -455,12 +453,6 @@ class TheRouterFixes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.fleet.ensures(), [])
         self.assertEqual([r["leaseId"] for r in self.fleet.releases()], [leased.lease_id])
 
-    async def test_the_mode_is_asked_afresh(self):
-        router._reset(mode=contract.MODE_SHARED)
-        self.assertEqual(await router.ask_mode(), contract.MODE_PER_USER)
-        self.fleet.mode = contract.MODE_SHARED
-        self.assertEqual(await router.ask_mode(), contract.MODE_SHARED)
-
 
 # =============================================================================
 # the LHOST/LPORT hints and the tunnel lookups (agentic/utils.py)
@@ -471,8 +463,7 @@ def _handle(person="bob", view=contract.VIEW_OWN, reverse_port=4444, tunnel_toke
     return router.SandboxHandle(
         user_id=person, view=view, instance=instance,
         host=contract.container_name(person, view, instance), token="mcp-token-0123456789abcdef",
-        tunnel_token=tunnel_token, ports=contract.PORTS, reverse_port=reverse_port,
-        mode=contract.MODE_PER_USER)
+        tunnel_token=tunnel_token, ports=contract.PORTS, reverse_port=reverse_port)
 
 
 class TheTunnelLookups(unittest.IsolatedAsyncioTestCase):
@@ -482,7 +473,7 @@ class TheTunnelLookups(unittest.IsolatedAsyncioTestCase):
     in the background, bounded (review finding 1)."""
 
     async def asyncSetUp(self):
-        router._reset(mode=contract.MODE_PER_USER)
+        router._reset()
         utils._forget_all_tunnel_status()
         self.requests = []
         self.status = {"ngrok": {"active": True, "host": "0.tcp.ngrok.io", "port": 14444},
@@ -507,7 +498,7 @@ class TheTunnelLookups(unittest.IsolatedAsyncioTestCase):
         for p in reversed(self._patches):
             p.stop()
         utils._forget_all_tunnel_status()
-        router._reset(mode=None)
+        router._reset()
 
     async def test_ngrok_is_read_from_the_runs_sandbox_through_its_tunnel_manager(self):
         handle = _handle()
@@ -592,7 +583,8 @@ class TheTunnelLookups(unittest.IsolatedAsyncioTestCase):
         self.legacy.return_value = answer
         with mock.patch.object(router, "current_handle", return_value=handle):
             info = utils._query_chisel_tunnel()
-        self.assertEqual(info["host"], "vps.example")
+        self.assertEqual(info, {"host": "vps.example", "port": 4444, "hostname": "vps.example"},
+                         "chisel forwards the handler port only (tunnel_manager.py: R:4444)")
         self.assertEqual(self.legacy.call_args.kwargs["params"], {"userId": "bob"})
 
     async def test_a_failed_chisel_lookup_logs_no_user_id(self):
@@ -609,8 +601,8 @@ class TheReverseShellHints(unittest.TestCase):
                 "NGROK_TUNNEL_ENABLED": False, "CHISEL_TUNNEL_ENABLED": False}
 
     def setUp(self):
-        router._reset(mode=contract.MODE_PER_USER)
-        self.addCleanup(router._reset, None)
+        router._reset()
+        self.addCleanup(router._reset)
         patches = [mock.patch.object(utils, "get_setting", side_effect=lambda k, d=None: self.SETTINGS.get(k, d)),
                    mock.patch.dict(os.environ, {"HOST_LAN_IP": "192.168.1.50"})]
         for p in patches:
@@ -633,11 +625,25 @@ class TheReverseShellHints(unittest.TestCase):
         self.assertNotIn("from the host into the container", text)
         self.assertIn("tunnel", text.lower())
 
-    def test_shared_mode_keeps_todays_hint(self):
-        router._reset(mode=contract.MODE_SHARED)
+    def test_chisel_tunnels_the_handler_port_only(self):
+        # The tunnel manager maps R:4444 alone: no web-delivery port is offered (x).
+        settings = dict(self.SETTINGS, CHISEL_TUNNEL_ENABLED=True)
+        chisel = {"host": "vps.example", "port": 4444, "hostname": "vps.example"}
+        with mock.patch.object(utils, "get_setting", side_effect=lambda k, d=None: settings.get(k, d)), \
+                mock.patch.object(utils, "_query_chisel_tunnel", return_value=chisel):
+            text = self.prompt(_handle())
+        self.assertIn("Chisel Tunnel: ACTIVE", text)
+        self.assertIn("chisel forwards only `vps.example:4444`", text)
+        self.assertNotIn("8080", text)
+        self.assertNotIn("SRVPORT", text)
+        self.assertNotIn("kali-sandbox:", text)
+
+    def test_a_run_without_a_sandbox_yet_gets_no_lan_ip_hint(self):
+        # Nothing of a sandbox is published before it starts: no host LAN IP as LHOST.
         text = self.prompt(None)
-        self.assertIn("192.168.1.50", text)
-        self.assertIn("from the host into the container", text)
+        self.assertNotIn("192.168.1.50", text)
+        self.assertNotIn("from the host into the container", text)
+        self.assertIn("NO DIRECT REVERSE SHELL", text)
 
 
 if __name__ == "__main__":

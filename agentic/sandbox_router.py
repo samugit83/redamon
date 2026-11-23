@@ -10,15 +10,12 @@ view (TD-26).
 The router asks the webapp gateway (``/api/internal/agent/sandbox/*``, master key) to
 ensure that person's sandbox, holds a lease on it renewed in the background, and hands
 out per-instance MCP clients, URLs and bearer headers. Each instance has its own
-token, so one person's client never carries another's token or the shared
-``MCP_AUTH_TOKEN``.
+token, so one person's client never carries another's token.
 
-The mode is the one the gateway last answered (TD-6). Before any answer an
-unreachable gateway falls back to the contract's ``DEFAULT_MODE``; once ``per_user``
-was answered, an unreachable gateway is ``SandboxUnavailable("error")``. In
-``per_user`` mode a call without a person is ``SandboxUnavailable("no_user")``: it is
-never sent to another person's sandbox, another view of the same person, or the shared
-one.
+There is no other sandbox to fall back to: an unreachable gateway, an outage or an
+answer that is not exactly the person's own instance is ``SandboxUnavailable("error")``,
+and a call without a person is ``SandboxUnavailable("no_user")``. A call is never sent
+to another person's sandbox or another view of the same person.
 """
 
 from __future__ import annotations
@@ -36,7 +33,6 @@ from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
-from urllib.parse import urlsplit
 
 import httpx
 
@@ -112,8 +108,8 @@ def sandbox_view() -> str:
 def for_person(user_id: Optional[str], *, acting: bool = False):
     """Bind the person (and whether an admin acts as them) for the work inside, and
     unbind on exit. The binding stays in the current task and the tasks it creates.
-    An empty or missing person binds "no person": the work is refused in per-user mode,
-    never run as whoever the surrounding chat run belongs to."""
+    An empty or missing person binds "no person": the work is refused, never run as
+    whoever the surrounding chat run belongs to."""
     user_token = current_sandbox_user.set(user_id if isinstance(user_id, str) else "")
     acting_token = current_sandbox_acting.set(bool(acting))
     try:
@@ -151,10 +147,8 @@ class SandboxUnavailable(Exception):
 
 @dataclass(eq=False)
 class SandboxHandle:
-    """One person's view of one sandbox instance, as one unit of work holds it.
-
-    ``mode`` is ``shared`` for today's container (no lease, today's addresses and
-    ``MCP_AUTH_TOKEN``). The tokens never appear in ``repr``."""
+    """One person's view of one sandbox instance, as one unit of work holds it. The
+    tokens never appear in ``repr``."""
     user_id: str
     view: str
     instance: str
@@ -163,7 +157,6 @@ class SandboxHandle:
     tunnel_token: str = field(repr=False)
     ports: Mapping[str, int]
     reverse_port: int
-    mode: str
     project_id: Optional[str] = None
     kind: Optional[str] = None
     state: str = "running"
@@ -184,8 +177,7 @@ class SandboxHandle:
 
     @property
     def usable(self) -> bool:
-        return (self.state == "running" and not self.stale and not self.released
-                and not _retired_shared(self))
+        return self.state == "running" and not self.stale and not self.released
 
     def _apply_lease(self, data: Mapping) -> None:
         stop_at = data.get("stop_at")
@@ -194,41 +186,19 @@ class SandboxHandle:
         self.warn = data.get("warn") is True
 
 
-def _retired_shared(handle: SandboxHandle) -> bool:
-    """A shared-container handle once the gateway has answered per-user: it must never
-    serve another call (its holder acquires again and gets the person's own sandbox)."""
-    return handle.mode == contract.MODE_SHARED and _last_mode == contract.MODE_PER_USER
-
-
 # =============================================================================
 # Module state
 # =============================================================================
 
-_last_mode: Optional[str] = None
 _listeners: List[Callable] = []
-#: Per-instance MCP clients, keyed by (person, view, instance); one shared key for the
-#: shared container, whose token and addresses are everyone's.
+#: Per-instance MCP clients, keyed by (person, view, instance).
 _clients: Dict[Tuple[str, str, str], Any] = {}
 _client_locks: Dict[Tuple[str, str, str], asyncio.Lock] = {}
-_SHARED_CLIENT_KEY = ("", "", contract.SHARED_INSTANCE)
 #: The live per-user handles of each person (weak: a dropped handle disappears).
 _live: Dict[str, "weakref.WeakSet[SandboxHandle]"] = {}
 #: The instance each (person, view) was last answered with.
 _current: Dict[Tuple[str, str], str] = {}
 _renewals: set = set()
-
-
-def current_mode() -> str:
-    """The mode the gateway last answered, or the contract's default before any answer."""
-    return _last_mode or contract.DEFAULT_MODE
-
-
-def _note_mode(mode) -> None:
-    global _last_mode
-    if mode in contract.MODES:
-        if mode == contract.MODE_PER_USER:
-            _drop_client(_SHARED_CLIENT_KEY)
-        _last_mode = mode
 
 
 def _who(user_id: str, view: str) -> str:
@@ -307,14 +277,12 @@ class _Unreachable(Exception):
 
 class _GatewayError(Exception):
     """An outage behind a reachable gateway: no answer in time, or an answer that is not
-    the contract's (a 5xx that is not a per-user manager's own error, a 401, a 404 or any
-    other 4xx without a contract code). The webapp answers 503
-    ``orchestrator_unavailable`` when it cannot ask the orchestrator; it never invents a
-    mode, so the router keeps the last one answered (TD-6)."""
+    the contract's (a 5xx that is not the manager's own error, a 401, a 404 or any other
+    4xx without a contract code). The webapp answers 503 ``orchestrator_unavailable``
+    when it cannot ask the orchestrator."""
 
 
-#: 5xx codes only the per-user manager answers: they are answers (and prove per-user
-#: mode), never an outage that could fall back to the shared sandbox.
+#: The manager's own 5xx codes: answers about this start, not an outage.
 _PER_USER_5XX = (contract.ERR_IMAGE_MISSING, contract.ERR_START_FAILED, contract.ERR_START_TIMEOUT)
 #: The 4xx codes the gateway's routes answer (B.9, B.10); any other 4xx is an outage.
 _CONTRACT_4XX = (contract.ERR_RAM, contract.ERR_HARD, contract.ERR_USER_REFUSED,
@@ -375,44 +343,8 @@ def _valid_token(token) -> bool:
     return isinstance(token, str) and _TOKEN.fullmatch(token) is not None
 
 
-_SHARED_BASES = {
-    # port name: (environment variable, today's default, suffix the variable carries)
-    "network_recon": ("MCP_NETWORK_RECON_URL", "http://host.docker.internal:8000/sse", "/sse"),
-    "nuclei": ("MCP_NUCLEI_URL", "http://host.docker.internal:8002/sse", "/sse"),
-    "metasploit": ("MCP_METASPLOIT_URL", "http://host.docker.internal:8003/sse", "/sse"),
-    "nmap": ("MCP_NMAP_URL", "http://host.docker.internal:8004/sse", "/sse"),
-    "playwright": ("MCP_PLAYWRIGHT_URL", "http://host.docker.internal:8005/sse", "/sse"),
-    "sessions": ("MCP_METASPLOIT_PROGRESS_URL", "http://kali-sandbox:8013/progress", "/progress"),
-    "hydra": ("MCP_HYDRA_PROGRESS_URL", "http://kali-sandbox:8014/progress", "/progress"),
-    "terminal": ("KALI_TERMINAL_WS_URL", "ws://kali-sandbox:8016", ""),
-    "tunnel": (None, "http://kali-sandbox:8015", ""),
-    "ngrok_api": (None, "http://kali-sandbox:4040", ""),
-}
-
-
-def _shared_base(port_name: str) -> str:
-    """Today's address of the shared container's port, as the agent's other modules read it."""
-    var, default, suffix = _SHARED_BASES[port_name]
-    url = (os.environ.get(var) if var else None) or default
-    if suffix and url.endswith(suffix):
-        url = url[:-len(suffix)]
-    return url.rstrip("/")
-
-
-def _shared_handle(user_id: str, view: str) -> SandboxHandle:
-    return SandboxHandle(
-        user_id=user_id, view=view, instance=contract.SHARED_INSTANCE,
-        host=urlsplit(_shared_base("network_recon")).hostname or "kali-sandbox",
-        token=os.environ.get("MCP_AUTH_TOKEN", ""),
-        # The webapp pushes the shared container's tunnels itself; the agent holds no
-        # tunnel token for it.
-        tunnel_token="",
-        ports=contract.PORTS, reverse_port=contract.DEFAULT_REVERSE_PORT,
-        mode=contract.MODE_SHARED)
-
-
 def _running_handle(person: str, view: str, project_id: Optional[str], data: Mapping) -> Optional[SandboxHandle]:
-    """The handle a 200 per-user answer gives, or None when the answer is not exactly
+    """The handle a 200 answer gives, or None when the answer is not exactly
     this person's view: another person, another view, a host that is not their
     container, no token, or the project the work needs not mounted."""
     instance = data.get("instance")
@@ -434,7 +366,7 @@ def _running_handle(person: str, view: str, project_id: Optional[str], data: Map
         user_id=person, view=view, instance=instance, host=data["host"],
         token=data["token"], tunnel_token=tunnel if _valid_token(tunnel) else "",
         # The ports are the contract's: an answer cannot move a call to another port.
-        ports=contract.PORTS, reverse_port=reverse, mode=contract.MODE_PER_USER,
+        ports=contract.PORTS, reverse_port=reverse,
         project_id=project_id, fresh=data.get("fresh") is True,
         stop_at=float(stop_at) if isinstance(stop_at, (int, float)) and not isinstance(stop_at, bool) else None,
         stop_reason=stop_reason if isinstance(stop_reason, str) and stop_reason in contract.STOP_REASONS else None,
@@ -447,13 +379,12 @@ def _starting_handle(person: str, view: str, project_id: Optional[str], data: Ma
         user_id=person, view=view, instance=instance,
         host=contract.container_name(person, view, instance), token="", tunnel_token="",
         ports=contract.PORTS, reverse_port=contract.DEFAULT_REVERSE_PORT,
-        mode=contract.MODE_PER_USER, project_id=project_id, state="starting",
-        fresh=data.get("fresh") is True)
+        project_id=project_id, state="starting", fresh=data.get("fresh") is True)
 
 
 async def _ensure(person: str, view: str, project_id: Optional[str], wait: bool, kind: str):
-    """One gateway ``ensure``: ("shared", None), ("running", handle) or ("starting", handle).
-    Raises SandboxUnavailable for every refusal and error."""
+    """One gateway ``ensure``: ("running", handle) or ("starting", handle). Raises
+    SandboxUnavailable for every refusal, error and outage."""
     body: Dict[str, Any] = {"userId": person, "wait": bool(wait)}
     if project_id is not None:
         body["projectId"] = project_id
@@ -463,71 +394,31 @@ async def _ensure(person: str, view: str, project_id: Optional[str], wait: bool,
         status, data = await _gateway("POST", f"{WEBAPP_API_URL}/api/internal/agent/sandbox/ensure", body,
                                       timeout=contract.GATEWAY_ENSURE_TIMEOUT_S)
     except (_Unreachable, _GatewayError) as exc:
-        # TD-6: an outage keeps the last mode answered (the default before any answer):
-        # shared keeps working through it, per-user fails closed.
         what = "gateway_unreachable" if isinstance(exc, _Unreachable) else "gateway_error"
-        if current_mode() == contract.MODE_SHARED:
-            logger.info("[sandbox] %s (%s): shared mode, today's sandbox", what, exc)
-            return "shared", None
         raise await _refuse(person, project_id, "error", view=view, kind=kind,
                             detail=f"{what} {exc}") from None
 
     code, src = _refusal(data)
-    if code in _PER_USER_5XX:
-        _note_mode(contract.MODE_PER_USER)
     if status == 200 and isinstance(data, dict):
-        mode = data.get("mode")
-        if mode == contract.MODE_SHARED:
-            _note_mode(mode)
-            return "shared", None
-        if mode == contract.MODE_PER_USER:
-            _note_mode(mode)
-            handle = _running_handle(person, view, project_id, data)
-            if handle is not None:
-                return "running", handle
-            logger.error("[sandbox] %s view=%s: the gateway's answer is not this person's sandbox",
-                         _who(person, view), view)
-            raise await _refuse(person, project_id, "error", view=view, kind=kind,
-                                detail="gateway_answer_mismatch")
-    elif status == 202 and isinstance(data, dict) and data.get("mode") == contract.MODE_PER_USER:
-        _note_mode(contract.MODE_PER_USER)
-        if data.get("state") == "starting" and contract.valid_instance(data.get("instance")):
-            return "starting", _starting_handle(person, view, project_id, data)
-    elif status == 409 and code in (contract.ERR_RAM, contract.ERR_HARD):
-        # Only the per-user manager refuses for memory or the sandbox count.
-        _note_mode(contract.MODE_PER_USER)
+        handle = _running_handle(person, view, project_id, data)
+        if handle is not None:
+            return "running", handle
+        logger.error("[sandbox] %s view=%s: the gateway's answer is not this person's sandbox",
+                     _who(person, view), view)
+        raise await _refuse(person, project_id, "error", view=view, kind=kind,
+                            detail="gateway_answer_mismatch")
+    if (status == 202 and isinstance(data, dict) and data.get("state") == "starting"
+            and contract.valid_instance(data.get("instance"))):
+        return "starting", _starting_handle(person, view, project_id, data)
+    if status == 409 and code in (contract.ERR_RAM, contract.ERR_HARD):
         limit = {k: src[k] for k in contract.LIMIT_PAYLOAD_KEYS if k in src}
         reason = "ram" if code == contract.ERR_RAM else "hard"
         raise await _refuse(person, project_id, reason, view=view, kind=kind, limit=limit or None,
                             detail=src.get("detail") if isinstance(src.get("detail"), str) else code)
-    elif status == 403 and code in (contract.ERR_USER_REFUSED, contract.ERR_PROJECT_REFUSED):
-        # The webapp refuses a person only once the orchestrator named per-user mode.
-        _note_mode(contract.MODE_PER_USER)
+    if status == 403 and code in (contract.ERR_USER_REFUSED, contract.ERR_PROJECT_REFUSED):
         raise await _refuse(person, project_id, "refused", view=view, kind=kind, detail=code)
     raise await _refuse(person, project_id, "error", view=view, kind=kind,
                         detail=_status_detail(status, code))
-
-
-async def ask_mode() -> str:
-    """The mode, asked afresh of the gateway, for a route that must decide whether a
-    request without a person can be served (B.12): the last answer, or the default
-    before any, only on an outage; per-user for any other answer without a mode."""
-    return await _mode_without_person()
-
-
-async def _mode_without_person() -> str:
-    """The mode, for a call that names no person and so cannot ``ensure``: asked afresh
-    from the gateway's list (which carries it), never a remembered ``shared`` that a
-    switch to per-user has since made wrong; the last answer, or the default before any,
-    only on an outage (B.1). Any other answer without a mode is per-user (fail closed)."""
-    try:
-        status, data = await _gateway("GET", f"{WEBAPP_API_URL}/api/internal/agent/sandbox/list")
-    except (_Unreachable, _GatewayError):
-        return current_mode()
-    if status == 200 and isinstance(data, dict) and data.get("mode") in contract.MODES:
-        _note_mode(data["mode"])
-        return data["mode"]
-    return contract.MODE_PER_USER
 
 
 # =============================================================================
@@ -672,7 +563,7 @@ async def _release_now(handle: SandboxHandle) -> None:
         if task is not None and task is not asyncio.current_task() and not task.done():
             task.cancel()
             await asyncio.wait([task], timeout=contract.GATEWAY_TIMEOUT_S)
-        if handle.mode == contract.MODE_PER_USER and handle.lease_id and not handle.stale:
+        if handle.lease_id and not handle.stale:
             try:
                 await _gateway("POST", f"{WEBAPP_API_URL}/api/internal/agent/sandbox/release",
                                {"userId": handle.user_id, "leaseId": handle.lease_id})
@@ -681,9 +572,7 @@ async def _release_now(handle: SandboxHandle) -> None:
         live = _live.get(handle.user_id)
         if live is not None:
             live.discard(handle)
-        if (handle.mode == contract.MODE_PER_USER
-                and _current.get((handle.user_id, handle.view)) != handle.instance
-                and not _in_use(handle.key)):
+        if _current.get((handle.user_id, handle.view)) != handle.instance and not _in_use(handle.key):
             _drop_client(handle.key)
     except asyncio.CancelledError:
         raise
@@ -700,9 +589,7 @@ async def _acquire(user_id: str, view: str, project_id: Optional[str], kind: str
     if not person:
         if user_id:
             logger.warning("[sandbox] a malformed person id was refused")
-        if await _mode_without_person() == contract.MODE_PER_USER:
-            raise await _refuse("", project_id, "no_user", view=view, kind=kind)
-        return _shared_handle("", view)
+        raise await _refuse("", project_id, "no_user", view=view, kind=kind)
     if project_id is not None and not contract.valid_project_id(project_id):
         raise await _refuse(person, None, "error", view=view, kind=kind,
                             detail=contract.ERR_INVALID_PROJECT_ID)
@@ -721,10 +608,7 @@ async def _acquire(user_id: str, view: str, project_id: Optional[str], kind: str
             if outcome == "starting":
                 raise await _refuse(person, project_id, "error", view=view, kind=kind,
                                     detail=contract.ERR_START_TIMEOUT)
-            if handle is not None:
-                handle.fresh = handle.fresh or first_fresh
-        if outcome == "shared":
-            return _shared_handle(person, view)
+            handle.fresh = handle.fresh or first_fresh
 
         handle.kind = kind
         handle.lease_id = str(uuid.uuid4())
@@ -892,23 +776,20 @@ def retire(handle: Optional[SandboxHandle]) -> None:
     """A call found this handle's sandbox gone (its client could not reconnect): every
     handle on that instance turns stale and its client is dropped, so the next
     ``acquire`` ensures again instead of handing the same dead instance back."""
-    if handle is not None and handle.mode == contract.MODE_PER_USER:
+    if handle is not None:
         _retire(handle, whole_instance=True)
 
 
 async def is_running(user_id: str, view: Optional[str] = None) -> bool:
-    """Whether the person's view has a running instance (shared mode: always). Advisory:
-    False on any failure, and the ``acquire`` that follows says why."""
+    """Whether the person's view has a running instance. Advisory: False on any failure,
+    and the ``acquire`` that follows says why."""
     view = sandbox_view() if view is None else contract.check_view(view)
     try:
         status, data = await _gateway("GET", f"{WEBAPP_API_URL}/api/internal/agent/sandbox/list")
     except (_Unreachable, _GatewayError):
-        return current_mode() == contract.MODE_SHARED
+        return False
     if status != 200 or not isinstance(data, dict):
         return False
-    _note_mode(data.get("mode"))
-    if data.get("mode") == contract.MODE_SHARED:
-        return True
     return any(h.user_id == user_id and h.view == view and h.state == "running"
                for h in _listed_handles(data))
 
@@ -931,26 +812,20 @@ def _listed_handles(data: Mapping) -> List[SandboxHandle]:
         handles.append(SandboxHandle(
             user_id=person, view=view, instance=instance, host=entry["host"],
             token=entry["token"], tunnel_token="", ports=contract.PORTS,
-            reverse_port=contract.DEFAULT_REVERSE_PORT, mode=contract.MODE_PER_USER,
+            reverse_port=contract.DEFAULT_REVERSE_PORT,
             state="running" if entry["state"] == "running" else "draining"))
     return handles
 
 
 async def running_sandboxes() -> List[SandboxHandle]:
-    """Every live per-user instance (running or draining), as lease-less handles, from the
-    gateway's list. Shared mode: none. Raises SandboxUnavailable when the list cannot be
-    read in per-user mode."""
+    """Every live instance (running or draining), as lease-less handles, from the
+    gateway's list. Raises SandboxUnavailable when the list cannot be read."""
     try:
         status, data = await _gateway("GET", f"{WEBAPP_API_URL}/api/internal/agent/sandbox/list")
     except (_Unreachable, _GatewayError) as exc:
-        if current_mode() == contract.MODE_SHARED:
-            return []
         raise SandboxUnavailable("error", detail=f"gateway_outage {exc}") from None
-    if status != 200 or not isinstance(data, dict) or data.get("mode") not in contract.MODES:
+    if status != 200 or not isinstance(data, dict) or not isinstance(data.get("sandboxes"), list):
         raise SandboxUnavailable("error", detail=_status_detail(status, _refusal(data)[0]))
-    _note_mode(data["mode"])
-    if data["mode"] == contract.MODE_SHARED:
-        return []
     handles = _listed_handles(data)
     for handle in handles:
         _register(handle)
@@ -965,12 +840,10 @@ async def lease_listed(handle: SandboxHandle, kind: str) -> Optional[SandboxHand
     end it with ``release``."""
     if kind not in contract.LEASE_KINDS:
         raise ValueError("invalid_lease_kind")
-    if handle.mode != contract.MODE_PER_USER:
-        return None
     leased = SandboxHandle(
         user_id=handle.user_id, view=handle.view, instance=handle.instance, host=handle.host,
         token=handle.token, tunnel_token=handle.tunnel_token, ports=handle.ports,
-        reverse_port=handle.reverse_port, mode=handle.mode, kind=kind, state=handle.state,
+        reverse_port=handle.reverse_port, kind=kind, state=handle.state,
         lease_id=str(uuid.uuid4()))
     outcome, data = await _lease_call(handle.user_id, handle.instance, leased.lease_id, kind)
     if outcome != "ok":
@@ -984,36 +857,24 @@ async def lease_listed(handle: SandboxHandle, kind: str) -> Optional[SandboxHand
 # Per-instance clients, URLs, headers
 # =============================================================================
 
-def _client_key(handle: SandboxHandle) -> Tuple[str, str, str]:
-    return _SHARED_CLIENT_KEY if handle.mode == contract.MODE_SHARED else handle.key
-
-
 def server_configs_for(handle: SandboxHandle) -> Dict[str, Dict[str, Any]]:
-    """The five system servers' MultiServerMCPClient configs for this handle: today's
-    (``_build_system_mcp_servers``) in shared mode; per user, the same servers and
-    timeouts on the instance's host with its own static bearer."""
-    from mcp_registry import BearerAuth, to_mcp_servers_dict
+    """The five system servers' MultiServerMCPClient configs for this handle: on the
+    instance's host, with its own static bearer."""
+    from mcp_registry import to_mcp_servers_dict
     from tools import _build_system_mcp_servers
 
-    servers = _build_system_mcp_servers()
-    if handle.mode == contract.MODE_PER_USER:
-        auth = BearerAuth(token=handle.token)
-        servers = [srv.model_copy(update={"url": f"http://{handle.host}:{contract.PORTS[srv.id]}/sse",
-                                          "auth": auth})
-                   for srv in servers]
-    config, _warnings = to_mcp_servers_dict(servers)
+    config, _warnings = to_mcp_servers_dict(_build_system_mcp_servers(handle.host, handle.token))
     return config
 
 
 async def client_for(handle: SandboxHandle):
     """The handle's MCPToolsManager for the five system servers, connected and cached per
     instance; reconnect through its own ``reconnect()``. Raises SandboxUnavailable
-    ("stopped" for a stale or released handle, and for a shared handle once the mode is
-    per-user)."""
+    ("stopped" for a stale or released handle)."""
     _check_serves(handle)
     if handle.state != "running":
         raise SandboxUnavailable("error", detail="sandbox_not_ready")
-    key = _client_key(handle)
+    key = handle.key
     client = _clients.get(key)
     if client is not None:
         return client
@@ -1036,8 +897,6 @@ async def client_for(handle: SandboxHandle):
 def _check_serves(handle: SandboxHandle) -> None:
     if handle.stale or handle.released:
         raise SandboxUnavailable("stopped", detail="sandbox_stopped")
-    if _retired_shared(handle):
-        raise SandboxUnavailable("stopped", detail="shared_sandbox_retired")
 
 
 async def tool_for(tool_name: str, handle: SandboxHandle):
@@ -1055,20 +914,13 @@ def url_for(handle: SandboxHandle, port_name: str, path: str = "") -> str:
         raise ValueError("unknown_port")
     if not isinstance(path, str) or not _PATH.fullmatch(path):
         raise ValueError("invalid_path")
-    if _retired_shared(handle):
-        raise SandboxUnavailable("stopped", detail="shared_sandbox_retired")
-    if handle.mode == contract.MODE_PER_USER:
-        scheme = "ws" if port_name == "terminal" else "http"
-        return f"{scheme}://{handle.host}:{contract.PORTS[port_name]}{path}"
-    return _shared_base(port_name) + path
+    scheme = "ws" if port_name == "terminal" else "http"
+    return f"{scheme}://{handle.host}:{contract.PORTS[port_name]}{path}"
 
 
 def headers_for(handle: SandboxHandle, port_name: Optional[str] = None) -> dict:
     """The bearer for the handle's instance: its tunnel token for the tunnel manager, none
-    for ngrok's API (which checks nothing), its MCP token for every other port. A shared
-    handle once the mode is per-user gets none: SandboxUnavailable("stopped")."""
-    if _retired_shared(handle):
-        raise SandboxUnavailable("stopped", detail="shared_sandbox_retired")
+    for ngrok's API (which checks nothing), its MCP token for every other port."""
     if port_name == "ngrok_api":
         return {}
     return kali_auth_headers_for(handle.tunnel_token if port_name == "tunnel" else handle.token)
@@ -1217,12 +1069,10 @@ def forget_job(job_id: str) -> None:
 # Tests
 # =============================================================================
 
-def _reset(mode: Optional[str] = None) -> None:
-    """Forget everything; ``mode`` is the last answer to pretend (None: none yet)."""
-    global _last_mode
+def _reset() -> None:
+    """Forget everything."""
     for task in list(_renewals):
         _cancel_quietly(task)
-    _last_mode = mode if mode in contract.MODES else None
     _listeners.clear()
     _clients.clear()
     _client_locks.clear()

@@ -38,7 +38,6 @@ const mockWriteAudit = vi.fn()
 // The drive's `attempted` row (written before forwarding, in auditedTransaction); mockWriteAudit gets the outcome row.
 const mockWriteAuditTx = vi.fn()
 const mockAgentFetch = vi.fn()
-const mockMode = vi.fn()
 const mockMounts = vi.fn()
 const mockRunning = vi.fn()
 const mockProjects = vi.fn()
@@ -68,7 +67,6 @@ vi.mock('@/lib/agentFetch', async (importOriginal) => ({
   agentFetch: (...a: unknown[]) => mockAgentFetch(...a),
 }))
 vi.mock('@/lib/sandbox/gateway', () => ({
-  sandboxMode: (...a: unknown[]) => mockMode(...a),
   sandboxProjectsFor: (...a: unknown[]) => mockMounts(...a),
 }))
 vi.mock('@/lib/sandbox/orchestratorClient', async (orig) => ({
@@ -137,7 +135,6 @@ function perUserList(): Record<string, unknown> {
       { id: 1, type: 'meterpreter', chat_session_id: 'chat-shared', sandbox: 'bbbbb1', ...BOB },
       { id: 2, type: 'shell', chat_session_id: 'chat-bob', sandbox: 'bbbbb1', ...BOB },
       { id: 1, type: 'shell', chat_session_id: 'chat-bob', sandbox: 'bbbbb2', ...BOB },
-      { id: 3, type: 'shell', chat_session_id: 'chat-alice', sandbox: 'shared' },
     ],
     jobs: [
       { id: 0, name: 'Exploit: multi/handler', payload: 'p', port: 4444, sandbox: 'aaaaa1', ...ALICE },
@@ -170,8 +167,8 @@ const PROJECTS = [
 ]
 
 
-/** The agent's shared-mode answer (one console, untagged rows), as before group 1. */
-function sharedList(): Record<string, unknown> {
+/** Rows without a sandbox instance (an agent that predates the per-user sandboxes): no target, no project. */
+function untaggedList(): Record<string, unknown> {
   return {
     sessions: [
       { id: 1, type: 'shell', chat_session_id: 'chat-alice' },
@@ -215,11 +212,10 @@ beforeEach(() => {
   mockWriteAudit.mockReset().mockResolvedValue(undefined)
   mockWriteAuditTx.mockReset().mockResolvedValue(undefined)
   mockAgentFetch.mockReset()
-  mockMode.mockReset().mockResolvedValue('per_user')
   mounts = { 'alice:own': ['p-alice', 'p-shared'], 'alice:act_as': ['p-alice'], 'bob:own': ['p-bob', 'p-shared'], 'bob:act_as': ['p-bob', 'p-shared'] }
   mockMounts.mockReset().mockImplementation(async (userId: string, opts: { actingAs?: boolean } = {}) =>
     mounts[`${userId}:${opts.actingAs ? 'act_as' : 'own'}`] ?? [])
-  mockRunning.mockReset().mockResolvedValue({ mode: 'per_user', sandboxes: RUNNING })
+  mockRunning.mockReset().mockResolvedValue({ sandboxes: RUNNING })
   resetUnavailableNamingForTests()
   mockProjects.mockReset().mockImplementation(async (args: { where: { id: { in: string[] } } }) =>
     PROJECTS.filter(p => args.where.id.in.includes(p.id)))
@@ -243,7 +239,7 @@ afterEach(async () => {
 describe('the list across sandboxes (WI-S16-1)', () => {
   test('each row keeps its sandbox; the visibility rule is unchanged; the unavailable sandboxes are a count', async () => {
     const out = await visibleSessions(perUserList(), await viewerFor(principal('alice')))
-    expect(pairs(out.sessions)).toEqual(['aaaaa1:1', 'bbbbb1:1', 'shared:3'])
+    expect(pairs(out.sessions)).toEqual(['aaaaa1:1', 'bbbbb1:1'])
     expect(out.sessions.find(s => s.sandbox === 'bbbbb1')).toMatchObject({ id: 1, project_id: 'p-shared' })
     expect(pairs(out.non_msf_sessions)).toEqual(['bbbbb1:raw-1'])
     expect(out.jobs).toEqual([])
@@ -258,14 +254,15 @@ describe('the list across sandboxes (WI-S16-1)', () => {
   test('the unavailable instances: a count for everyone, every id only for holders of every session; once each', async () => {
     // Changed by design (S16b review 3a): a member is now named the silent instances that could hold
     // her rows; Carol's ccccc1 and an instance no sandbox runs are not among them.
+    // `shared` is no instance: it is neither counted nor named.
     const odd = { ...perUserList(), unavailable: ['ccccc1', 'ccccc1', 'shared', '../etc', 'CCCCC1', 7, null, 'ddddd1'] }
     const member = await visibleSessions(odd, await viewerFor(principal('alice')))
-    expect(member.unavailable_count).toBe(3)
-    expect(member.unavailable).toEqual(['shared'])
+    expect(member.unavailable_count).toBe(2)
+    expect(member.unavailable).toEqual([])
     const admin = await visibleSessions(odd, await viewerFor(principal('admin-a', 'admin')))
-    expect(admin.unavailable_count).toBe(3)
-    expect(admin.unavailable).toEqual(['ccccc1', 'shared', 'ddddd1'])
-    const none = await visibleSessions(sharedList(), await viewerFor(principal('alice')))
+    expect(admin.unavailable_count).toBe(2)
+    expect(admin.unavailable).toEqual(['ccccc1', 'ddddd1'])
+    const none = await visibleSessions(untaggedList(), await viewerFor(principal('alice')))
     expect(none).not.toHaveProperty('unavailable')
     expect(none).not.toHaveProperty('unavailable_count')
   })
@@ -276,12 +273,12 @@ describe('the silent instances named to a viewer (S16b review 3a)', () => {
   // named the silent instances that could hold a row she may see: her own sandboxes, and those whose
   // person's mount list (for that view) holds a project whose sessions she may see. Never another id.
   const silent = (...ids: string[]) => ({ ...perUserList(), unavailable: ids })
-  const ALL = ['aaaaa1', 'eeeee1', 'bbbbb1', 'bbbbb2', 'ccccc1', 'shared']
+  const ALL = ['aaaaa1', 'eeeee1', 'bbbbb1', 'bbbbb2', 'ccccc1']
 
   test("Alice: her own instances, Bob's (they mount p-shared, which he shares with her at W+X), never Carol's", async () => {
     const out = await visibleSessions(silent(...ALL), await viewerFor(principal('alice')))
-    expect(out.unavailable).toEqual(['aaaaa1', 'eeeee1', 'bbbbb1', 'bbbbb2', 'shared'])
-    expect(out.unavailable_count).toBe(6)
+    expect(out.unavailable).toEqual(['aaaaa1', 'eeeee1', 'bbbbb1', 'bbbbb2'])
+    expect(out.unavailable_count).toBe(5)
   })
 
   test("M-b test 4: Alice drives Bob's session on p-shared and Bob's sandbox is the busy one: it is named to her", async () => {
@@ -291,13 +288,13 @@ describe('the silent instances named to a viewer (S16b review 3a)', () => {
 
   test("Bob: his own, and Alice's own sandbox (it mounts his p-shared), not her act_as one (p-alice only)", async () => {
     const out = await visibleSessions(silent(...ALL), await viewerFor(principal('bob')))
-    expect(out.unavailable).toEqual(['aaaaa1', 'bbbbb1', 'bbbbb2', 'shared'])
+    expect(out.unavailable).toEqual(['aaaaa1', 'bbbbb1', 'bbbbb2'])
     expect(mockMounts).toHaveBeenCalledWith('alice', { actingAs: true })
   })
 
   test('Carol: only her own', async () => {
     const out = await visibleSessions(silent(...ALL), await viewerFor(principal('carol')))
-    expect(out.unavailable).toEqual(['ccccc1', 'shared'])
+    expect(out.unavailable).toEqual(['ccccc1'])
   })
 
   test("a share Bob withdrew: his instances are no longer named to Alice", async () => {
@@ -306,15 +303,15 @@ describe('the silent instances named to a viewer (S16b review 3a)', () => {
     expect(out.unavailable).toEqual(['aaaaa1'])
   })
 
-  test('the running sandboxes cannot be read: only `shared` is named (the browser then keeps nothing)', async () => {
+  test('the running sandboxes cannot be read: none is named (the browser then keeps nothing)', async () => {
     mockRunning.mockRejectedValue(new Error('orchestrator down'))
-    const out = await visibleSessions(silent('aaaaa1', 'shared'), await viewerFor(principal('alice')))
-    expect(out.unavailable).toEqual(['shared'])
-    expect(out.unavailable_count).toBe(2)
+    const out = await visibleSessions(silent('aaaaa1'), await viewerFor(principal('alice')))
+    expect(out.unavailable).toEqual([])
+    expect(out.unavailable_count).toBe(1)
   })
 
   test('a malformed row of the running list counts for nobody; a failed mount read names nothing', async () => {
-    mockRunning.mockResolvedValue({ mode: 'per_user', sandboxes: [
+    mockRunning.mockResolvedValue({ sandboxes: [
       { user_id: '../alice', view: 'own', instance: 'fffff1' }, { user_id: 'bob', view: 'root', instance: 'fffff2' },
       { user_id: 'bob', view: 'own', instance: 'fffff3' },
     ] })
@@ -409,16 +406,13 @@ describe('a target is the pair (instance, number) (WI-S16-2)', () => {
     expect(await authorizeSessionTarget(perUserList(), v, 'session', '1', 'ccccc1')).toBeNull()
   })
 
-  test('without an instance, a per-user list has no target at all', async () => {
-    const v = await viewerFor(principal('alice'))
-    expect(await authorizeSessionTarget(perUserList(), v, 'session', '1')).toBeNull()
-    expect(await authorizeSessionTarget(perUserList(), v, 'session', '1', null)).toBeNull()
-  })
-
-  test("the shared container's sessions are addressed as `shared`", async () => {
-    const v = await viewerFor(principal('alice'))
-    expect(await authorizeSessionTarget(perUserList(), v, 'session', '3', 'shared')).toEqual({ projectId: 'p-alice', via: 'owner' })
-    expect(await authorizeSessionTarget(perUserList(), v, 'session', '3', 'aaaaa1')).toBeNull()
+  test('a name that is no instance (`shared`, empty) has no target at all, even for a holder of every session', async () => {
+    for (const who of [principal('alice'), principal('admin-a', 'admin')]) {
+      const v = await viewerFor(who)
+      for (const sandbox of ['shared', '', 'AAAAA1']) {
+        expect(await authorizeSessionTarget(perUserList(), v, 'session', '1', sandbox)).toBeNull()
+      }
+    }
   })
 
   test('a job is a pair too: an admin kills exactly the job of the instance named', async () => {
@@ -429,15 +423,18 @@ describe('a target is the pair (instance, number) (WI-S16-2)', () => {
     expect(await authorizeSessionTarget(perUserList(), alice, 'job', '0', 'aaaaa1')).toBeNull()
   })
 
-  test('the shared-mode list keeps answering as before when no instance is named', async () => {
-    const v = await viewerFor(principal('alice'))
-    expect(await authorizeSessionTarget(sharedList(), v, 'session', '1')).toEqual({ projectId: 'p-alice', via: 'owner' })
-    expect(await authorizeSessionTarget(sharedList(), v, 'session', '1', 'shared')).toBeNull()
+  test('a row without an instance is never a target, whatever instance is named and for anyone', async () => {
+    for (const who of [principal('alice'), principal('admin-a', 'admin')]) {
+      const v = await viewerFor(who)
+      for (const sandbox of ['aaaaa1', 'shared']) {
+        expect(await authorizeSessionTarget(untaggedList(), v, 'session', '1', sandbox)).toBeNull()
+      }
+    }
   })
 })
 
 describe('the drive routes take ?sandbox=', () => {
-  test('per-user mode without the parameter: 400 sandbox_required, nothing typed, no audit row', async () => {
+  test('without the parameter: 400 sandbox_required, nothing typed, no audit row', async () => {
     signedIn(principal('alice'))
     agent()
     for (const call of [
@@ -489,14 +486,6 @@ describe('the drive routes take ?sandbox=', () => {
     ])
   })
 
-  test("the shared container: `shared` is forwarded and audited as shared:<number>", async () => {
-    signedIn(principal('alice'))
-    agent({ busy: false, output: 'Killed' })
-    expect((await killSession(post('?sandbox=shared'), params('3'))).status).toBe(200)
-    expect(drives()).toEqual(['/sessions/3/kill?sandbox=shared'])
-    expect(auditRows()[0]).toMatchObject({ targetId: 'shared:3', after: { projectId: 'p-alice', via: 'owner', sandbox: 'shared' } })
-  })
-
   test('an admin kills one job of one instance', async () => {
     signedIn(principal('admin-a', 'admin'))
     agent({ busy: false, output: 'Stopping job 0' })
@@ -505,7 +494,7 @@ describe('the drive routes take ?sandbox=', () => {
     expect(auditRows()[0]).toMatchObject({ action: 'agent.job_kill', targetType: 'msf_job', targetId: 'bbbbb1:0', after: { via: 'admin', sandbox: 'bbbbb1' } })
   })
 
-  test.each(['', 'BBBBB1', 'bbbbb', 'bbbbb12', '../etc', 'bbbbb1/../x', 'shared2', 'bbbbb1 '])(
+  test.each(['', 'shared', 'BBBBB1', 'bbbbb', 'bbbbb12', '../etc', 'bbbbb1/../x', 'shared2', 'bbbbb1 '])(
     'a value that is no instance (%j): 400 invalid_sandbox before the agent is asked', async (value) => {
       signedIn(principal('alice'))
       agent()
@@ -515,12 +504,11 @@ describe('the drive routes take ?sandbox=', () => {
       expect(mockAgentFetch).not.toHaveBeenCalled()
     })
 
-  test('a hidden session named with ?sandbox=000000 is 404 in both modes (the live matrix rows)', async () => {
+  test('a hidden session named with ?sandbox=000000 is 404, whatever the list holds (the live matrix rows)', async () => {
     signedIn(principal('member-c'))
     agent()
-    for (const mode of ['per_user', 'shared']) {
-      mockMode.mockResolvedValue(mode)
-      list = mode === 'per_user' ? perUserList : sharedList
+    for (const answer of [perUserList, untaggedList]) {
+      list = answer
       expect((await interact(post('?sandbox=000000', { command: 'id' }), params('rbac-not-a-session'))).status).toBe(404)
       expect((await interact(post('?sandbox=000000', { command: 'id' }), params('999999'))).status).toBe(404)
       expect((await killSession(post('?sandbox=000000'), params('rbac-not-a-session'))).status).toBe(404)
@@ -529,24 +517,15 @@ describe('the drive routes take ?sandbox=', () => {
     expect(drives()).toEqual([])
   })
 
-  test('shared mode: no parameter drives the one console as before, audited as shared:<number>; a miss stays 404', async () => {
-    mockMode.mockResolvedValue('shared')
-    list = sharedList
+  test('a list of rows without instances drives nothing: no parameter is 400 before any call, a named one 404', async () => {
+    list = untaggedList
     signedIn(principal('alice'))
     agent()
-    expect((await interact(post('', { command: 'id' }), params('1'))).status).toBe(200)
-    expect(drives()).toEqual(['/sessions/1/interact'])
-    expect(auditRows()[0]).toMatchObject({ targetId: 'shared:1', after: { projectId: 'p-alice', via: 'owner', sandbox: 'shared' } })
-    expect((await interact(post('', { command: 'id' }), params('2'))).status).toBe(404)
-    expect((await interact(post('', { command: 'id' }), params('99'))).status).toBe(404)
-  })
-
-  test('the mode cannot be read: a miss without the parameter is 404, never a guess of per-user', async () => {
-    mockMode.mockRejectedValue(new Error('orchestrator unreachable'))
-    signedIn(principal('alice'))
-    agent()
-    expect((await killSession(post(), params('1'))).status).toBe(404)
+    expect((await interact(post('', { command: 'id' }), params('1'))).status).toBe(400)
+    expect(mockAgentFetch).not.toHaveBeenCalled()
+    expect((await interact(post('?sandbox=aaaaa1', { command: 'id' }), params('1'))).status).toBe(404)
     expect(drives()).toEqual([])
+    expect(auditRows()).toEqual([])
   })
 })
 
@@ -628,9 +607,11 @@ describe("a sandbox's row counts for its chat's project only when the project is
     }
   })
 
-  test('the shared container keeps the chat rule it had: no person tag is needed there', async () => {
-    const out = await visibleSessions(perUserList(), await viewerFor(principal('alice')))
-    expect(out.sessions.find(s => s.sandbox === 'shared')).toMatchObject({ id: 3, project_id: 'p-alice' })
+  test('a row without an instance stands for no project: its chat never makes it the owner\'s', async () => {
+    const owner = await visibleSessions(untaggedList(), await viewerFor(principal('alice')))
+    expect(owner.sessions).toEqual([])
+    const admin = await visibleSessions(untaggedList(), await viewerFor(principal('admin-a', 'admin')))
+    expect(admin.sessions.map(s => s.project_id)).toEqual([null, null])
   })
 })
 

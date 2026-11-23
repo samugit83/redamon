@@ -168,7 +168,7 @@ beforeEach(() => {
   account('admin-a', 'admin', { createdAt: new Date('2026-01-05T00:00:00Z') })
   account('member-tun', 'standard', { legacyGrants: ['tunnels'] })
   h.sandbox = []
-  h.backstop.mockReset().mockResolvedValue({ mode: 'per_user', stopped: 1 })
+  h.backstop.mockReset().mockResolvedValue({ stopped: 1 })
   vi.spyOn(console, 'info').mockImplementation(() => {})
   vi.spyOn(console, 'warn').mockImplementation(() => {})
 })

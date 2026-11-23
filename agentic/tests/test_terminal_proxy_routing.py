@@ -72,11 +72,9 @@ class _Upstream:
 
 
 class _TerminalTest(unittest.TestCase):
-    mode = contract.MODE_PER_USER
-
     def setUp(self):
-        self.fleet = Fleet(self.mode)
-        router._reset(mode=None)
+        self.fleet = Fleet()
+        router._reset()
         self.upstream = _Upstream(output=[b"$ "])
         self.connect = mock.MagicMock(side_effect=lambda *a, **k: self.upstream)
         self.claims = {"sub": "bob", "ten": "alice", "pid": "p1", "sid": "s1"}
@@ -91,7 +89,7 @@ class _TerminalTest(unittest.TestCase):
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
-        self.addCleanup(router._reset, None)
+        self.addCleanup(router._reset)
         self.client = TestClient(api.app)
 
     def open(self):
@@ -254,18 +252,18 @@ class TheStatusFrames(_TerminalTest):
         self.connect.assert_not_called()
 
 
-class SharedModeTerminal(_TerminalTest):
-    mode = contract.MODE_SHARED
-
-    def test_shared_mode_dials_todays_address_with_the_shared_token(self):
-        with mock.patch.object(api, "_KALI_TERMINAL_WS_URL", "ws://kali-sandbox:8016"):
+class TheOldAddressIsNeverDialled(_TerminalTest):
+    def test_the_old_address_and_token_in_the_environment_are_never_used(self):
+        # MCP_AUTH_TOKEN is set in _TerminalTest; the old address too, here.
+        with mock.patch.dict(os.environ, {"KALI_TERMINAL_WS_URL": "ws://kali-sandbox:8016"}):
             with self.open() as ws:
                 ws.receive_bytes()
         url, headers = self.dialed()
-        self.assertTrue(url.startswith("ws://kali-sandbox:8016?"), url)
-        self.assertIn("user_id=alice", url)
-        self.assertEqual(headers["Authorization"], f"Bearer {SHARED_TOKEN}")
-        self.assertEqual(self.fleet.leases(), [])
+        box = self.fleet.current("bob")
+        self.assertTrue(url.startswith(f"ws://{box.host}:{contract.PORTS['terminal']}?"), url)
+        self.assertNotIn("kali-sandbox", url)
+        self.assertEqual(headers["Authorization"], f"Bearer {box.token}")
+        self.assertNotIn(SHARED_TOKEN, json.dumps(headers))
 
 
 if __name__ == "__main__":

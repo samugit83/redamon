@@ -6,15 +6,14 @@ owner, who started a triage run), never the tenant's (the project's owner): a co
 run on alice's project uses the collaborator's own sandbox. An admin acting as a member works
 in the member's separate `act_as` view (TD-26), never the member's `own` one and never the
 admin's. Each instance has its own bearer, so each person's MCP client carries only its own
-handle's token, never the shared MCP_AUTH_TOKEN.
+handle's token, never the old shared MCP_AUTH_TOKEN (set in the environment here, with
+the old compose addresses, to show neither is read).
 
-The mode comes from the gateway's answers (TD-6): before any answer an unreachable gateway
-falls back to the contract's DEFAULT_MODE; once `per_user` was answered, an unreachable
-gateway refuses (`error`) and never hands out the shared sandbox. In `per_user` mode no
-person means `no_user`, never someone else's sandbox or the shared one.
+There is no other sandbox to fall back to: an unreachable gateway or an outage refuses
+(`error`), and no person means `no_user`, never someone else's sandbox
+(test_router_has_no_shared_fallback.py holds the rest).
 
-The webapp gateway is stubbed with httpx.MockTransport; every test sets the router's mode
-explicitly (`sandbox_router._reset(mode=...)`, None = no answer yet).
+The webapp gateway is stubbed with httpx.MockTransport.
 
 Run: ./agentic/run_tests.sh tests/test_sandbox_router.py
 """
@@ -68,8 +67,7 @@ class Gateway:
     tokens. `script` overrides an answer per route; `raises` makes every call fail at
     transport level."""
 
-    def __init__(self, mode=contract.MODE_PER_USER):
-        self.mode = mode
+    def __init__(self):
         self.requests = []
         self.instances = {}
         self.cold = set()          # (person, view) whose next start answers 202 first
@@ -105,8 +103,6 @@ class Gateway:
         return httpx.Response(404)
 
     def _ensure(self, body):
-        if self.mode == contract.MODE_SHARED:
-            return 200, {"mode": "shared"}
         person = body["userId"]
         view = contract.VIEW_ACT_AS if body.get("actingAs") else contract.VIEW_OWN
         key = (person, view)
@@ -119,14 +115,14 @@ class Gateway:
             }
             if key in self.cold and not body.get("wait"):
                 self.cold.discard(key)
-                return 202, {"mode": "per_user", "state": "starting",
-                             "instance": self.instances[key]["instance"], "fresh": True}
+                return 202, {"state": "starting", "instance": self.instances[key]["instance"],
+                             "fresh": True}
         return 200, self.running_answer(person, view)
 
     def running_answer(self, person, view, **override):
         inst = self.instances[(person, view)]
         answer = {
-            "mode": "per_user", "user_id": person, "view": view,
+            "user_id": person, "view": view,
             "instance": inst["instance"],
             "host": contract.container_name(person, view, inst["instance"]),
             "token": inst["token"], "tunnel_token": inst["tunnel_token"],
@@ -138,9 +134,7 @@ class Gateway:
         return answer
 
     def listing(self):
-        if self.mode == contract.MODE_SHARED:
-            return {"mode": "shared", "sandboxes": []}
-        return {"mode": "per_user", "sandboxes": [
+        return {"sandboxes": [
             {"user_id": person, "view": view, "instance": inst["instance"],
              "host": contract.container_name(person, view, inst["instance"]),
              "token": inst["token"], "state": "running"}
@@ -189,11 +183,9 @@ def _fake_get_tools(self, max_retries=5, retry_delay=10.0):
 class RouterTest(unittest.IsolatedAsyncioTestCase):
     """Each test: a fresh router state, a stubbed gateway, the internal key set."""
 
-    mode = contract.MODE_PER_USER
-
     async def asyncSetUp(self):
-        self.gateway = Gateway(mode=self.mode if self.mode else contract.MODE_PER_USER)
-        router._reset(mode=self.mode)
+        self.gateway = Gateway()
+        router._reset()
         self._patches = [
             mock.patch.object(router, "_transport", httpx.MockTransport(self.gateway.handler)),
             mock.patch.dict(router.INTERNAL_HEADERS, {"X-Internal-Key": "test-internal-key"}),
@@ -209,7 +201,7 @@ class RouterTest(unittest.IsolatedAsyncioTestCase):
         await router._shutdown()
         for p in reversed(self._patches):
             p.stop()
-        router._reset(mode=None)
+        router._reset()
 
     def actor(self, user_id, tenant_id, actor_id=None, project_id="p1", session_id="sess-1"):
         token = current_run_actor.set(RunActor(user_id=user_id, tenant_id=tenant_id,
@@ -328,7 +320,7 @@ class TestWhoseSandbox(RouterTest):
 
 class TestRefusals(RouterTest):
 
-    async def test_no_person_refuses_in_per_user_mode(self):
+    async def test_no_person_refuses(self):
         for person in ("", "has space", "../etc", "x" * 65):
             with self.subTest(person=person):
                 with self.assertRaises(SandboxUnavailable) as ctx:
@@ -336,7 +328,7 @@ class TestRefusals(RouterTest):
                 self.assertEqual(ctx.exception.reason, "no_user")
         self.assertEqual(self.gateway.ensures(), [])
         self.assertEqual(self.events, [], "no_user never reaches a browser")
-        # Unreachable too: never a shared handle in per-user mode.
+        # Unreachable too: never another sandbox.
         self.gateway.raises = _connect_refused
         with self.assertRaises(SandboxUnavailable) as ctx:
             await router.acquire("", project_id="p1", kind="run")
@@ -379,7 +371,6 @@ class TestRefusals(RouterTest):
                 self.assertEqual(self.events[0]["state"], "unavailable")
                 self.assertEqual(self.events[0]["reason"], "ram")
                 self.assertEqual(self.events[0]["limit"], RAM_PAYLOAD)
-        self.assertEqual(router.current_mode(), contract.MODE_PER_USER)
 
     async def test_hard_refusal(self):
         payload = {**RAM_PAYLOAD, "limitType": "hard", "settingName": "KALI_SANDBOX_MAX_CONCURRENT",
@@ -391,8 +382,8 @@ class TestRefusals(RouterTest):
         self.assertEqual(ctx.exception.limit["settingName"], "KALI_SANDBOX_MAX_CONCURRENT")
 
     async def test_5xx_and_timeout_are_errors(self):
-        """per_user known: a start error, an outage (503 orchestrator_unavailable, a
-        code-less 5xx) and a read timeout all refuse; none is a shared handle."""
+        """A start error, an outage (503 orchestrator_unavailable, a code-less 5xx) and a
+        read timeout all refuse."""
         self.gateway.script[contract.INTERNAL_ROUTE_ENSURE] = lambda b: (503, {"code": contract.ERR_START_FAILED})
         with self.assertRaises(SandboxUnavailable) as ctx:
             await router.acquire("bob", project_id="p1", kind="run")
@@ -411,7 +402,16 @@ class TestRefusals(RouterTest):
             await router.acquire("bob", project_id="p1", kind="run")
         self.assertEqual(ctx.exception.reason, "error")
         self.assertEqual([e["reason"] for e in self.events], ["error"] * 4)
-        self.assertEqual(router.current_mode(), contract.MODE_PER_USER)
+
+    async def test_a_start_error_refuses_with_its_code(self):
+        for code in (contract.ERR_IMAGE_MISSING, contract.ERR_START_FAILED, contract.ERR_START_TIMEOUT):
+            with self.subTest(code=code):
+                status = contract.ERROR_STATUS[code]
+                self.gateway.script[contract.INTERNAL_ROUTE_ENSURE] = lambda b, s=status, c=code: (s, {"code": c})
+                with self.assertRaises(SandboxUnavailable) as ctx:
+                    await router.acquire("bob", project_id="p1", kind="run")
+                self.assertEqual(ctx.exception.reason, "error")
+                self.assertIn(code, ctx.exception.detail)
 
     async def test_invalid_project_id_is_never_sent(self):
         for project_id in ("..", ".staging", "a/b", "p1\n", "CON", ""):
@@ -503,7 +503,8 @@ class TestClients(RouterTest):
                 self.assertEqual(router.headers_for(handle), {"Authorization": f"Bearer {handle.token}"})
             self.assertNotEqual(alice.token, bob.token)
             # The same connect and read timeouts as today's system servers.
-            today = {s.id: (s.connect_timeout, s.read_timeout) for s in tools._build_system_mcp_servers()}
+            today = {s.id: (s.connect_timeout, s.read_timeout)
+                     for s in tools._build_system_mcp_servers("any-host", "any-token")}
             self.assertEqual({sid: (c["timeout"], c["sse_read_timeout"]) for sid, c in client_a._server_configs.items()},
                              today)
         finally:
@@ -725,22 +726,18 @@ class TestLeases(RouterTest):
 
 
 # =============================================================================
-# The mode: TD-6
+# Outages fail closed (TD-6): there is no other sandbox
 # =============================================================================
 
-class TestModeNoAnswerYet(RouterTest):
-    """No answer yet: the default is per_user, so an outage fails closed, never the
-    shared sandbox (an outage after a shared answer is TestSharedMode)."""
-    mode = None
+class TestOutagesFailClosed(RouterTest):
 
     async def test_gateway_unreachable_fails_closed(self):
         self.gateway.raises = _connect_refused
         with self.assertRaises(SandboxUnavailable) as ctx:
             await router.acquire("bob", project_id="p1", kind="run")
         self.assertEqual(ctx.exception.reason, "error")
-        self.assertEqual(router.current_mode(), contract.MODE_PER_USER)
 
-    async def test_gateway_outage_before_any_answer_fails_closed(self):
+    async def test_gateway_outage_fails_closed(self):
         self.gateway.script[contract.INTERNAL_ROUTE_ENSURE] = lambda b: (503, {"code": "orchestrator_unavailable"})
         with self.assertRaises(SandboxUnavailable) as ctx:
             await router.acquire("bob", project_id="p1", kind="run")
@@ -754,24 +751,15 @@ class TestModeNoAnswerYet(RouterTest):
         self.assertEqual(ctx.exception.reason, "error")
         self.assertEqual(self.gateway.requests, [], "no call without the key")
 
-    async def test_no_person_asks_the_mode_first(self):
-        """No answer yet and no person: the list tells the mode; per_user refuses."""
+    async def test_no_person_asks_nothing(self):
         with self.assertRaises(SandboxUnavailable) as ctx:
             await router.acquire("", project_id="p1", kind="run")
         self.assertEqual(ctx.exception.reason, "no_user")
-        self.assertEqual([p for _m, p, _b, _h in self.gateway.requests], [contract.INTERNAL_ROUTE_LIST])
-        self.assertEqual(router.current_mode(), contract.MODE_PER_USER)
+        self.assertEqual(self.gateway.requests, [])
 
-
-class TestModePerUserSeen(RouterTest):
-    mode = contract.MODE_PER_USER
-
-    async def test_gateway_unreachable_after_per_user_answer_refuses(self):
-        router._reset(mode=None)
+    async def test_gateway_unreachable_after_an_answer_refuses(self):
         handle = await router.acquire("bob", project_id="p1", kind="run")
-        self.assertEqual(handle.mode, contract.MODE_PER_USER)
         await router.release(handle)
-        self.assertEqual(router.current_mode(), contract.MODE_PER_USER)
         for raises in (_connect_refused, lambda r: httpx.ConnectTimeout("t", request=r)):
             with self.subTest(raises=raises):
                 self.gateway.raises = raises
@@ -800,7 +788,7 @@ class TestModePerUserSeen(RouterTest):
                          [("bob", "own", handle.instance, handle.token)])
         # An entry whose host is not its person's container is skipped, never used.
         self.gateway.script[contract.INTERNAL_ROUTE_LIST] = lambda b: (200, {
-            "mode": "per_user", "sandboxes": [
+            "sandboxes": [
                 {"user_id": "bob", "view": "own", "instance": handle.instance,
                  "host": "redamon-postgres", "token": handle.token, "state": "running"}]})
         self.assertEqual(await router.running_sandboxes(), [])
@@ -808,144 +796,6 @@ class TestModePerUserSeen(RouterTest):
         self.assertFalse(await router.is_running("bob"))
         with self.assertRaises(SandboxUnavailable):
             await router.running_sandboxes()
-        await router.release(handle)
-
-
-class TestSharedMode(RouterTest):
-    mode = contract.MODE_SHARED
-
-    async def test_shared_mode_uses_compose_addresses(self):
-        handle = await router.acquire("bob", project_id="p1", kind="run")
-        self.assertEqual(handle.mode, contract.MODE_SHARED)
-        self.assertEqual(handle.instance, contract.SHARED_INSTANCE)
-        self.assertEqual(self.gateway.leases(), [], "no lease in shared mode")
-        self.assertEqual(router.url_for(handle, "network_recon", "/redamon/runs/stop"),
-                         "http://kali-sandbox:8000/redamon/runs/stop")
-        self.assertEqual(router.url_for(handle, "sessions", "/sessions"), "http://kali-sandbox:8013/sessions")
-        self.assertEqual(router.url_for(handle, "hydra", "/progress"), "http://kali-sandbox:8014/progress")
-        self.assertEqual(router.url_for(handle, "terminal", ""), "ws://kali-sandbox:8016")
-        self.assertEqual(router.url_for(handle, "tunnel", "/tunnel/configure"),
-                         "http://kali-sandbox:8015/tunnel/configure")
-        self.assertEqual(router.url_for(handle, "ngrok_api", "/api/tunnels"), "http://kali-sandbox:4040/api/tunnels")
-        self.assertEqual(router.headers_for(handle), {"Authorization": f"Bearer {SHARED_TOKEN}"})
-        import tools
-        with mock.patch.object(tools.MCPToolsManager, "get_tools", _fake_get_tools):
-            client = await router.client_for(handle)
-        from mcp_registry import to_mcp_servers_dict
-        today, _ = to_mcp_servers_dict(tools._build_system_mcp_servers())
-        self.assertEqual(client._server_configs, today)
-        await router.release(handle)
-        self.assertEqual(self.gateway.releases(), [])
-        self.assertTrue(await router.is_running("bob"))
-        self.assertEqual(await router.running_sandboxes(), [])
-
-    async def test_no_person_in_shared_mode_keeps_today(self):
-        handle = await router.acquire("", project_id="p1", kind="run")
-        self.assertEqual(handle.mode, contract.MODE_SHARED)
-        self.assertEqual([p for _m, p, _b, _h in self.gateway.requests], [contract.INTERNAL_ROUTE_LIST])
-        self.gateway.raises = _connect_refused
-        handle = await router.acquire("", project_id="p1", kind="run")
-        self.assertEqual(handle.mode, contract.MODE_SHARED, "unreachable: the last answer")
-
-    async def test_no_person_after_a_switch_to_per_user_refuses(self):
-        """A remembered `shared` never serves a call with no person once the switch says per_user."""
-        self.assertEqual(router.current_mode(), contract.MODE_SHARED)
-        self.gateway.mode = contract.MODE_PER_USER
-        with self.assertRaises(SandboxUnavailable) as ctx:
-            await router.acquire("", project_id="p1", kind="run")
-        self.assertEqual(ctx.exception.reason, "no_user")
-        self.assertEqual(router.current_mode(), contract.MODE_PER_USER)
-
-    async def test_gateway_outage_keeps_shared_mode(self):
-        """TD-6: the webapp answers 503 orchestrator_unavailable on an outage and never
-        invents a mode; shared mode keeps working through it."""
-        outages = {
-            "orchestrator_unavailable": lambda b: (503, {"code": "orchestrator_unavailable"}),
-            "a code-less 502": lambda b: (502, {"error": "bad gateway"}),
-            "a 500 page": lambda b: (500, None),
-        }
-        for name, answer in outages.items():
-            with self.subTest(name=name):
-                self.gateway.script[contract.INTERNAL_ROUTE_ENSURE] = answer
-                handle = await router.acquire("bob", project_id="p1", kind="run")
-                self.assertEqual(handle.mode, contract.MODE_SHARED)
-        self.gateway.script.clear()
-        self.gateway.raises = _read_timeout
-        handle = await router.acquire("bob", project_id="p1", kind="run")
-        self.assertEqual(handle.mode, contract.MODE_SHARED)
-        self.assertEqual(self.events, [])
-        self.assertTrue(await router.is_running("bob"))
-        self.assertEqual(await router.running_sandboxes(), [])
-
-    async def test_a_per_user_start_error_is_never_an_outage(self):
-        """Only the per-user manager answers these: they refuse and prove per-user mode,
-        even while the agent still remembers shared."""
-        for code in (contract.ERR_IMAGE_MISSING, contract.ERR_START_FAILED, contract.ERR_START_TIMEOUT):
-            with self.subTest(code=code):
-                router._reset(mode=contract.MODE_SHARED)
-                status = contract.ERROR_STATUS[code]
-                self.gateway.script[contract.INTERNAL_ROUTE_ENSURE] = lambda b, s=status, c=code: (s, {"code": c})
-                with self.assertRaises(SandboxUnavailable) as ctx:
-                    await router.acquire("bob", project_id="p1", kind="run")
-                self.assertEqual(ctx.exception.reason, "error")
-                self.assertEqual(router.current_mode(), contract.MODE_PER_USER)
-
-    async def test_shared_handle_retired_once_per_user_is_answered(self):
-        """A shared handle held by a run scope never serves again once the switch says
-        per_user, a drop included: the next acquire gets the person's own sandbox."""
-        import tools
-        with mock.patch.object(tools.MCPToolsManager, "get_tools", _fake_get_tools):
-            async with router.run_scope("sess-s"):
-                shared = await router.acquire("bob", project_id="p1", kind="run")
-                self.assertEqual(shared.mode, contract.MODE_SHARED)
-                await router.client_for(shared)
-                self.assertIn(router._SHARED_CLIENT_KEY, router._clients)
-                self.gateway.mode = contract.MODE_PER_USER
-                carol = await router.acquire("carol", project_id="p1", kind="exec")
-                self.assertEqual(router.current_mode(), contract.MODE_PER_USER)
-                self.assertNotIn(router._SHARED_CLIENT_KEY, router._clients)
-                await router.drop("bob")
-                again = await router.acquire("bob", project_id="p1", kind="run")
-                self.assertIsNot(again, shared)
-                self.assertEqual(again.mode, contract.MODE_PER_USER)
-                self.assertFalse(shared.usable)
-                await self._assert_retired(shared)
-                await router.release(carol)
-
-    async def test_fallback_shared_handle_retired_when_per_user_answers(self):
-        """A shared handle from an outage fallback stops serving once per_user is answered."""
-        self.gateway.raises = _connect_refused
-        shared = await router.acquire("bob", project_id="p1", kind="run")
-        self.assertEqual(shared.mode, contract.MODE_SHARED)
-        self.assertEqual(router.url_for(shared, "terminal", ""), "ws://kali-sandbox:8016")
-        self.gateway.raises = None
-        self.gateway.mode = contract.MODE_PER_USER
-        own = await router.acquire("bob", project_id="p1", kind="exec")
-        self.assertEqual(own.mode, contract.MODE_PER_USER)
-        await self._assert_retired(shared)
-        await router.release(own)
-
-    async def _assert_retired(self, handle):
-        """No client, address or bearer of the shared container for this handle."""
-        for call in (lambda: router.url_for(handle, "terminal", ""),
-                     lambda: router.url_for(handle, "sessions", "/sessions"),
-                     lambda: router.headers_for(handle),
-                     lambda: router.headers_for(handle, "tunnel")):
-            with self.assertRaises(SandboxUnavailable) as ctx:
-                call()
-            self.assertEqual(ctx.exception.reason, "stopped")
-        import tools
-        with mock.patch.object(tools.MCPToolsManager, "get_tools", _fake_get_tools):
-            with self.assertRaises(SandboxUnavailable) as ctx:
-                await router.client_for(handle)
-        self.assertEqual(ctx.exception.reason, "stopped")
-        self.assertNotIn(router._SHARED_CLIENT_KEY, router._clients)
-
-    async def test_a_per_user_answer_switches_the_mode(self):
-        self.gateway.mode = contract.MODE_PER_USER
-        handle = await router.acquire("bob", project_id="p1", kind="run")
-        self.assertEqual(handle.mode, contract.MODE_PER_USER)
-        self.assertEqual(router.current_mode(), contract.MODE_PER_USER)
         await router.release(handle)
 
 
@@ -1157,12 +1007,6 @@ class TestKaliAuth(unittest.TestCase):
         self.assertEqual(kali_auth.kali_auth_headers_for(token), {"Authorization": f"Bearer {token}"})
         for bad in ("", None, "a b", "tok\r\nX-Evil: 1", "tök"):
             self.assertEqual(kali_auth.kali_auth_headers_for(bad), {})
-
-    def test_shared_headers_unchanged(self):
-        with mock.patch.dict(os.environ, {"MCP_AUTH_TOKEN": SHARED_TOKEN}):
-            self.assertEqual(kali_auth.kali_auth_headers(), {"Authorization": f"Bearer {SHARED_TOKEN}"})
-        with mock.patch.dict(os.environ, {"MCP_AUTH_TOKEN": ""}):
-            self.assertEqual(kali_auth.kali_auth_headers(), {})
 
 
 if __name__ == "__main__":

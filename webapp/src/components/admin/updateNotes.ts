@@ -57,7 +57,7 @@ export const MEMBER_CHANGE_LINES: readonly string[] = [
   'Nuclei templates: they upload and delete only their own.',
   'Tunnel: only admins and members keeping the tunnel grant change it; the others see its status.',
   "Shell sessions: they see their own projects' sessions; the all-sessions console needs the sessions grant.",
-  "Kali terminal: needs the terminal grant, and warns that other projects' files are visible there.",
+  "Kali terminal: needs the terminal grant, and opens in their own Kali sandbox.",
   'MCP servers: only admins add, test or load stdio servers.',
 ]
 

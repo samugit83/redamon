@@ -2,8 +2,8 @@
  * GET /api/global/tunnel-config returns the tunnel credentials unmasked, so only the
  * internal key reads it (HD-05, F-04): the agent's chisel lookup (agentic/utils.py) is
  * its one caller. Every other caller, a signed-in admin included, gets 404 before
- * anything is read. Its row is picked by a fixed order, so the chisel host the agent
- * reports is the one the sandbox was last pushed.
+ * anything is read. It answers the named person's own row while their tunnel is on, so
+ * the chisel host the agent reports is the one that person's sandbox was pushed.
  *
  * Real tokens are signed; the cookie store and Prisma are mocked.
  *
@@ -78,18 +78,8 @@ vi.mock('@/lib/prisma', () => ({
   },
 }))
 
-// The sandbox mode the orchestrator names (group 1, D.2: every test sets it); null: no answer.
-const mode = vi.hoisted(() => ({ value: 'shared' as string | null }))
-vi.mock('@/lib/sandbox/gateway', () => ({
-  sandboxMode: async () => {
-    if (mode.value === null) throw new Error('orchestrator unreachable')
-    return mode.value
-  },
-}))
-
 import { GET } from './route'
 import { createToken } from '@/lib/auth'
-import { resetTunnelEffectsForTests } from '@/lib/sharedSettingsEffects'
 import { setFlagsForTests } from '@/lib/authz/flags'
 import { resetSharedToolsForTests } from '@/lib/authz/sharedTools'
 
@@ -103,11 +93,9 @@ const row = (id: string, over: Partial<Row>): Row => ({
 })
 
 beforeEach(() => {
-  mode.value = 'shared'
-  resetTunnelEffectsForTests()
   settingsFindUnique.mockClear()
   authCookie = undefined
-  rows = [row('only', { ngrokAuthtoken: 'fake-ngrok-token', chiselServerUrl: 'http://vps.example:9090', chiselAuth: 'u:p' })]
+  rows = [row('only', { tunnelsEnabled: true, ngrokAuthtoken: 'fake-ngrok-token', chiselServerUrl: 'http://vps.example:9090', chiselAuth: 'u:p' })]
   settingsFindFirst.mockClear()
   userFindUnique.mockClear()
   auditFindFirst.mockClear()
@@ -150,7 +138,7 @@ describe('only the internal key reads the tunnel credentials (HD-05)', () => {
   })
 
   test('internal key 200', async () => {
-    const res = await get({ 'x-internal-key': KEY })
+    const res = await get({ 'x-internal-key': KEY }, '?userId=only')
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       ngrokAuthtoken: 'fake-ngrok-token', chiselServerUrl: 'http://vps.example:9090', chiselAuth: 'u:p',
@@ -160,71 +148,22 @@ describe('only the internal key reads the tunnel credentials (HD-05)', () => {
 
   test('internal key with no tunnel configured anywhere answers empty values', async () => {
     rows = [row('none', {})]
-    const res = await get({ 'x-internal-key': KEY })
+    const res = await get({ 'x-internal-key': KEY }, '?userId=none')
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '' })
   })
 })
 
-describe('the row it answers with', () => {
-  const pick = async () => ((await (await get({ 'x-internal-key': KEY })).json()) as { chiselServerUrl: string }).chiselServerUrl
-
-  test('the pick is deterministic with two candidate rows', async () => {
-    const enabledOlder = row('b-enabled', {
-      chiselServerUrl: 'http://enabled.example:9090', tunnelsEnabled: true, updatedAt: new Date('2026-11-01T00:00:00Z'),
-    })
-    const disabledNewer = row('a-disabled', {
-      chiselServerUrl: 'http://disabled.example:9090', updatedAt: new Date('2026-11-10T00:00:00Z'),
-    })
-    rows = [enabledOlder, disabledNewer]
-    expect(await pick()).toBe('http://enabled.example:9090')
-    rows = [disabledNewer, enabledOlder]
-    expect(await pick()).toBe('http://enabled.example:9090')
-  })
-
-  test('with none enabled the most recent save wins, then the lowest id', async () => {
-    const older = row('a', { chiselServerUrl: 'http://older.example:9090', updatedAt: new Date('2026-11-01T00:00:00Z') })
-    const newer = row('b', { chiselServerUrl: 'http://newer.example:9090', updatedAt: new Date('2026-11-05T00:00:00Z') })
-    rows = [older, newer]
-    expect(await pick()).toBe('http://newer.example:9090')
-    rows = [newer, older]
-    expect(await pick()).toBe('http://newer.example:9090')
-
-    const sameTime = new Date('2026-11-05T00:00:00Z')
-    const low = row('a-low', { chiselServerUrl: 'http://low.example:9090', updatedAt: sameTime })
-    const high = row('z-high', { chiselServerUrl: 'http://high.example:9090', updatedAt: sameTime })
-    rows = [high, low]
-    expect(await pick()).toBe('http://low.example:9090')
-  })
-
-  test('the query states the order: enabled first, then the latest save, then the lowest id', async () => {
-    await get({ 'x-internal-key': KEY })
-    expect(settingsFindFirst).toHaveBeenCalledTimes(1)
-    expect(settingsFindFirst.mock.calls[0][0].orderBy).toEqual([
-      { tunnelsEnabled: 'desc' }, { updatedAt: 'desc' }, { id: 'asc' },
-    ])
-  })
-})
-
-describe('per-user Kali sandboxes (group 1, OQ-G1-2 A): one person\'s own tunnel, never the instance\'s or another\'s', () => {
+describe('one person\'s own tunnel (group 1, OQ-G1-2 A), never the instance\'s or another\'s', () => {
   const EMPTY = { ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '' }
   const internal = { 'x-internal-key': KEY }
 
   beforeEach(() => {
-    mode.value = 'per_user'
-    // The flip push to the shared container on the first per_user answer.
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 200 })))
-    vi.spyOn(console, 'info').mockImplementation(() => {})
     rows = [
       row('alice', { tunnelsEnabled: true, ngrokAuthtoken: 'alice-ngrok', chiselServerUrl: 'http://alice.example:9090', chiselAuth: 'a:p' }),
       row('bob', { tunnelsEnabled: false, chiselServerUrl: 'http://bob.example:9090' }),
     ]
   })
-  afterEach(() => {
-    vi.unstubAllGlobals()
-    vi.restoreAllMocks()
-  })
-
   test('the person named answers their own row while their tunnel is on', async () => {
     const res = await get(internal, '?userId=alice')
     expect(await res.json()).toEqual({ ngrokAuthtoken: 'alice-ngrok', chiselServerUrl: 'http://alice.example:9090', chiselAuth: 'a:p' })
@@ -249,9 +188,7 @@ describe('per-user Kali sandboxes (group 1, OQ-G1-2 A): one person\'s own tunnel
     expect(await (await get(internal)).json()).toEqual(EMPTY)
   })
 
-  test('a mode nobody named answers empty values, with or without a person (review F1): never alice\'s tunnel for bob', async () => {
-    mode.value = null
-    expect(await (await get(internal, '?userId=bob')).json()).toEqual(EMPTY)
+  test('no row is ever picked for everybody: never alice\'s tunnel for a caller who names nobody', async () => {
     expect(await (await get(internal)).json()).toEqual(EMPTY)
     expect(settingsFindFirst).not.toHaveBeenCalled()
     expect(settingsFindUnique).not.toHaveBeenCalled()

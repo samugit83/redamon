@@ -128,7 +128,9 @@ expect_caught() {  # <label> <violations>
 
 section "the contract names exactly these variables"
 contract_vars="$(grep -oE '"KALI_SANDBOX_[A-Z0-9_]+"' "$CONTRACT" | tr -d '"' | sort -u | tr '\n' ' ')"
-want_vars="$(tr ' ' '\n' <<< "$VARS" | sort -u | tr '\n' ' ')"
+# KALI_SANDBOX_MODE left the contract with the switch; compose and .env.example still pass
+# it through until the shared service goes.
+want_vars="$(tr ' ' '\n' <<< "$VARS" | grep -vx KALI_SANDBOX_MODE | sort -u | tr '\n' ' ')"
 if [[ "$contract_vars" == "$want_vars" ]]; then pass "contract variables: $contract_vars"
 else fail "contract variables differ: contract=[$contract_vars] test=[$want_vars]"; fi
 

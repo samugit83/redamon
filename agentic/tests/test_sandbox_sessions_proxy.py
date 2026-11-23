@@ -7,8 +7,8 @@ session is the pair (instance, number):
     with its instance and, from the agent's own handle, the sandbox's person and view
     (set after the sandbox's row, so a sandbox cannot claim another's); a sandbox that
     does not answer is named in `unavailable` and never delays the others (D22);
-  - the drive routes take `?sandbox=<instance>` and reach that instance only (E3), or
-    the shared container (`shared`) while it still runs;
+  - the drive routes take `?sandbox=<instance>` and reach that instance only (E3); the
+    old shared container (`shared`, `kali-sandbox`) is never asked, even when it answers;
   - no token reaches an answer, and an answer is read bounded (identity encoding only).
 
 Runs in the agent image: ./agentic/run_tests.sh tests/test_sandbox_sessions_proxy.py
@@ -44,20 +44,19 @@ def _session(n, **extra):
 
 
 class _Base(unittest.IsolatedAsyncioTestCase):
-    mode = contract.MODE_PER_USER
-
     async def asyncSetUp(self):
-        self.fleet = Fleet(self.mode)
-        self.fleet.shared.running = False
-        router._reset(mode=None)
+        self.fleet = Fleet()
+        # The old shared container still answers at its old address: nothing may ask it.
+        self.fleet.shared.running = True
+        router._reset()
         transport = self.fleet.transport()
         self._patches = [
             mock.patch.object(router, "_transport", transport),
             mock.patch.object(api, "_sandbox_transport", transport),
             mock.patch.dict(router.INTERNAL_HEADERS, {"X-Internal-Key": "test-internal-key"}),
             mock.patch.object(router, "WEBAPP_API_URL", WEBAPP),
-            mock.patch.object(api, "_SESSION_BASE", "http://kali-sandbox:8013"),
-            mock.patch.dict(os.environ, {"MCP_AUTH_TOKEN": SHARED_TOKEN}),
+            mock.patch.dict(os.environ, {"MCP_AUTH_TOKEN": SHARED_TOKEN,
+                                         "MCP_METASPLOIT_PROGRESS_URL": "http://kali-sandbox:8013/progress"}),
         ]
         for p in self._patches:
             p.start()
@@ -66,7 +65,8 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         await router._shutdown()
         for p in reversed(self._patches):
             p.stop()
-        router._reset(mode=None)
+        self.assertEqual(self.fleet.shared.requests, [], "the old shared container was asked")
+        router._reset()
 
     def tokens(self):
         out = {SHARED_TOKEN}
@@ -176,42 +176,30 @@ class TheListAcrossSandboxes(_Base):
 
     async def test_the_list_unreadable_is_an_error_not_an_empty_list(self):
         self.fleet.add("alice")
-        router._reset(mode=contract.MODE_PER_USER)
         self.fleet.list_answer = (500, {"error": "boom"})
         resp = await api.get_sessions()
         self.assertEqual(resp.status_code, 503)
 
 
-class TheSharedContainerWhileItRuns(_Base):
-    async def test_shared_container_sessions_listed_and_killable(self):
-        """Per-user mode with the shared container still up (until S21): its sessions are
-        listed as `shared` (with no person: it is everybody's), and a kill named
-        `?sandbox=shared` reaches it only."""
+class TheOldSharedContainerIsNeverAsked(_Base):
+    async def test_its_sessions_are_not_listed_and_shared_names_no_sandbox(self):
+        """The old shared container still answers with a session: the list is the per-user
+        sandboxes' alone, and `?sandbox=shared` names no instance (400), reaching nothing.
+        _Base's tear-down checks the container got no request at all."""
         alice = self.fleet.add("alice")
         alice.sessions = {"sessions": [_session(1)], "jobs": [], "non_msf_sessions": []}
-        self.fleet.shared.running = True
-        self.fleet.shared.sessions = {"sessions": [_session(1, **{PERSON: "alice", VIEW: "own"})],
-                                      "jobs": [], "non_msf_sessions": []}
+        self.fleet.shared.sessions = {"sessions": [_session(7)], "jobs": [], "non_msf_sessions": []}
         body = _body(await api.get_sessions())
-        shared = [r for r in body["sessions"] if r["sandbox"] == contract.SHARED_INSTANCE]
-        self.assertEqual(len(shared), 1)
-        self.assertNotIn(PERSON, shared[0])
-        self.assertNotIn(VIEW, shared[0])
-        self.assertNoToken(body)
-
-        resp = await api.kill_session(1, sandbox=contract.SHARED_INSTANCE)
-        self.assertEqual(resp.status_code, 200)
-        kills = [r for r in self.fleet.shared.requests if r[1] == "/sessions/1/kill"]
-        self.assertEqual(len(kills), 1)
-        self.assertEqual(kills[0][2]["authorization"], f"Bearer {SHARED_TOKEN}")
-        self.assertEqual([r for r in alice.requests if r[1].endswith("/kill")], [])
-
-    async def test_a_stopped_shared_container_is_left_out_quietly(self):
-        alice = self.fleet.add("alice")
-        alice.sessions = {"sessions": [_session(1)], "jobs": [], "non_msf_sessions": []}
-        body = _body(await api.get_sessions())
+        self.assertEqual([(r["sandbox"], r["id"]) for r in body["sessions"]], [(alice.instance, 1)])
         self.assertEqual(body["unavailable"], [])
-        self.assertEqual([r["sandbox"] for r in body["sessions"]], [alice.instance])
+        self.assertNoToken(body)
+        for call in (lambda: api.kill_session(1, sandbox="shared"),
+                     lambda: api.interact_session(1, {"command": "id"}, sandbox="shared"),
+                     lambda: api.kill_job(1, sandbox="shared")):
+            resp = await call()
+            self.assertEqual(resp.status_code, 400)
+            self.assertEqual(_body(resp)["code"], "invalid_sandbox")
+        self.assertEqual([r for r in alice.requests if r[0] == "POST"], [])
 
 
 class TheDrives(_Base):
@@ -253,7 +241,7 @@ class TheDrives(_Base):
         self.assertEqual(self.drives(self.alice), [])
         self.assertEqual(self.fleet.shared.requests, [])
 
-    async def test_a_missing_instance_is_refused_in_per_user_mode(self):
+    async def test_a_missing_instance_is_refused(self):
         for call in (lambda: api.interact_session(1, {"command": "id"}),
                      lambda: api.kill_session(1),
                      lambda: api.kill_job(1),
@@ -298,6 +286,15 @@ class TheDrives(_Base):
         self.assertNotIn(SHARED_TOKEN, json.dumps(_body(resp)))
         self.assertNotIn(self.alice.token, json.dumps(_body(resp)))
 
+    async def test_a_refused_bearer_is_a_502_naming_the_cause(self):
+        # A sandbox's 401 passed through as 401 would read as "the webapp's key was refused".
+        self.bob.answer = lambda request: httpx.Response(401, json={"error": "unauthorized"})
+        with self.assertLogs(level="ERROR") as logs:
+            resp = await api.kill_session(1, sandbox=self.bob.instance)
+        self.assertEqual(resp.status_code, 502)
+        self.assertEqual(_body(resp)["code"], "session_manager_unauthorized")
+        self.assertTrue(any("[rbac]" in line for line in logs.output))
+
     async def test_a_hung_instance_drive_times_out_bounded(self):
         self.bob.hang = True
         with mock.patch.object(api, "_SESSION_DRIVE_S", {"kill": 0.3, "interact": 0.3, "map": 0.3}):
@@ -305,24 +302,6 @@ class TheDrives(_Base):
             resp = await api.kill_session(1, sandbox=self.bob.instance)
         self.assertLess(time.monotonic() - started, 2.0)
         self.assertEqual(resp.status_code, 504)
-
-
-class SharedModeSessions(_Base):
-    mode = contract.MODE_SHARED
-
-    async def test_the_list_is_the_shared_containers_as_today(self):
-        self.fleet.shared.running = True
-        answer = {"sessions": [_session(1)], "jobs": [], "non_msf_sessions": [],
-                  "cache_age_seconds": 1.0, "agent_busy": False}
-        self.fleet.shared.sessions = answer
-        body = _body(await api.get_sessions())
-        self.assertEqual(body, answer)
-
-    async def test_a_drive_without_an_instance_reaches_the_shared_container(self):
-        self.fleet.shared.running = True
-        resp = await api.kill_session(1)
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual([r[1] for r in self.fleet.shared.requests], ["/sessions/1/kill"])
 
 
 if __name__ == "__main__":

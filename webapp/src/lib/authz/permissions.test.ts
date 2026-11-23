@@ -283,11 +283,13 @@ describe('labels', () => {
     expect(memberDefault).toContain('agent:kali_exec')
   })
 
-  test('kali_exec is sandboxShared, not crossTenant (OQ-46, HD-22)', () => {
-    expect(PERMISSIONS['agent:kali_exec'].sandboxShared).toBe(true)
+  test('kali_exec is no longer sandboxShared (each person has their own sandbox, group 1), still not crossTenant (OQ-46, HD-22)', () => {
+    expect(PERMISSIONS['agent:kali_exec'].sandboxShared).toBe(false)
     expect(PERMISSIONS['agent:kali_exec'].crossTenant).toBe(false)
-    expect(idsWhere((id) => PERMISSIONS[id].sandboxShared)).toEqual(['agent:kali_exec'])
-    expect(PERMISSIONS['agent:kali_exec'].description).toMatch(/shared/i)
+    expect(idsWhere((id) => PERMISSIONS[id].sandboxShared)).toEqual([])
+    expect(PERMISSIONS['agent:kali_exec'].description).toBe("Run commands in the Kali sandbox over MCP. Each person's commands run in their own Kali sandbox.")
+    for (const id of PERMISSION_IDS) expect([id, PERMISSIONS[id].description]).not.toEqual([id, expect.stringMatching(/shared (sandbox|with every other project)|every user shares/i)])
+    expect(PERMISSIONS['platform:emergency_stop'].description).toMatch(/Kali sandboxes/)
   })
 
   test('closesCrossTenantHole implies crossTenant', () => {

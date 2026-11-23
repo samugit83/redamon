@@ -5,7 +5,7 @@
  * stripped account stops both views, and so does a credentials reset and the first sign-in after it (a
  * possibly compromised account's sandbox starts clean); a sign-out everywhere, a root transfer, a
  * device revoke, a lost terminal grant and the Navigator switch leave the sandbox alone. The lifecycle hooks (lib/sandbox/lifecycle.ts) are a
- * double: their own tests cover the gateway calls, the shared-mode no-op and the retries.
+ * double: their own tests cover the gateway calls and the retries.
  *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/revocation.sandbox.test.ts
  * @vitest-environment node
@@ -53,8 +53,8 @@ const errorLines = () => vi.mocked(console.error).mock.calls.map((c) => String(c
 
 beforeEach(() => {
   h.events = []
-  h.accessChanged.mockReset().mockResolvedValue({ mode: 'per_user', stopped: 1 })
-  h.accountEnded.mockReset().mockResolvedValue({ mode: 'per_user', stopped: 2 })
+  h.accessChanged.mockReset().mockResolvedValue({ stopped: 1 })
+  h.accountEnded.mockReset().mockResolvedValue({ stopped: 2 })
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(console, 'info').mockImplementation(() => {})
 })
@@ -101,13 +101,13 @@ describe('the step', () => {
     expect(h.events).toEqual(['agent /agent-sessions/stop-for', 'close sockets', 'sandbox'])
   })
 
-  test('shared mode: no sandbox key, nothing failed', async () => {
-    h.accessChanged.mockResolvedValue({ mode: 'shared' })
-    h.accountEnded.mockResolvedValue({ mode: 'shared' })
+  test('nothing stopped: the step still reports its count, nothing failed', async () => {
+    h.accessChanged.mockResolvedValue({ stopped: 0 })
+    h.accountEnded.mockResolvedValue({ stopped: 0 })
     const project = await onAccessReduced('P1', 'bob', 'share_revoked')
     const account = await onAccessReduced(null, 'bob', 'account_disabled')
     for (const out of [project, account]) {
-      expect(out.sandbox).toBeUndefined()
+      expect(out.sandbox).toEqual({ stopped: 0 })
       expect(out.failed).toEqual([])
     }
   })

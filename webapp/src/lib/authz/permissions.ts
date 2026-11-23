@@ -39,9 +39,8 @@ export interface PermissionMeta {
   /** Reaches other people's data or work; never in a default member set (§4.1 rule 8, PE-05). */
   crossTenant: boolean
   /**
-   * Runs in the sandbox every project shares, so it reaches beyond the project without being a
-   * platform tool (OQ-46): kept in *Default member* as today, labelled in the UI and the share
-   * dialog, step-up when granted by override.
+   * Runs in a sandbox other people's projects share, so it reaches beyond the project without being a
+   * platform tool (OQ-46). No permission has it: each person's Kali work runs in their own sandbox.
    */
   sandboxShared: boolean
   /** As strong as taking the account over (§4.5, PE-12). */
@@ -129,12 +128,12 @@ const REGISTRY = {
   // §5.2 Platform operations: shared by every tenant on the instance
   'platform:plugins': platform('Install, update, enable, disable, roll back and uninstall plugins; read their logs; grant plugin permissions.'),
   'platform:traffic_capture': platform('Configure the instance-wide traffic capture: the capture proxy, egress policy, retention and SCA ignore list.'),
-  'platform:tunnels': platform('Configure and enable the ngrok or chisel tunnel every user shares.'),
+  'platform:tunnels': platform('Turn on a reverse-shell tunnel (ngrok or chisel) from your own Kali sandbox, with your own credentials.'),
   'platform:nuclei_templates': platform("Manage every custom Nuclei template: the instance's and other people's."),
   'platform:agent_mcp': platform("Own stdio MCP servers, whose commands run as root inside the shared agent beside every user's data and the platform secrets; reload the agent's MCP servers and manage the system MCP servers."),
-  'platform:emergency_stop': platform("Stop every user's running agent runs at once."),
+  'platform:emergency_stop': platform("Stop every user's running agent runs and Kali sandboxes at once."),
   'platform:shell_sessions': platform('See, use and kill every Metasploit and shell session on the instance.'),
-  'platform:kali_terminal': platform("Open the raw Kali terminal: a shared sandbox where every project's files are visible."),
+  'platform:kali_terminal': platform('Open the raw Kali terminal in your own Kali sandbox, where the projects you may run the agent on are mounted.'),
   'platform:operations': platform("See every user's running and queued scans, agent runs and triage runs, and the system load.", NEW_FEATURE),
 
   // §5.3 Account self-service
@@ -185,7 +184,7 @@ const REGISTRY = {
   'agent:fireteam': project('W+A', 'Use Fireteam multi-agent waves.'),
   'agent:loop': project('W+A', 'Use Agent in the Loop: pick the loop model and drive it over MCP.', { mcpScopes: ['agent:loop'] }),
   'agent:sessions': project('W+X', "Use this project's shell sessions."),
-  'agent:kali_exec': project('W+X', 'Run commands in the Kali sandbox over MCP. The sandbox is shared with every other project on this server.', { sandboxShared: true, mcpScopes: ['kali:exec'] }),
+  'agent:kali_exec': project('W+X', "Run commands in the Kali sandbox over MCP. Each person's commands run in their own Kali sandbox.", { sandboxShared: false, mcpScopes: ['kali:exec'] }),
   'agent:assistants': project('W+A', 'Use the text-to-Cypher and command assistants (spends LLM credits).'),
   'agent:conversations_share': project('W+A', 'Share your conversations with the members of the project.', NEW_FEATURE),
   'navigator:use': project('R',

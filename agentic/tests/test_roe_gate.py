@@ -106,7 +106,7 @@ def _member_state(action, tool_name, phase="exploitation"):
 async def _run_single(ex, tool_name, tool_args=None, phase="exploitation", iteration=1):
     out = await execute_tool_node(
         _single_state(tool_name, tool_args, phase, iteration), _CONFIG, tool_executor=ex,
-        streaming_callbacks={}, session_manager_base="http://x",
+        streaming_callbacks={}, 
     )
     return out["_current_step"]
 
@@ -114,7 +114,7 @@ async def _run_single(ex, tool_name, tool_args=None, phase="exploitation", itera
 async def _run_plan(ex, tool_names, phase="exploitation", iteration=1):
     out = await execute_plan_node(
         _plan_state(tool_names, phase, iteration), _CONFIG, tool_executor=ex,
-        streaming_callbacks={}, session_manager_base="http://x",
+        streaming_callbacks={}, 
     )
     return out["_current_plan"]["steps"]
 
@@ -124,7 +124,7 @@ async def _run_member(ex, action, tool_name, phase="exploitation"):
 
     graph = build_fireteam_member_graph(
         llm_getter=lambda: None, tool_executor=ex, streaming_callbacks={},
-        session_manager_base="http://x", neo4j_creds=None,
+        neo4j_creds=None,
     )
     final = await graph.ainvoke(_member_state(action, tool_name, phase), _CONFIG)
     if action == "use_tool":

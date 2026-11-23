@@ -242,7 +242,7 @@ export async function readCommandOutput(
   // or watching one command would cost the same as starting another.
   enforceRate(ctx, 'read')
 
-  return jobResult(projectId, await kaliJobStatus(projectId, jobId, cursor ?? 0))
+  return jobResult(projectId, await kaliJobStatus(projectId, jobId, cursor ?? 0, ctx.token.userId))
 }
 
 export async function cancelCommand(ctx: McpContext, projectId: string, jobId: string) {
@@ -253,7 +253,7 @@ export async function cancelCommand(ctx: McpContext, projectId: string, jobId: s
   if (!jobId) throw new McpToolError('A jobId is required.', 'bad_args')
   enforceRate(ctx, 'write')
 
-  const job = await kaliJobCancel(projectId, jobId)
+  const job = await kaliJobCancel(projectId, jobId, ctx.token.userId)
   auditExec(ctx, projectId, 'mcp.kali_cancel', { jobId, status: job.status })
   return jobResult(projectId, job)
 }

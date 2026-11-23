@@ -248,7 +248,7 @@ Budget and safety (the binding constraints here):
 - A WIDER sweep MAY instead run in one `kali_shell` call (longer wall clock) with the
   SAME per-mutation socket timeout and the SAME per-chunk cap.
 - Use a per-invocation unique `filename=` (e.g. suffix it with a uuid) so concurrent
-  runs in the shared sandbox do not clobber each other's script.
+  runs in your sandbox do not clobber each other's script.
 
 Use only `execute_code` (raw Python sockets) or `kali_shell` for this loop; there is
 no dedicated smuggling/fuzzing binary in the sandbox, so write the socket loop

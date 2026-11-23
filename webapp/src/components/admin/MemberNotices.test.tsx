@@ -3,15 +3,16 @@
  * place where something changed for them, and a single-operator install sees no card, no
  * banner and no notice beyond the update's own output.
  *
- * - the Tunneling section of Global Settings says who manages the tunnel only to an account
- *   that may no longer change it (step 1.10); an admin sees the controls and no notice;
+ * - the Tunneling section of Global Settings tells an account that may not turn a tunnel on that it
+ *   needs the Tunnels permission for its own tunnel (step 1.10; group 1: every tunnel is its
+ *   person's own); an admin sees the controls and no notice;
  * - the emergency stop's tooltip names "your own" runs only for a member's scope (1.11);
  * - the admin cards and banners (this step) render nothing for a member, and nothing for the
  *   only admin of an install with nothing to review: no grant, the switch off, the update
  *   notes not applying.
  *
- * The Kali terminal's "shared environment" line (1.14) is the terminal's own warning, shown to
- * whoever opens it; its test is KaliTerminal.banner.test.tsx.
+ * The Kali terminal's "shared environment" line (1.14) is gone: each person has their own sandbox
+ * (KaliTerminal.banner.test.tsx).
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, waitFor } from '@testing-library/react'
@@ -68,7 +69,7 @@ const { AdminBanners } = await import('./CompatBanner')
 const { emergencyPauseTitle } = await import('@/app/graph/components/GraphToolbar/emergencyStopScope')
 
 const BASE = '/api/users/user-1'
-const MANAGED_BY_ADMIN = 'The tunnel is managed by an administrator.'
+const MANAGED_BY_ADMIN = 'Turning one on needs the Tunnels permission'
 let answers: Record<string, unknown>
 const fetchMock = vi.fn()
 
@@ -99,7 +100,7 @@ const adminCalls = () => fetchMock.mock.calls.map(c => String(c[0])).filter(u =>
 describe('a member sees a notice where something changed for them', () => {
   test('Tunneling: the member who may not change it reads who manages it', async () => {
     render(<ToastProvider><SettingsPage /></ToastProvider>)
-    expect(await screen.findByText(MANAGED_BY_ADMIN)).toBeInTheDocument()
+    expect(await screen.findByText(new RegExp(MANAGED_BY_ADMIN))).toBeInTheDocument()
   })
 
   test('the emergency stop tooltip names the member\'s own runs', () => {
@@ -123,7 +124,7 @@ describe('single-operator install sees nothing', () => {
     answers[`GET ${BASE}/settings`] = { ...(answers[`GET ${BASE}/settings`] as object), canManageTunnels: true }
     render(<ToastProvider><SettingsPage /></ToastProvider>)
     expect(await screen.findByPlaceholderText('e.g. http://your-vps.com:9090')).toBeInTheDocument()
-    expect(screen.queryByText(MANAGED_BY_ADMIN)).toBeNull()
+    expect(screen.queryByText(new RegExp(MANAGED_BY_ADMIN))).toBeNull()
   })
 
   test('the admin\'s emergency stop tooltip announces no change for anyone', () => {

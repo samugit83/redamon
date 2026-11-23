@@ -4,7 +4,9 @@ Per-user Kali sandboxes: start, stop, reconcile and adoption (group 1).
 The manager is driven against an in-memory Docker (FakeDocker below: containers,
 networks, images and the raw network-connect call, with labels, health and
 attrs shaped like the daemon's) and a real ReservationLedger with injected
-memory. Every test sets KALI_SANDBOX_MODE explicitly.
+memory. KALI_SANDBOX_MODE, the switch per-user sandboxes had before the shared
+container went, is unset by the `env` fixture; a test sets it only to show it
+changes nothing.
 
 Host paths and the orchestrator's own paths differ on purpose: Docker gets the
 host bases, the folders are made through the local ones (FakeDocker maps one
@@ -37,6 +39,12 @@ IMAGE_ENTRYPOINT = ["/opt/entrypoint.sh"]
 # started from it inherits unless it overrides them.
 IMAGE_LABELS = {sc.COMPOSE_PROJECT_LABEL: "redamon", sc.COMPOSE_SERVICE_LABEL: "kali-sandbox"}
 BROKER = "redamon.broker-owned"
+PROXY_IMAGE = "redamon-capture-proxy:latest"
+PROXY_IMAGE_ID = "sha256:" + "d" * 64
+# The proxy's command as container_manager.start_capture_proxy and compose run it.
+PROXY_CMD = ["mitmdump", "--quiet", "--set", "confdir=/ca", "--set", "connection_strategy=lazy",
+             "--set", "stream_large_bodies=5m", "--set", "rawtcp=false", "--listen-port", "8888",
+             "-s", "/app/capture_addon.py"]
 ALICE = "alice-user-0001"
 BOB = "bob-user-0002"
 CAROL = "carol-user-0003"
@@ -64,8 +72,8 @@ class FakeImages:
 
     def __init__(self, d):
         self.d = d
-        self.by_name = {sc.IMAGE: FakeImage(IMAGE_ID)}
-        self.by_id = {IMAGE_ID: self.by_name[sc.IMAGE]}
+        self.by_name = {sc.IMAGE: FakeImage(IMAGE_ID), PROXY_IMAGE: FakeImage(PROXY_IMAGE_ID, labels={})}
+        self.by_id = {IMAGE_ID: self.by_name[sc.IMAGE], PROXY_IMAGE_ID: self.by_name[PROXY_IMAGE]}
 
     def add(self, image, tag=None):
         self.by_id[image.id] = image
@@ -223,13 +231,15 @@ class FakeContainers:
                 "CapAdd": list(kw.get("cap_add") or []), "SecurityOpt": list(kw.get("security_opt") or []),
                 "Privileged": False, "PidMode": "", "IpcMode": "private", "UTSMode": "", "UsernsMode": "",
                 "CgroupnsMode": "private", "Runtime": "runc", "PublishAllPorts": False,
-                "ExtraHosts": None, "DeviceCgroupRules": None, "ShmSize": 67108864,
+                # docker-py sends a dict as "name:ip" strings; the daemon keeps them verbatim.
+                "ExtraHosts": [f"{k}:{v}" for k, v in sorted((kw.get("extra_hosts") or {}).items())] or None,
+                "DeviceCgroupRules": None, "ShmSize": 67108864,
                 "Memory": kw.get("mem_limit"), "MemorySwap": kw.get("memswap_limit"),
                 "PidsLimit": kw.get("pids_limit"), "NanoCpus": kw.get("nano_cpus"),
                 "CpuShares": kw.get("cpu_shares"), "Dns": list(kw.get("dns") or []),
                 "RestartPolicy": dict(kw.get("restart_policy") or {}),
                 "PortBindings": {k: [{"HostIp": ip, "HostPort": str(p)}] for k, (ip, p) in ports.items()} or None,
-                "Sysctls": None},
+                "Sysctls": None, "Init": kw.get("init")},
             "State": {"Status": "created", "Health": {"Status": "starting"}},
             "NetworkSettings": {"Networks": {}}}
         c = FakeContainer(self.d, cid, name, attrs)
@@ -458,9 +468,15 @@ def add_agent_lookalike(d, name="pensive_turing", sysctls=None, labels=None):
                             image="redamon-agent:latest")
 
 
-def add_proxy(d, sysctls=GUEST_SYSCTLS, blocked="172.18.0.5," + sc.SUBNET_POOL):
-    return d.containers.add(sc.CAPTURE_PROXY_NAME, labels={"redamon.capture": "proxy"},
-                            sysctls=sysctls, env=[f"CAPTURE_BLOCKED_IPS={blocked}"])
+def add_proxy(d, sysctls=GUEST_SYSCTLS, blocked="172.18.0.5," + sc.SUBNET_POOL,
+              image_id=PROXY_IMAGE_ID, cmd=PROXY_CMD):
+    """The capture proxy as the orchestrator starts it: the current proxy image,
+    no forwarding, the pool in its denylist, raw TCP relaying off."""
+    proxy = d.containers.add(sc.CAPTURE_PROXY_NAME, labels={"redamon.capture": "proxy"},
+                             sysctls=sysctls, env=[f"CAPTURE_BLOCKED_IPS={blocked}"],
+                             image=PROXY_IMAGE, image_id=image_id)
+    proxy.attrs["Config"]["Cmd"] = None if cmd is None else list(cmd)
+    return proxy
 
 
 # --- The world: manager, ledger, folders ------------------------------------------
@@ -554,9 +570,9 @@ class Gate:
 def env(monkeypatch, tmp_path):
     for name in ("RECON_MAX_CONCURRENT_GLOBAL", "RECON_MAX_CONCURRENT_PER_USER",
                  sc.MAX_CONCURRENT_ENV, sc.PORT_POOL_ENV, sc.IDLE_MINUTES_ENV,
-                 sc.TERMINAL_MAX_SESSIONS_ENV, "RESOURCE_PROFILE_DEFAULT_PATH"):
+                 sc.TERMINAL_MAX_SESSIONS_ENV, "RESOURCE_PROFILE_DEFAULT_PATH", "KALI_SANDBOX_MODE",
+                 "CAPTURE_PROXY_IMAGE"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv(sc.MODE_ENV, sc.MODE_PER_USER)
     monkeypatch.setenv("REDAMON_MEM_GOVERNOR", "true")
     monkeypatch.setenv("OS_HEADROOM_MEM", "1g")
     monkeypatch.setenv("SERVICE_BASELINE_MEM", "1g")
@@ -586,7 +602,7 @@ def env_of(container):
 async def test_ensure_starts_one_container_per_user(world):
     ans = await world.mgr.ensure(ALICE, ["projA"])
     assert set(ans) == set(sc.ENSURE_RUNNING_KEYS)
-    assert ans["mode"] == sc.MODE_PER_USER and ans["state"] == "running" and ans["fresh"] is True
+    assert "mode" not in ans and ans["state"] == "running" and ans["fresh"] is True
     assert ans["view"] == sc.VIEW_OWN and ans["projects"] == ["projA"]
     assert ans["ports"] == dict(sc.PORTS) and ans["reverse_port"] == sc.DEFAULT_REVERSE_PORT
     assert ans["host"] == sc.container_name(ALICE, sc.VIEW_OWN, ans["instance"])
@@ -633,12 +649,22 @@ async def test_container_spec_limits_per_container(world):
     # yield to the platform's services under contention (D22).
     assert 0 < kw["cpu_shares"] < 1024
     assert kw["restart_policy"] == {"Name": "no"}
+    # Docker's init as PID 1 reaps orphaned processes, which would otherwise stay
+    # zombies and count against the pids limit for the sandbox's whole life.
+    assert kw["init"] is True and world.created(ALICE)[0].attrs["HostConfig"]["Init"] is True
     assert sorted(kw["cap_add"]) == ["NET_ADMIN", "NET_RAW"]
     assert "cap_drop" not in kw
     assert kw["security_opt"] == ["seccomp=unconfined"]
     assert not any("no-new-privileges" in o for o in kw["security_opt"])
     assert "privileged" not in kw and "devices" not in kw and "volumes" not in kw
-    assert kw["hostname"] == sc.CONTAINER_HOSTNAME
+    # Docker makes the hostname a DNS name on the sandbox network, which the agent and
+    # the proxy join: each sandbox's is its own container name, never a shared one.
+    # Inside, `kali-sandbox` (what tools and prompts call the sandbox) is itself.
+    created = world.created(ALICE)[0]
+    assert kw["hostname"] == created.name == created.attrs["Config"]["Hostname"]
+    assert kw["hostname"] != sc.SELF_NAME == "kali-sandbox"
+    assert kw["extra_hosts"] == {"kali-sandbox": "127.0.0.1"}
+    assert created.attrs["HostConfig"]["ExtraHosts"] == ["kali-sandbox:127.0.0.1"]
     assert kw["dns"] == list(sc.DNS)
     hc = kw["healthcheck"]
     assert hc["test"] == ["CMD", "python3", "-c", sc.HEALTH_PROBE]
@@ -825,6 +851,67 @@ async def test_proxy_with_a_wider_denylist_entry_is_attached(world):
     world.proxy.attrs["Config"]["Env"] = ["CAPTURE_BLOCKED_IPS=10.0.0.0/8"]
     await world.mgr.ensure(ALICE, [])
     assert world.proxy.id in connects_to(world, sc.network_name(ALICE, "own"))
+
+
+@pytest.mark.parametrize("variant", [
+    "older_image", "image_tag_missing", "no_command", "no_rawtcp_setting", "rawtcp_on",
+    "rawtcp_on_after_off", "rawtcp_flag", "not_mitmdump", "entrypoint_override"])
+async def test_proxy_not_as_the_orchestrator_starts_it_is_left_off(world, variant, caplog):
+    """The proxy's egress guard is only what its image and command make it: an
+    older image (one without the guard on the real target) or raw TCP relaying
+    (a stream after CONNECT passed unchecked to any address) is never a guest."""
+    cmd = list(PROXY_CMD)
+    if variant == "older_image":
+        world.d.images.add(FakeImage("sha256:" + "e" * 64, labels={}), tag=PROXY_IMAGE)
+    elif variant == "image_tag_missing":
+        del world.d.images.by_name[PROXY_IMAGE]
+    elif variant == "no_command":
+        cmd = None
+    elif variant == "no_rawtcp_setting":
+        cmd = [t for t in cmd if t != "rawtcp=false"]
+        cmd.remove("--set")
+    elif variant == "rawtcp_on":
+        cmd[cmd.index("rawtcp=false")] = "rawtcp=true"
+    elif variant == "rawtcp_on_after_off":
+        cmd += ["--set", "rawtcp=true"]
+    elif variant == "rawtcp_flag":
+        cmd += ["--rawtcp"]
+    elif variant == "not_mitmdump":
+        cmd[0] = "mitmweb"
+    else:
+        world.proxy.attrs["Config"]["Entrypoint"] = ["sh", "-c"]
+    world.proxy.attrs["Config"]["Cmd"] = cmd
+    caplog.set_level(logging.INFO, logger="sandbox_manager")
+    ans = await world.mgr.ensure(ALICE, ["projA"])
+    assert ans["state"] == "running"
+    eps = connects_to(world, sc.network_name(ALICE, "own"))
+    assert world.agent.id in eps and world.proxy.id not in eps
+    assert "capture proxy" in caplog.text
+    # Said once per proxy container, not at every check.
+    await world.mgr.idle_tick()
+    assert caplog.text.count("left off sandbox networks") == 1
+
+
+async def test_proxy_on_the_current_image_after_a_rebuild_is_attached(world):
+    # The tag moved to a rebuilt image and the orchestrator restarted the proxy on it.
+    world.d.images.add(FakeImage("sha256:" + "e" * 64, labels={}), tag=PROXY_IMAGE)
+    world.proxy.remove(force=True)
+    world.proxy = add_proxy(world.d, image_id="sha256:" + "e" * 64)
+    await world.mgr.ensure(ALICE, ["projA"])
+    assert world.proxy.id in connects_to(world, sc.network_name(ALICE, "own"))
+
+
+async def test_proxy_image_named_by_the_orchestrator_environment(world):
+    # CAPTURE_PROXY_IMAGE moves the image the orchestrator starts the proxy from
+    # (container_manager); the gate follows it.
+    world.d.images.add(FakeImage("sha256:" + "f" * 64, labels={}), tag="registry.local/proxy:7")
+    world.mp.setenv("CAPTURE_PROXY_IMAGE", "registry.local/proxy:7")
+    await world.mgr.ensure(ALICE, ["projA"])
+    assert world.proxy.id not in connects_to(world, sc.network_name(ALICE, "own"))
+    world.proxy.remove(force=True)
+    world.proxy = add_proxy(world.d, image_id="sha256:" + "f" * 64)
+    await world.mgr.ensure(BOB, ["projB"])
+    assert world.proxy.id in connects_to(world, sc.network_name(BOB, "own"))
 
 
 async def test_old_engine_api_refuses_to_start(world, caplog):
@@ -1766,6 +1853,18 @@ def _forge(world, how):
         a["HostConfig"]["Dns"] = ["10.214.9.9"]
     elif how == "hostname":
         a["Config"]["Hostname"] = "agent"
+    elif how == "extra_hosts_added":
+        a["HostConfig"]["ExtraHosts"] = ["kali-sandbox:127.0.0.1", "agent:10.214.9.9"]
+    elif how == "self_name_elsewhere":
+        a["HostConfig"]["ExtraHosts"] = ["kali-sandbox:10.214.0.2"]
+    elif how == "self_name_spelled_otherwise":
+        a["HostConfig"]["ExtraHosts"] = ["kali-sandbox=127.0.0.1"]
+    elif how == "shared_hostname_with_extra_hosts":
+        a["Config"]["Hostname"] = "kali-sandbox"
+    elif how == "own_hostname_without_extra_hosts":
+        a["HostConfig"]["ExtraHosts"] = None
+    elif how == "hostname_of_another_sandbox":
+        a["Config"]["Hostname"] = sc.container_name(BOB, "own", "abcdef")
     elif how == "compose_label_not_blank":
         a["Config"]["Labels"][sc.COMPOSE_SERVICE_LABEL] = "kali-sandbox"
     elif how == "port_mismatch":
@@ -1784,7 +1883,10 @@ FORGERIES = ["broker_owned", "name", "key_label", "view_label", "image", "extra_
              "pid_host", "projects_label", "bad_token", "stopped", "unrelated_image",
              "publish_all", "device_cgroup_rules", "cgroupns_host", "runtime", "extra_hosts",
              "nano_cpus_zero", "cpu_shares_zero", "ipc_container", "restart_always", "sysctls",
-             "tmpfs", "dns", "hostname", "compose_label_not_blank", "port_mismatch"]
+             "tmpfs", "dns", "hostname", "compose_label_not_blank", "port_mismatch",
+             "extra_hosts_added", "self_name_elsewhere", "self_name_spelled_otherwise",
+             "shared_hostname_with_extra_hosts", "own_hostname_without_extra_hosts",
+             "hostname_of_another_sandbox"]
 
 
 @pytest.mark.parametrize("how", FORGERIES)
@@ -1819,6 +1921,65 @@ async def test_adoption_with_the_image_tag_missing_drains(world):
     result = await world.mgr.adopt()
     assert result["adopted"] == 2 and result["removed"] == 0
     assert {i.state for i in world.mgr.instances()} == {"draining"}
+
+
+@pytest.mark.parametrize("extra_hosts", [None, []])
+async def test_adoption_drains_a_sandbox_started_under_the_shared_hostname(world, extra_hosts):
+    """Before each sandbox was named after itself, every one had the hostname
+    `kali-sandbox` and no ExtraHosts. Such a sandbox is ours: kept draining (its
+    sessions stay until unused; no agent code addresses `kali-sandbox` any more),
+    never current, so the next start has its own name."""
+    a, _ = await adopt_world(world)
+    for c in world.created():
+        c.attrs["Config"]["Hostname"] = "kali-sandbox"
+        c.attrs["HostConfig"]["ExtraHosts"] = extra_hosts
+    result = await world.mgr.adopt()
+    assert result == {"adopted": 2, "removed": 0, "networks_removed": 0}
+    assert {i.state for i in world.mgr.instances()} == {"draining"}
+    assert {i.stop_reason for i in world.mgr.instances()} == {"replaced"}
+    again = await world.mgr.ensure(ALICE, ["projA"])
+    assert again["instance"] != a["instance"]
+    fresh = world.created(ALICE)[-1]
+    assert fresh.attrs["Config"]["Hostname"] == fresh.name == again["host"]
+    assert fresh.attrs["HostConfig"]["ExtraHosts"] == ["kali-sandbox:127.0.0.1"]
+
+
+@pytest.mark.parametrize("init", [None, False])
+async def test_adoption_drains_a_sandbox_started_without_an_init(world, init):
+    """A sandbox started before the spec ran Docker's init keeps whatever zombies
+    its PID 1 never reaped: kept draining like one on an older image (its sessions
+    and leases stay until unused), never current, so the next start has an init."""
+    a, b = await adopt_world(world)
+    for c in world.created():
+        c.attrs["HostConfig"]["Init"] = init
+    result = await world.mgr.adopt()
+    assert result == {"adopted": 2, "removed": 0, "networks_removed": 0}
+    assert {i.state for i in world.mgr.instances()} == {"draining"}
+    assert {i.stop_reason for i in world.mgr.instances()} == {"replaced"}
+    again = await world.mgr.ensure(ALICE, ["projA"])
+    assert again["instance"] != a["instance"] and again["fresh"] is True
+    assert world.created(ALICE)[-1].attrs["HostConfig"]["Init"] is True
+
+
+async def test_adoption_keeps_a_sandbox_started_with_an_init_current(world):
+    a, _ = await adopt_world(world)
+    assert all(c.attrs["HostConfig"]["Init"] is True for c in world.created())
+    await world.mgr.adopt()
+    assert {i.state for i in world.mgr.instances()} == {"running"}
+    assert (await world.mgr.ensure(ALICE, ["projA"]))["instance"] == a["instance"]
+
+
+async def test_adoption_removes_a_broker_made_templates_look_alike(world):
+    """The refresher is left to finish only when it is the orchestrator's own: a
+    scan's broker can create a container with any labels, the templates role and
+    this stack's owner label included, but always carries the broker's own label."""
+    await adopt_world(world)
+    labels = {**sc.templates_labels(), sm.LABEL_OWNER: "redamon"}
+    refresher = world.d.containers.add(sc.TEMPLATES_REFRESH_CONTAINER, labels=dict(labels))
+    lookalike = world.d.containers.add("templates-lookalike", labels={**labels, BROKER: "1"})
+    result = await world.mgr.adopt()
+    assert result["adopted"] == 2 and result["removed"] == 1
+    assert lookalike.removed and not refresher.removed
 
 
 async def test_a_second_stack_on_the_same_daemon_leaves_the_first_alone(world):
@@ -1907,6 +2068,28 @@ async def test_pool_of_only_sandbox_ports_publishes_nothing(world, caplog):
     ans = await world.mgr.ensure(ALICE, [])
     assert ans["reverse_port"] == sc.DEFAULT_REVERSE_PORT
     assert not world.created(ALICE)[0].created_kwargs.get("ports")
+    assert "pool" in caplog.text
+
+
+async def test_pool_never_allocates_the_default_reverse_port(world):
+    # 4444 is the listener of a sandbox without a pool port: the agent reads it as
+    # "nothing published", so a person drawing it would be told the same.
+    world.mp.setenv(sc.PORT_POOL_ENV, "4440-4449")
+    people = [f"pool-user-{n:04d}" for n in range(6)]
+    answers = [await world.mgr.ensure(u, []) for u in people]
+    assert [a["reverse_port"] for a in answers] == [4440, 4441, 4442, 4443, 4445, 4446]
+    published = [list(c.created_kwargs["ports"]) for c in world.created()]
+    assert ["4444/tcp"] not in published
+
+
+async def test_a_pool_of_only_the_default_reverse_port_publishes_nothing(world, caplog):
+    world.mp.setenv(sc.PORT_POOL_ENV, "4444-4444")
+    caplog.set_level(logging.INFO, logger="sandbox_manager")
+    ans = await world.mgr.ensure(ALICE, [])
+    assert ans["state"] == "running" and ans["reverse_port"] == sc.DEFAULT_REVERSE_PORT
+    c = world.created(ALICE)[0]
+    assert not c.created_kwargs.get("ports") and c.labels[sc.LABEL_PORT] == ""
+    assert env_of(c)[sc.ENV_REVERSE_PORT] == "4444"
     assert "pool" in caplog.text
 
 
@@ -2040,14 +2223,14 @@ async def test_status_and_list_running(world):
     world.clock.now += 5
     await world.mgr.ensure(ALICE, [], view=sc.VIEW_ACT_AS)
     status = world.mgr.status(ALICE)
-    assert status["mode"] == sc.MODE_PER_USER and len(status["instances"]) == 2
+    assert set(status) == {"instances"} and len(status["instances"]) == 2
     own = next(i for i in status["instances"] if i["view"] == "own")
     assert set(own) == {"instance", "view", "state", "projects_hash", "created_at", "last_used",
                         "lease_kinds", "stop_at", "stop_reason", "warn", "reverse_port"}
     assert own["instance"] == a["instance"] and own["projects_hash"] == sc.projects_hash(["projA"])
     assert own["stop_at"] == own["last_used"] + sc.IDLE_MINUTES_DEFAULT * 60
     assert a["token"] not in json.dumps(status) and a["tunnel_token"] not in json.dumps(status)
-    assert world.mgr.status(BOB) == {"mode": sc.MODE_PER_USER, "instances": []}
+    assert world.mgr.status(BOB) == {"instances": []}
     listed = world.mgr.list_running()
     assert {(i["user_id"], i["view"]) for i in listed} == {(ALICE, "own"), (ALICE, "act_as")}
     first = next(i for i in listed if i["view"] == "own")
@@ -2055,13 +2238,17 @@ async def test_status_and_list_running(world):
                      "token": a["token"], "state": "running"}
 
 
-async def test_shared_mode_starts_nothing(world):
-    world.mp.setenv(sc.MODE_ENV, sc.MODE_SHARED)
-    assert world.mgr.mode() == sc.MODE_SHARED
-    assert await world.mgr.ensure(ALICE, ["projA"]) == {"mode": "shared"}
-    assert world.d.mutations() == [] and world.ledger.sandbox_keys() == set()
-    assert not os.path.exists(world.ws("projA"))
-    # Validation still comes first.
+@pytest.mark.parametrize("old_switch", ["shared", "per_user", ""])
+async def test_the_old_mode_switch_changes_nothing(world, old_switch):
+    # An .env or compose file from before the shared container went may still set it.
+    world.mp.setenv("KALI_SANDBOX_MODE", old_switch)
+    assert not hasattr(world.mgr, "mode")
+    ans = await world.mgr.ensure(ALICE, ["projA"])
+    assert ans["state"] == "running" and "mode" not in ans
+    assert [c.name for c in world.created(ALICE)] == [ans["host"]]
+    assert "mode" not in world.mgr.status(ALICE)
+    starting = await world.mgr.ensure(BOB, ["projB"], wait=False)
+    assert set(starting) == set(sc.ENSURE_STARTING_KEYS)
     with pytest.raises(sm.SandboxInvalid):
         await world.mgr.ensure(ALICE, [".staging"])
 

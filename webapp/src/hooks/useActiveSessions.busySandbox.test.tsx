@@ -1,7 +1,7 @@
 /**
  * The sessions list keeps a busy sandbox's rows (group 1, E3; S16b, after M-b).
  *
- * In per-user mode the agent asks every running sandbox for its sessions, each within
+ * The agent asks every running sandbox for its sessions, each within
  * FANOUT_TIMEOUT_S (5 s), and answers 200 without the rows of one that did not answer in time; the
  * webapp passes on the count (`unavailable_count`) and names to each viewer only the silent instances
  * that could hold rows that viewer may see (`unavailable`; every id to holders of every session). A
@@ -13,9 +13,9 @@
  * - the rows of a sandbox that answered are replaced as before, and a kept row goes once its
  *   sandbox answers again;
  * - only rows this viewer was sent are kept, never those of a sandbox that answered, never an
- *   untagged (shared-mode) row, never one pending a kill, never STALE_ROW_MAX_MS after an answer last
+ *   untagged row, never one pending a kill, never STALE_ROW_MAX_MS after an answer last
  *   listed it (`listedAt`), never across an act-as switch;
- * - a failed read keeps the lists as before (shared mode's 504);
+ * - a failed read keeps the lists as before (the agent's 504);
  * - a kill the console answers `busy` is a failure: the row is listed again.
  *
  * Run: npx vitest run --no-file-parallelism src/hooks/useActiveSessions.busySandbox.test.tsx
@@ -155,8 +155,8 @@ describe('a 200 that left a sandbox out', () => {
     expect(keys(result.current.sessions)).toEqual(['aaaaa1:1'])
   })
 
-  test('an untagged row (the shared container of shared mode) is never kept', async () => {
-    const { result } = await polled(lists([session(undefined, 4)]), lists([], { unavailable: ['shared'], unavailable_count: 1 }))
+  test('a row without an instance is never kept', async () => {
+    const { result } = await polled(lists([session(undefined, 4)]), lists([], { unavailable: ['bbbbb1'], unavailable_count: 1 }))
     expect(result.current.sessions).toEqual([])
   })
 
@@ -180,7 +180,7 @@ describe('a 200 that left a sandbox out', () => {
     expect(result.current.sessions[0].staleSince).toBeUndefined()
   })
 
-  test('a failed read keeps the lists and only sets the error (shared mode\'s 504), as before', async () => {
+  test('a failed read keeps the lists and only sets the error (the agent\'s 504), as before', async () => {
     const { result } = await polled(lists([B1]), () => json(504, { error: 'Session manager timeout' }))
     expect(keys(result.current.sessions)).toEqual(['bbbbb1:1'])
     expect(staleKeys(result.current.sessions)).toEqual([])

@@ -21,13 +21,10 @@
  * orchestrator reused (not fresh) needs no re-read: its own `ensure` stopped every instance outside
  * the list it was sent.
  *
- * The webapp never invents a mode for an `ensure`: it answers a mode only when the orchestrator
- * named it in that call. Each `ensure` asks the mode first: shared mode (while the switch is off)
- * answers `{mode: "shared"}` before the person and project checks, so shared mode stays exactly as
- * today; per-user mode runs them, and a refusal is a 403, never shared. An orchestrator out of reach,
- * or answering outside the contract (a crash, a wrong key, a route it lacks), is 503
- * `orchestrator_unavailable`, and the agent applies its own last-answered mode (TD-6): shared stays
- * shared through an outage, per-user fails closed. One owner for that decision.
+ * Every `ensure` runs the person and project checks before the orchestrator is asked, and a refusal
+ * is a 403. An orchestrator out of reach, or answering outside the contract (a crash, a wrong key, a
+ * route it lacks, an answer the contract does not describe), is 503 `orchestrator_unavailable`, and
+ * the agent fails closed on it. Nothing here ever answers a sandbox the orchestrator did not name.
  *
  * Server-side only.
  */
@@ -44,17 +41,17 @@ import { meetsLevel, projectAccess } from '@/lib/authz/projectAccess'
 import { ownedProjectsWhere, sharedProjectIds, visibleProjects } from '@/lib/authz/visibleProjects'
 import {
   ERR_INVALID_PROJECT_ID, ERR_INVALID_USER_ID, ERR_PROJECT_REFUSED, ERR_START_FAILED, ERR_USER_REFUSED,
-  type EnsureAnswer, type LeaseAnswer, type LeaseKind, type SandboxListAnswer, type SandboxMode, type SandboxState,
+  type EnsureAnswer, type LeaseAnswer, type LeaseKind, type SandboxListAnswer, type SandboxState,
   type SandboxStatusAnswer, type SandboxView, type StopReason,
 } from './contract'
 import {
   BAD_ANSWER, ORCHESTRATOR_ERROR, OrchestratorUnreachable, ROUTES_MISSING, SandboxError, isLeaseKind, isStopReason,
-  orchestratorEnsure, orchestratorLease, orchestratorList, orchestratorMode, orchestratorReconcile, orchestratorRelease,
+  orchestratorEnsure, orchestratorLease, orchestratorList, orchestratorReconcile, orchestratorRelease,
   orchestratorStatus, orchestratorStopAll, orchestratorStopProject, orchestratorStopUser, validInstance, validLeaseId,
   validProjectId, validUserId,
 } from './orchestratorClient'
 
-/** An ensure (or the agent's list) the orchestrator gave no answer to: the agent decides from its own last mode. */
+/** An ensure (or the agent's list) the orchestrator gave no answer to: the agent fails closed on it. */
 export const ORCHESTRATOR_UNAVAILABLE = 'orchestrator_unavailable'
 import { dropSandboxClient } from './agentCalls'
 
@@ -67,7 +64,6 @@ const SANDBOX_PERMISSIONS: readonly PermissionId[] = ['agent:chat', 'agent:kali_
 const SANDBOX_LEVELS: readonly ProjectLevel[] = ['W+A', 'W+X']
 /** A start whose access changed under it is retried once; a second change fails it. */
 const MAX_START_ATTEMPTS = 2
-const MODE_CACHE_MS = 30_000
 const LOG_EVERY_MS = 60_000
 
 const lastLogged = new Map<string, number>()
@@ -150,36 +146,6 @@ export async function assertSandboxUser(userId: string): Promise<void> {
   if (await sandboxUserRefusal(userId)) throw new SandboxError(403, ERR_USER_REFUSED)
 }
 
-let modeCache: { mode: SandboxMode; at: number } | null = null
-// The last mode the orchestrator named, kept until it names another. It only decides whether the
-// warm-up starts anything; it never becomes an ensure's answer.
-let lastSeenMode: SandboxMode | null = null
-
-function seeMode(mode: SandboxMode): void {
-  lastSeenMode = mode
-  modeCache = { mode, at: Date.now() }
-}
-
-const routesMissing = (err: unknown): boolean => err instanceof SandboxError && err.code === ROUTES_MISSING
-
-/**
- * The orchestrator's mode for what people are shown, cached 30 s (`fresh`: asked now). An
- * orchestrator without the sandbox routes runs only the shared container, so it shows as shared;
- * that guess is never kept as the mode the orchestrator named.
- */
-export async function sandboxMode({ fresh = false }: { fresh?: boolean } = {}): Promise<SandboxMode> {
-  if (!fresh && modeCache && Date.now() - modeCache.at < MODE_CACHE_MS) return modeCache.mode
-  try {
-    const mode = await orchestratorMode()
-    seeMode(mode)
-    return mode
-  } catch (err) {
-    if (!routesMissing(err)) throw err
-    modeCache = { mode: 'shared', at: Date.now() }
-    return 'shared'
-  }
-}
-
 /** The orchestrator gave no answer at all: out of reach, or one outside the contract. */
 function noAnswer(err: unknown): boolean {
   return err instanceof OrchestratorUnreachable
@@ -205,11 +171,10 @@ export interface EnsureOptions {
 }
 
 /**
- * The person's sandbox for the agent. The orchestrator's mode is asked first: shared mode answers
- * shared before any check. In per-user mode it is refused (403) unless the account may have one and
- * the project hint is in the list; then the orchestrator's answer (running, starting, or shared). A
- * start this call caused writes `sandbox.started` and, on the own view, turns the person's tunnels
- * off (B.16). No answer from the orchestrator, at any step, is 503 `orchestrator_unavailable`.
+ * The person's sandbox for the agent: refused (403) unless the account may have one and the project
+ * hint is in the list; then the orchestrator's answer (running or starting). A start this call
+ * caused writes `sandbox.started` and, on the own view, turns the person's tunnels off (B.16). No
+ * answer from the orchestrator, at any step, is 503 `orchestrator_unavailable`.
  */
 export async function ensureSandbox(userId: string, opts: EnsureOptions = {}): Promise<EnsureAnswer> {
   try {
@@ -227,13 +192,6 @@ async function ensureAttempt(userId: string, opts: EnsureOptions, attempt: numbe
   const touch = opts.touch === true
   const view: SandboxView = actingAs ? 'act_as' : 'own'
 
-  // The mode first, asked in this call: in shared mode nobody gets a sandbox of their own, so the
-  // person and project checks below would refuse work the shared container does today (a set with
-  // triage:run but no agent permission, act-as on a share).
-  const mode = await orchestratorMode()
-  seeMode(mode)
-  if (mode === 'shared') return { mode: 'shared' }
-
   if (await sandboxUserRefusal(userId)) throw new SandboxError(403, ERR_USER_REFUSED)
   const projects = await sandboxProjectsFor(userId, { actingAs })
   if (needProject !== null && !projects.includes(needProject)) throw new SandboxError(403, ERR_PROJECT_REFUSED)
@@ -241,8 +199,7 @@ async function ensureAttempt(userId: string, opts: EnsureOptions, attempt: numbe
   const answer = await orchestratorEnsure({
     user_id: userId, view, projects, need_project: needProject, wait: touch ? false : opts.wait !== false, touch,
   })
-  seeMode(answer.mode)
-  if (answer.mode !== 'per_user' || !answer.fresh) return answer
+  if (!answer.fresh) return answer
 
   await recordStart(userId, view, answer.instance, projects, opts.actor ?? null)
   return (await recheckAfterStart(userId, opts, projects, attempt)) ?? answer
@@ -304,12 +261,11 @@ async function auditStop(actor: SandboxActor, target: Pick<AuditEntry, 'targetTy
 
 /**
  * The warm-up (the ws-ticket mint): `ensureSandbox` with `touch`, never awaited by its caller and
- * never throwing. Quiet until an orchestrator answer has named per-user mode. A failure is logged
- * by its code, once a minute at most per code; a refused warm-up shows the person nothing.
+ * never throwing. A failure is logged by its code, once a minute at most per code; a refused
+ * warm-up shows the person nothing.
  */
 export async function touchSandbox(userId: string, opts: { actingAs?: boolean; actor?: SandboxActor } = {}): Promise<void> {
   try {
-    if (lastSeenMode !== 'per_user') return
     await ensureSandbox(userId, { touch: true, actingAs: opts.actingAs === true, actor: opts.actor ?? null })
   } catch (err) {
     const code = failureCode(err)
@@ -389,17 +345,13 @@ export async function stopProjectSandboxes(projectId: string, reason: StopReason
   }
 }
 
-/** The person's instances (no token): state, stop time, warning. */
+/**
+ * The person's instances (no token): state, stop time, warning. An orchestrator without the
+ * sandbox routes throws `sandbox_routes_missing`, never "no sandbox".
+ */
 export async function sandboxStatus(userId: string): Promise<SandboxStatusAnswer> {
   checkUserId(userId)
-  try {
-    const status = await orchestratorStatus(userId)
-    seeMode(status.mode)
-    return status
-  } catch (err) {
-    if (routesMissing(err)) return { mode: 'shared', instances: [] }
-    throw err
-  }
+  return orchestratorStatus(userId)
 }
 
 export interface OperationsSandbox {
@@ -413,16 +365,12 @@ export interface OperationsSandbox {
   stop_at?: number | null
 }
 
-/** Every running sandbox for the admin Operations view, without hosts or tokens. */
-export async function listSandboxes(): Promise<{ mode: SandboxMode; sandboxes: OperationsSandbox[] }> {
-  let list: SandboxListAnswer
-  try {
-    list = await orchestratorList()
-  } catch (err) {
-    if (routesMissing(err)) return { mode: 'shared', sandboxes: [] }
-    throw err
-  }
-  seeMode(list.mode)
+/**
+ * Every running sandbox for the admin Operations view, without hosts or tokens. An orchestrator
+ * without the sandbox routes throws `sandbox_routes_missing`, never "no sandbox".
+ */
+export async function listSandboxes(): Promise<{ sandboxes: OperationsSandbox[] }> {
+  const list = await orchestratorList()
   const people = [...new Set(list.sandboxes.map((s) => s.user_id))]
   const statuses = new Map(await Promise.all(people.map(async (userId) => {
     const status = await orchestratorStatus(userId).catch(() => null)
@@ -435,18 +383,16 @@ export async function listSandboxes(): Promise<{ mode: SandboxMode; sandboxes: O
       ...(detail ? { projects_hash: detail.projects_hash, created_at: detail.created_at, last_used: detail.last_used, stop_at: detail.stop_at } : {}),
     }
   })
-  return { mode: list.mode, sandboxes }
+  return { sandboxes }
 }
 
 /** The agent's list (internal route only): every running sandbox WITH its host and token, for its fan-out. */
 export async function agentSandboxList(): Promise<SandboxListAnswer> {
   try {
-    const list = await orchestratorList()
-    seeMode(list.mode)
-    return list
+    return await orchestratorList()
   } catch (err) {
-    // The agent reads a mode from this list too: a missing route is no answer, never "shared".
-    if (routesMissing(err)) throw unavailable(err)
+    // A missing route is no answer: the agent fails closed on it.
+    if (err instanceof SandboxError && err.code === ROUTES_MISSING) throw unavailable(err)
     throw err
   }
 }
@@ -470,7 +416,7 @@ export async function releaseSandboxLease(userId: string, leaseId: string): Prom
 
 /** 202 for a start that did not wait, 200 otherwise. */
 export function ensureStatus(answer: EnsureAnswer): 200 | 202 {
-  return answer.mode === 'per_user' && answer.state === 'starting' ? 202 : 200
+  return answer.state === 'starting' ? 202 : 200
 }
 
 /**
@@ -487,10 +433,8 @@ export function sandboxFailureResponse(err: unknown, message: string): NextRespo
   return internalError(err, message)
 }
 
-/** Tests only: forget the mode, the warnings' times and the logged ids. */
+/** Tests only: forget the warnings' times and the logged ids. */
 export function resetSandboxGatewayForTests(): void {
-  modeCache = null
-  lastSeenMode = null
   lastLogged.clear()
   unmountable.clear()
 }

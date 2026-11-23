@@ -72,7 +72,7 @@ describe('the open terminal', () => {
     rerender(panel([], { onInteract, unavailable: 1 }))
     expect(screen.queryByText('No Reverse Shells')).toBeNull()
     expect(screen.getByPlaceholderText('Type a command...')).toBeInTheDocument()
-    expect(screen.getByText('1 sandbox did not answer; its sessions are not shown')).toBeInTheDocument()
+    expect(screen.getByText('1 sandbox did not answer; its sessions may be out of date or missing')).toBeInTheDocument()
     await answer('ALICE-42')
     expect(screen.getByText('ALICE-42')).toBeInTheDocument()
     rerender(panel([ROW], { onInteract }))
@@ -213,7 +213,7 @@ describe('the empty state', () => {
   test('nothing selected and nothing listed: as before, with the partial line or the error', () => {
     const { rerender } = render(panel([], { unavailable: 1 }))
     expect(screen.getByText('No Reverse Shells')).toBeInTheDocument()
-    expect(screen.getByText('1 sandbox did not answer; its sessions are not shown')).toBeInTheDocument()
+    expect(screen.getByText('1 sandbox did not answer; its sessions may be out of date or missing')).toBeInTheDocument()
     rerender(panel([], { error: 'Failed to fetch sessions (agent_unreachable · HTTP 503)' }))
     expect(screen.getByText('Could not load sessions')).toBeInTheDocument()
   })

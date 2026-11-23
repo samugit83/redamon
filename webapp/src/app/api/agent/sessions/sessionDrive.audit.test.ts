@@ -45,7 +45,7 @@ vi.mock('@/lib/agentFetch', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/agentFetch')>()),
   agentFetch: (...a: unknown[]) => mockAgentFetch(...a),
 }))
-vi.mock('@/lib/sandbox/gateway', () => ({ sandboxMode: async () => 'shared', sandboxProjectsFor: async () => [] }))
+vi.mock('@/lib/sandbox/gateway', () => ({ sandboxProjectsFor: async () => [] }))
 
 import { POST as interact } from './[id]/interact/route'
 import { POST as killSession } from './[id]/kill/route'
@@ -62,16 +62,18 @@ function signedIn(real: ReturnType<typeof principal>) {
   mockEffectiveUser.mockResolvedValue({ userId: real.id })
 }
 
+// member-a's own Kali sandbox, with the person tags the agent adds.
+const OWN_A = { sandbox: 'aaaaa1', sandbox_user: 'member-a', sandbox_view: 'own' }
 const LIST = {
-  sessions: [{ id: 1, type: 'shell', info: '', connection: '', target_ip: '', chat_session_id: 'chat-a' }],
-  jobs: [{ id: 0, name: 'Exploit: multi/handler', payload: 'p', port: 4444 }],
+  sessions: [{ id: 1, type: 'shell', info: '', connection: '', target_ip: '', chat_session_id: 'chat-a', ...OWN_A }],
+  jobs: [{ id: 0, name: 'Exploit: multi/handler', payload: 'p', port: 4444, ...OWN_A }],
   non_msf_sessions: [],
 }
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 
 let driveAnswer: () => Response | Promise<Response>
 const params = (id: string) => ({ params: Promise.resolve({ id }) })
-const post = (body?: unknown) => new NextRequest('http://x/api', {
+const post = (body?: unknown) => new NextRequest('http://x/api?sandbox=aaaaa1', {
   method: 'POST',
   ...(body === undefined ? {} : { body: JSON.stringify(body), headers: { 'content-type': 'application/json' } }),
 })
@@ -84,7 +86,7 @@ beforeEach(() => {
   mockEffectiveUser.mockReset()
   mockLoadPrincipal.mockReset()
   mockConversations.mockReset().mockImplementation(async () => [
-    { sessionId: 'chat-a', projectId: 'project-a', project: { userId: 'member-a' } },
+    { sessionId: 'chat-a', projectId: 'project-a', userId: 'member-a', project: { userId: 'member-a' } },
   ])
   mockWriteAudit.mockReset().mockImplementation(async () => { events.push('outcome row') })
   mockWriteAuditTx.mockReset().mockImplementation(async () => { events.push('attempt row') })
@@ -106,14 +108,14 @@ describe('every forwarded drive is audited before it reaches the agent', () => {
     signedIn(principal('member-a'))
     const res = await interact(post({ command: 'cat /etc/shadow' }), params('1'))
     expect(res.status).toBe(200)
-    expect(events).toEqual(['attempt row', 'agent /sessions/1/interact', 'outcome row'])
+    expect(events).toEqual(['attempt row', 'agent /sessions/1/interact?sandbox=aaaaa1', 'outcome row'])
     const [tx, attempt] = mockWriteAuditTx.mock.calls[0]
     expect(tx).toEqual({ tx: true })
     expect(attempt).toMatchObject({
-      action: 'agent.session_interact', targetType: 'msf_session', targetId: 'shared:1', actorId: 'member-a', source: 'ui',
-      after: { projectId: 'project-a', via: 'owner', sandbox: 'shared', outcome: 'attempted' },
+      action: 'agent.session_interact', targetType: 'msf_session', targetId: 'aaaaa1:1', actorId: 'member-a', source: 'ui',
+      after: { projectId: 'project-a', via: 'owner', sandbox: 'aaaaa1', sandboxUser: 'member-a', outcome: 'attempted' },
     })
-    expect(outcomes()[0]).toMatchObject({ action: 'agent.session_interact', targetId: 'shared:1', after: { outcome: 'ran' } })
+    expect(outcomes()[0]).toMatchObject({ action: 'agent.session_interact', targetId: 'aaaaa1:1', after: { outcome: 'ran' } })
     expect(typeof attempt.after.driveId).toBe('string')
     expect(outcomes()[0].after.driveId).toBe(attempt.after.driveId)
     expect(JSON.stringify([attempts(), outcomes()])).not.toContain('shadow')
@@ -160,13 +162,13 @@ describe('every forwarded drive is audited before it reaches the agent', () => {
   test('a session kill and a job kill are audited the same way', async () => {
     signedIn(principal('member-a'))
     expect((await killSession(post(), params('1'))).status).toBe(200)
-    expect(events).toEqual(['attempt row', 'agent /sessions/1/kill', 'outcome row'])
-    expect(attempts()[0]).toMatchObject({ action: 'agent.session_kill', targetId: 'shared:1', after: { outcome: 'attempted' } })
+    expect(events).toEqual(['attempt row', 'agent /sessions/1/kill?sandbox=aaaaa1', 'outcome row'])
+    expect(attempts()[0]).toMatchObject({ action: 'agent.session_kill', targetId: 'aaaaa1:1', after: { outcome: 'attempted' } })
     events.length = 0
     signedIn(principal('admin-a', 'admin'))
     expect((await killJob(post(), params('0'))).status).toBe(200)
-    expect(events).toEqual(['attempt row', 'agent /jobs/0/kill', 'outcome row'])
-    expect(attempts()[1]).toMatchObject({ action: 'agent.job_kill', targetType: 'msf_job', targetId: 'shared:0', after: { outcome: 'attempted' } })
+    expect(events).toEqual(['attempt row', 'agent /jobs/0/kill?sandbox=aaaaa1', 'outcome row'])
+    expect(attempts()[1]).toMatchObject({ action: 'agent.job_kill', targetType: 'msf_job', targetId: 'aaaaa1:0', after: { outcome: 'attempted' } })
     expect(outcomes()[1].after).toMatchObject({ outcome: 'ran' })
   })
 

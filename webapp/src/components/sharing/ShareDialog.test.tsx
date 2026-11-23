@@ -229,11 +229,11 @@ describe('warnings and the Read + Write presets', () => {
     expect(dialog().getByText(rawWarning)).toBeInTheDocument()
   })
 
-  test('sandbox notice (HD-22) and the target credentials warning (SH-29) beside the write toggles', async () => {
+  test('the target credentials warning (SH-29) beside the write toggles, and no shared-sandbox notice (group 1)', async () => {
     renderDialog()
     await dialog().findByText('Not shared with anyone yet.')
     const write = dialog().getByRole('group', { name: /Read \+ Write/ })
-    expect(within(write).getAllByText(/sandbox shared by every project on this server/).length).toBeGreaterThan(0)
+    expect(within(write).queryByText(/sandbox shared by every project/)).toBeNull()
     expect(within(write).getAllByText(/target credentials/).length).toBeGreaterThan(0)
   })
 
@@ -502,13 +502,13 @@ describe('Read + Write grants (step 5.14)', () => {
     expect(carol.getByText('Toggles: Raw data & files, Run scans, Manage (co-owner)')).toBeInTheDocument()
   })
 
-  test('warnings shown: the copy warning with Read + Write; the shared sandbox and the target credentials beside their toggles', async () => {
+  test('warnings shown: the copy warning with Read + Write; the lent keys and the target credentials beside their toggles', async () => {
     await ready()
     expect(dialog().queryByText(/can copy what they see/)).toBeNull()
     fireEvent.click(dialog().getByRole('radio', { name: /^Editor/ }))
     expect(dialog().getByText(/can copy what they see/)).toBeInTheDocument()
     const write = dialog().getByRole('group', { name: /Read \+ Write/ })
-    expect(within(write).getByRole('checkbox', { name: /^Use AI agent/ })).toHaveAccessibleDescription(/sandbox shared by every project.*target credentials/)
+    expect(within(write).getByRole('checkbox', { name: /^Use AI agent/ })).toHaveAccessibleDescription(/WPScan, URLScan and ProjectDiscovery keys.*target credentials/)
     expect(within(write).getByRole('checkbox', { name: /^Run scans/ })).toHaveAccessibleDescription(/target credentials/)
   })
 

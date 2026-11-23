@@ -27,9 +27,7 @@ import {
   CAPTURE_FIELDS, changedCaptureFields, changedTunnelFields, instanceSettingsInForce, maskSecret,
   parseCapturePatch, writeInstanceSettings,
 } from '@/lib/sharedInstanceSettings'
-import {
-  CAPTURE_RECREATE_FIELDS, pushSharedTunnelOff, pushTunnelConfig, reconcileCaptureProxy, tunnelMode, type TunnelMode,
-} from '@/lib/sharedSettingsEffects'
+import { CAPTURE_RECREATE_FIELDS, reconcileCaptureProxy } from '@/lib/sharedSettingsEffects'
 import type { SaveWarning } from '@/app/api/users/[id]/settings/saveWarnings'
 import {
   applyQuotaPatch, changedQuotaKeys, parseQuotaPatch, parseQuotaStore, quotasInForce, quotaStoreToJson,
@@ -59,14 +57,13 @@ import { changeRetention, parseRetentionDays, retentionChangeOf, retentionState,
  * one), keeps the user settings route's rules for the tunnel (a new chisel URL needs its auth
  * typed again, HD-24, and the person's password, ID-25), mirrors each changed group into a
  * user row, audits `instance.settings_changed` with the field names, then applies the change:
- * the capture proxy follows its switch and spawn-time knobs, the sandbox takes the tunnel.
+ * the capture proxy follows its switch and spawn-time knobs.
  *
- * With per-user Kali sandboxes (group 1, OQ-G1-2 default A) every person runs their own tunnel
- * from their own user settings: the instance tunnel is unused, shown read-only with
+ * Every person runs their own tunnel from their own user settings, in their own Kali sandbox
+ * (group 1, OQ-G1-2 default A): the instance tunnel is unused, shown read-only with
  * `tunnelsPerPerson`, and a change of it is 409 `tunnels_per_person` before anything is written,
  * mirrored into a user row (which would become that person's own tunnel) or pushed. Only its "off"
- * is taken, sent each time to the shared container (which may still run the old tunnel) and never
- * mirrored. Before the orchestrator has named a mode a tunnel change is 409 `sandbox_mode_unknown`.
+ * is taken, stored and never mirrored.
  *
  * The security policy (password policy, session and link lifetimes, impersonation settings,
  * public base URL; step 2.6) is the confirmed Root's: every administrator account reads it
@@ -128,10 +125,6 @@ interface Access {
   tunnels: SharedToolAccess
   /** instance:quotas, with RBAC_GOVERNANCE_ENABLED on: the quotas. */
   quotas: boolean
-  /** The Kali sandbox mode the tunnel follows, asked only of a tunnels holder. */
-  tunnelMode: TunnelMode | null
-  /** Per-user Kali sandboxes: the tunnel group is unused, every person runs their own. */
-  tunnelsPerPerson: boolean
 }
 
 async function access(fresh: boolean): Promise<Access | NextResponse> {
@@ -146,13 +139,8 @@ async function access(fresh: boolean): Promise<Access | NextResponse> {
     return forbidden('Only whoever holds the instance tunnel or the traffic capture opens the instance settings.', 'platform:tunnels')
   }
   const quotas = quotasInForce() && (await sessionHolds(session, 'instance:quotas', { fresh }))
-  const mode = tunnels.allowed ? await tunnelMode() : null
-  const tunnelsPerPerson = !!mode && mode.named && mode.mode === 'per_user'
-  return { session, principal, admin, capture, tunnels, quotas, tunnelMode: mode, tunnelsPerPerson }
+  return { session, principal, admin, capture, tunnels, quotas }
 }
-
-const TUNNEL_MODE_UNKNOWN =
-  'The tunnel cannot change now: the orchestrator has not said whether tunnels are per person. Try again in a moment.'
 
 const TUNNELS_PER_PERSON =
   'Tunnels are per person: each person turns on their own, with their own credentials, in Global Settings, and it runs in their own Kali sandbox. The instance tunnel is not used.'
@@ -175,7 +163,8 @@ function view(row: InstanceSettings, a: Access, standing: RootStanding, warnings
       : {}),
     ...(a.capture ? Object.fromEntries(CAPTURE_FIELDS.map((f) => [f, row[f]])) : {}),
     canManageTunnels: a.tunnels.allowed,
-    ...(a.tunnelsPerPerson ? { tunnelsPerPerson: true } : {}),
+    // The tunnel group is unused: every person runs their own, in their own Kali sandbox.
+    ...(a.tunnels.allowed ? { tunnelsPerPerson: true } : {}),
     canManageCapture: a.capture,
     ...(a.admin
       ? { securityPolicy: securityPolicyView(row as unknown as Record<string, unknown>), canManageSecurityPolicy: standing === 'confirmed' }
@@ -254,13 +243,9 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
   if (tunnelChanges.length && !a.tunnels.allowed) {
     return forbidden('Only whoever holds platform:tunnels changes the instance tunnel.', 'platform:tunnels', { fields: tunnelChanges })
   }
-  if (tunnelChanges.length && !a.tunnelMode?.named) {
-    return NextResponse.json({ error: TUNNEL_MODE_UNKNOWN, code: 'sandbox_mode_unknown', fields: tunnelChanges }, { status: 409 })
-  }
-  // Per-user mode takes only the instance tunnel's "off", and sends it even when the row reads off.
-  const instanceOff = a.tunnelsPerPerson && 'tunnelsEnabled' in body && !body.tunnelsEnabled
-    && tunnelChanges.every((f) => f === 'tunnelsEnabled')
-  if (tunnelChanges.length && a.tunnelsPerPerson && !instanceOff) {
+  // Only the instance tunnel's "off" is taken.
+  const instanceOff = 'tunnelsEnabled' in body && !body.tunnelsEnabled && tunnelChanges.every((f) => f === 'tunnelsEnabled')
+  if (tunnelChanges.length && !instanceOff) {
     return NextResponse.json({ error: TUNNELS_PER_PERSON, code: 'tunnels_per_person', fields: tunnelChanges }, { status: 409 })
   }
   if (captureChanges.length && !a.capture) {
@@ -307,9 +292,8 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
     || quotaChanges.length || navigatorChange
   if (!otherChanges) {
     if (retentionChange) await changeRetention(retentionAsk!.days, auditActorOf(sessionActor(a.session)), now())
-    const stopWarning = instanceOff ? await pushSharedTunnelOff() : null
     const current = retentionChange ? (await instanceSettingsInForce()) ?? row : row
-    return answer(current, a, standing, stopWarning ? [stopWarning] : [])
+    return answer(current, a, standing)
   }
 
   const data: Record<string, unknown> = {}
@@ -337,7 +321,7 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
     actor: auditActorOf(sessionActor(a.session)),
     tunnelVia: tunnelChanges.length ? a.tunnels.via : null,
     ...(Object.keys(changedKeys).length ? { changedKeys } : {}),
-    ...(a.tunnelsPerPerson ? { skipMirror: ['tunnel'] as const } : {}),
+    skipMirror: ['tunnel'] as const,
   })
   if (sharingChanges.length) {
     invalidateSharingPolicy()
@@ -354,14 +338,6 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
     recreateFieldChanged: CAPTURE_RECREATE_FIELDS.some((f) => captureChanges.includes(f)),
   })
   if (captureWarning) warnings.push(captureWarning)
-  if (instanceOff) {
-    const stopWarning = await pushSharedTunnelOff()
-    if (stopWarning) warnings.push(stopWarning)
-  } else if (tunnelChanges.length && a.tunnelMode) {
-    // Shared mode: the shared container's instance tunnel (per-user mode refused it above).
-    const { warning: tunnelWarning } = await pushTunnelConfig(saved, a.tunnelMode, null)
-    if (tunnelWarning) warnings.push(tunnelWarning)
-  }
   if (retentionChange) {
     await changeRetention(retentionAsk!.days, auditActorOf(sessionActor(a.session)), now())
     return answer((await instanceSettingsInForce()) ?? saved, a, standing, warnings)

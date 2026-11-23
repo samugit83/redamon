@@ -37,8 +37,8 @@ import type { Session } from '@/lib/session'
 import { auditActorOf, sessionActor } from '@/lib/auditActor'
 import { actingAsUserId } from '@/lib/userAudit'
 import { listSandboxes, sandboxFailureResponse, stopSandbox, type OperationsSandbox } from '@/lib/sandbox/gateway'
-import { OrchestratorUnreachable, SandboxError, validInstance, validUserId } from '@/lib/sandbox/orchestratorClient'
-import type { SandboxMode, SandboxState, SandboxView } from '@/lib/sandbox/contract'
+import { OrchestratorUnreachable, SandboxError, validUserId } from '@/lib/sandbox/orchestratorClient'
+import type { SandboxState, SandboxView } from '@/lib/sandbox/contract'
 import { chatAttribution, isSandboxInstance, payloadParts, sandboxPersonOf, unavailableInstances, type ChatProject } from './agentSessionsAccess'
 import { now } from './clock'
 import { forbiddenResponse } from './guards'
@@ -118,7 +118,7 @@ export interface OpsShell {
   id: string
   kind: 'session' | 'listener'
   type: string
-  /** The Kali sandbox instance it runs in; null for the shared container's untagged rows. */
+  /** The Kali sandbox instance it runs in; null for a row the agent did not tag. */
   sandbox: string | null
   /** Null when no chat is known to have opened it. */
   project: OpsProject | null
@@ -148,8 +148,7 @@ export interface OperationsView {
   triageRuns: OpsTriageRun[]
   /** `unavailable`: how many sandboxes the agent could not ask; their sessions are missing. */
   shells: { state: SourceState; sessions: OpsShell[]; jobs: number; unavailable: number }
-  /** `mode` is null when the orchestrator did not answer. */
-  sandboxes: { state: SourceState; mode: SandboxMode | null; list: OpsSandbox[] }
+  sandboxes: { state: SourceState; list: OpsSandbox[] }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -394,13 +393,13 @@ function sandboxFailureCode(err: unknown): string {
 }
 
 /** The gateway's sandbox list (no host, no token), given up after SOURCE_TIMEOUT_MS like every other source. */
-async function sandboxSource(): Promise<Fetched<{ mode: SandboxMode; sandboxes: OperationsSandbox[] }>> {
+async function sandboxSource(): Promise<Fetched<{ sandboxes: OperationsSandbox[] }>> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<Fetched<never>>((resolve) => {
     timer = setTimeout(() => resolve({ ok: false, code: 'orchestrator_timeout' }), SOURCE_TIMEOUT_MS)
   })
   const read = listSandboxes().then(
-    (value): Fetched<{ mode: SandboxMode; sandboxes: OperationsSandbox[] }> => ({ ok: true, value }),
+    (value): Fetched<{ sandboxes: OperationsSandbox[] }> => ({ ok: true, value }),
     (err: unknown): Fetched<never> => ({ ok: false, code: sandboxFailureCode(err) }),
   )
   try {
@@ -474,7 +473,7 @@ export async function readOperations(session: Session): Promise<OperationsView> 
   })
   const ownerOf = new Map(projectRows.map((p) => [p.id, p.userId]))
 
-  // A per-user shell stands for its chat's project only when its sandbox's person wrote the chat and
+  // A shell stands for its chat's project only when its sandbox's person wrote the chat and
   // mounts the project (agentSessionsAccess.ts): a sandbox's root answers its own session manager.
   const judge = chatAttribution()
   const shellProject = new Map<ShellRow, ChatProject>()
@@ -540,12 +539,11 @@ export async function readOperations(session: Session): Promise<OperationsView> 
       state: shellAnswer.ok ? { ok: true } : { ok: false, code: shellAnswer.code },
       sessions: shells.rows.map((s): OpsShell => {
         const attributed = shellProject.get(s)
-        const author = s.chat ? chatOf.get(s.chat)?.userId : undefined
         return {
           key: s.sandbox ? `${s.kind}:${s.sandbox}:${s.id}` : `${s.kind}:${s.id}`, id: s.id, kind: s.kind, type: s.type,
           sandbox: s.sandbox, project: attributed ? project(attributed.projectId) : null,
-          // A per-user shell is its sandbox's person's; the shared container's, its chat's author's.
-          person: validInstance(s.sandbox) ? maybePerson(s.sandboxPerson) : maybePerson(author),
+          // A shell is its sandbox's person's, as the agent tagged it.
+          person: maybePerson(s.sandboxPerson),
         }
       }),
       jobs: shells.jobs,
@@ -553,7 +551,6 @@ export async function readOperations(session: Session): Promise<OperationsView> 
     },
     sandboxes: {
       state: sandboxAnswer.ok ? { ok: true } : { ok: false, code: sandboxAnswer.code },
-      mode: sandboxAnswer.ok ? sandboxAnswer.value.mode : null,
       list: sandboxes.map((s): OpsSandbox => ({
         key: `${s.user_id}:${s.instance}`, instance: s.instance, person: person(s.user_id), view: s.view, state: s.state,
         createdAt: epochIso(s.created_at), lastUsed: epochIso(s.last_used), stopAt: epochIso(s.stop_at),

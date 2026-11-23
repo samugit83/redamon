@@ -56,7 +56,7 @@ beforeEach(() => {
   onInteract = vi.fn(async () => ({ busy: false, output: 'uid=0' }))
   onKillSession = vi.fn(async () => {})
   onKillJob = vi.fn(async () => {})
-  status = () => json({ mode: 'per_user', instances: [{ state: 'running', stop_at: null, stop_reason: null, warn: false }] })
+  status = () => json({ instances: [{ state: 'running', stop_at: null, stop_reason: null, warn: false }] })
   fetchMock = vi.fn(async (url: string) => (String(url) === '/api/agent/sandbox/status' ? status() : json({}, 404)))
   vi.stubGlobal('fetch', fetchMock)
 })
@@ -117,7 +117,7 @@ describe('rows from two sandboxes with the same number', () => {
     await waitFor(() => expect(onKillJob).toHaveBeenCalledWith({ id: 0, sandbox: 'bbbbb1' }))
   })
 
-  test('a row without an instance (the shared container) is killed by its number alone', async () => {
+  test('a row without an instance is sent with its number alone (the drive route refuses it: sandbox_required)', async () => {
     render(panel({ sessions: [{ id: 4, type: 'shell', info: 'legacy', connection: '', target_ip: '', chat_session_id: null }], jobs: [] }))
     fireEvent.click(screen.getByTitle('Kill session'))
     await waitFor(() => expect(onKillSession).toHaveBeenCalledWith({ id: 4, sandbox: null }))
@@ -127,14 +127,14 @@ describe('rows from two sandboxes with the same number', () => {
 describe('the partial-answer line (B.13)', () => {
   test('above the list, in the contract\'s words', () => {
     render(panel({ unavailable: 2 }))
-    const line = screen.getByText('2 sandboxes did not answer; their sessions are not shown')
+    const line = screen.getByText('2 sandboxes did not answer; their sessions may be out of date or missing')
     expect(line).toBeInTheDocument()
     expect(screen.queryByText(/Could not load sessions/)).toBeNull()
   })
 
   test('one sandbox: the singular line; above the empty state too', () => {
     render(panel({ sessions: [], jobs: [], unavailable: 1 }))
-    expect(screen.getByText('1 sandbox did not answer; its sessions are not shown')).toBeInTheDocument()
+    expect(screen.getByText('1 sandbox did not answer; its sessions may be out of date or missing')).toBeInTheDocument()
     expect(screen.getByText('No Reverse Shells')).toBeInTheDocument()
   })
 
@@ -146,7 +146,7 @@ describe('the partial-answer line (B.13)', () => {
 
 describe("the stop warning of the person's own sandbox (OQ-G1-9 A)", () => {
   test('from 7 hours without use: the stop time and how to keep it running', async () => {
-    status = () => json({ mode: 'per_user', instances: [{ state: 'running', stop_at: STOP_AT, stop_reason: null, warn: true }] })
+    status = () => json({ instances: [{ state: 'running', stop_at: STOP_AT, stop_reason: null, warn: true }] })
     render(panel())
     expect(await screen.findByText(
       `Your Kali sandbox stops at ${hhmm(STOP_AT)} because it has not been used for 7 hours; use it to keep it running`,
@@ -155,15 +155,15 @@ describe("the stop warning of the person's own sandbox (OQ-G1-9 A)", () => {
   })
 
   test('shown above the empty state as well', async () => {
-    status = () => json({ mode: 'per_user', instances: [{ state: 'running', stop_at: STOP_AT, stop_reason: null, warn: true }] })
+    status = () => json({ instances: [{ state: 'running', stop_at: STOP_AT, stop_reason: null, warn: true }] })
     render(panel({ sessions: [], jobs: [] }))
     expect(await screen.findByText(/Your Kali sandbox stops at/)).toBeInTheDocument()
   })
 
-  test('no warning yet, shared mode, or a failed read: no banner', async () => {
+  test('no warning yet, no sandbox, or a failed read: no banner', async () => {
     for (const answer of [
-      () => json({ mode: 'per_user', instances: [{ state: 'running', stop_at: STOP_AT, stop_reason: null, warn: false }] }),
-      () => json({ mode: 'shared', instances: [] }),
+      () => json({ instances: [{ state: 'running', stop_at: STOP_AT, stop_reason: null, warn: false }] }),
+      () => json({ instances: [] }),
       () => json({ error: 'x', code: 'orchestrator_unreachable' }, 503),
       () => { throw new TypeError('Failed to fetch') },
     ]) {

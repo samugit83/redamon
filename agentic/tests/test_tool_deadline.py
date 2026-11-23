@@ -72,22 +72,32 @@ class _Answers:
         return self.text
 
 
+_built: dict = {}
+
+
 def _executor(*mcp_tools):
+    """An executor whose system tools run in the person's sandbox (_InASandbox): its
+    client serves these tools, and its reconnect is the test's `mcp_manager.reconnect`."""
     mgr = MCPToolsManager({"fake": {"url": "http://x/sse", "transport": "sse",
                                     "timeout": 60, "sse_read_timeout": 60}})
     mgr.reconnect = AsyncMock(return_value=(0, []))
     ex = PhaseAwareToolExecutor(mgr, graph_tool=None)
     ex.register_mcp_tools(list(mcp_tools))
+    _built["ex"] = ex
     return ex
 
 
-class _SharedMode(unittest.IsolatedAsyncioTestCase):
-    """The shared sandbox's MCP tools: shared mode is named, since the default is
-    per_user and no gateway answers here."""
+class _InASandbox(unittest.IsolatedAsyncioTestCase):
+    """The Kali tools run in one person's sandbox (one_sandbox), serving the last
+    executor's tools."""
 
     def setUp(self):
-        tools.sandbox_router._reset(mode=tools.sandbox_contract.MODE_SHARED)
-        self.addCleanup(tools.sandbox_router._reset)
+        from one_sandbox import route_to
+
+        async def reconnect(seen, reason="", force=False):
+            return await _built["ex"].mcp_manager.reconnect(seen, reason=reason)
+
+        route_to(self, lambda: _built["ex"]._all_tools, reconnect=reconnect)
 
 
 class DeadlineTable(unittest.TestCase):
@@ -124,7 +134,7 @@ class DeadlineTable(unittest.TestCase):
             self.assertEqual(tool_deadline_seconds("user_custom_mcp_tool"), 0.0)
 
 
-class DeadlineEnforcement(_SharedMode):
+class DeadlineEnforcement(_InASandbox):
     async def test_lost_answer_returns_a_failure_instead_of_hanging(self):
         tool = _NeverAnswers("execute_code")
         ex = _executor(tool)
@@ -209,7 +219,7 @@ class DeadlineEnforcement(_SharedMode):
         self.assertIn("gave no answer", result["error"])
 
 
-class ToolNodeSurfacesTheDeadline(_SharedMode):
+class ToolNodeSurfacesTheDeadline(_InASandbox):
     """End-to-end through execute_tool_node: the step gets a terminal verdict,
     so the next think turn can emit tool_complete and the card stops running."""
 
@@ -227,7 +237,7 @@ class ToolNodeSurfacesTheDeadline(_SharedMode):
                 mock.patch.object(tools, "is_tool_allowed_in_phase", return_value=True):
             update = await asyncio.wait_for(
                 execute_tool_node(state, {"configurable": {}}, tool_executor=ex,
-                                  streaming_callbacks={}, session_manager_base="http://x"),
+                                  streaming_callbacks={}),
                 timeout=5,
             )
         step = update["_current_step"]

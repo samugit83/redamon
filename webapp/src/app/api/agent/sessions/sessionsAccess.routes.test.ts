@@ -4,12 +4,12 @@
  * list is fetched and the id looked up) and answer 404 for anything else, before the
  * command reaches the session. Each drive writes `agent.session_interact` /
  * `agent.session_kill` / `agent.job_kill` (session id, project id; never the command).
- * The agent's list here is the shared container's (untagged rows, shared mode): a drive is
- * recorded as `shared:<number>` with the instance in `after` (group 1, WI-S16-2); the per-user
- * lists and `?sandbox=` are agentSessionsAccess.sandbox.test.ts.
+ * Every row carries its Kali sandbox instance and the agent's person tags (group 1, WI-S16-2): a
+ * drive names the instance (`?sandbox=`) and is recorded as `<instance>:<number>`; the lists across
+ * sandboxes and the naming rules are agentSessionsAccess.sandbox.test.ts.
  *
- * The session, the account read, Prisma, agentFetch and the sandbox mode are mocked; the access
- * rule and sharedToolAccess are the real ones.
+ * The session, the account read, Prisma, agentFetch and the gateway are mocked; the access rule and
+ * sharedToolAccess are the real ones.
  *
  * @vitest-environment node
  */
@@ -48,7 +48,7 @@ vi.mock('@/lib/agentFetch', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/agentFetch')>()),
   agentFetch: (...a: unknown[]) => mockAgentFetch(...a),
 }))
-vi.mock('@/lib/sandbox/gateway', () => ({ sandboxMode: async () => 'shared', sandboxProjectsFor: async () => [] }))
+vi.mock('@/lib/sandbox/gateway', () => ({ sandboxProjectsFor: async () => [] }))
 
 import { GET as listSessions } from './route'
 import { POST as interact } from './[id]/interact/route'
@@ -69,13 +69,18 @@ function signedIn(real: ReturnType<typeof principal>, actingAs?: string) {
   mockEffectiveUser.mockResolvedValue({ userId: actingAs ?? real.id })
 }
 
+// member-a's own sandbox is `aaaaa1`, member-b's `bbbbb1`; the agent adds the person tags.
+const OWN_A = { sandbox: 'aaaaa1', sandbox_user: 'member-a', sandbox_view: 'own' }
+const OWN_B = { sandbox: 'bbbbb1', sandbox_user: 'member-b', sandbox_view: 'own' }
 const LIST = {
   sessions: [
-    { id: 1, type: 'meterpreter', info: '', connection: '', target_ip: '', chat_session_id: 'chat-a' },
-    { id: 2, type: 'shell', info: '', connection: '', target_ip: '', chat_session_id: 'chat-b' },
-    { id: 3, type: 'shell', info: '', connection: '', target_ip: '', chat_session_id: null },
+    { id: 1, type: 'meterpreter', info: '', connection: '', target_ip: '', chat_session_id: 'chat-a', ...OWN_A },
+    { id: 2, type: 'shell', info: '', connection: '', target_ip: '', chat_session_id: 'chat-b', ...OWN_B },
+    { id: 3, type: 'shell', info: '', connection: '', target_ip: '', chat_session_id: null, ...OWN_A },
+    // A row without its sandbox instance stands for no project and is never a drive target.
+    { id: 4, type: 'shell', info: '', connection: '', target_ip: '', chat_session_id: 'chat-a' },
   ],
-  jobs: [{ id: 0, name: 'Exploit: multi/handler', payload: 'p', port: 4444 }],
+  jobs: [{ id: 0, name: 'Exploit: multi/handler', payload: 'p', port: 4444, ...OWN_A }],
   non_msf_sessions: [],
   cache_age_seconds: 0.5,
   agent_busy: false,
@@ -90,7 +95,7 @@ function agent(driveBody: unknown = { busy: false, output: 'uid=0(root)' }) {
 }
 
 const params = (id: string) => ({ params: Promise.resolve({ id }) })
-const post = (body?: unknown) => new NextRequest('http://x/api', {
+const post = (body?: unknown, sandbox: string | null = 'aaaaa1') => new NextRequest(`http://x/api${sandbox === null ? '' : `?sandbox=${sandbox}`}`, {
   method: 'POST',
   ...(body === undefined ? {} : { body: JSON.stringify(body), headers: { 'content-type': 'application/json' } }),
 })
@@ -103,8 +108,8 @@ beforeEach(() => {
   mockEffectiveUser.mockReset()
   mockLoadPrincipal.mockReset()
   mockConversations.mockReset().mockImplementation(async () => [
-    { sessionId: 'chat-a', projectId: 'project-a', project: { userId: 'member-a' } },
-    { sessionId: 'chat-b', projectId: 'project-b', project: { userId: 'member-b' } },
+    { sessionId: 'chat-a', projectId: 'project-a', userId: 'member-a', project: { userId: 'member-a' } },
+    { sessionId: 'chat-b', projectId: 'project-b', userId: 'member-b', project: { userId: 'member-b' } },
   ])
   mockWriteAudit.mockReset().mockResolvedValue(undefined)
   mockWriteAuditTx.mockReset().mockResolvedValue(undefined)
@@ -134,7 +139,7 @@ describe('GET /api/agent/sessions', () => {
       signedIn(who)
       agent()
       const body = await (await listSessions(new NextRequest('http://x/api/agent/sessions'))).json()
-      expect(body.sessions.map((s: { id: number }) => s.id)).toEqual([1, 2, 3])
+      expect(body.sessions.map((s: { id: number }) => s.id)).toEqual([1, 2, 3, 4])
       expect(body.jobs).toHaveLength(1)
     }
   })
@@ -173,32 +178,45 @@ describe('POST /api/agent/sessions/[id]/interact', () => {
     const res = await interact(post({ command: 'cat /etc/shadow' }), params('1'))
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ busy: false, output: 'uid=0(root)' })
-    expect(drives()).toEqual(['/sessions/1/interact'])
+    expect(drives()).toEqual(['/sessions/1/interact?sandbox=aaaaa1'])
     const rows = auditRows()
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({
-      actorId: 'member-a', action: 'agent.session_interact', targetType: 'msf_session', targetId: 'shared:1',
-      after: { projectId: 'project-a', via: 'owner', sandbox: 'shared' }, source: 'ui',
+      actorId: 'member-a', action: 'agent.session_interact', targetType: 'msf_session', targetId: 'aaaaa1:1',
+      after: { projectId: 'project-a', via: 'owner', sandbox: 'aaaaa1', sandboxUser: 'member-a' }, source: 'ui',
     })
     expect(JSON.stringify(rows)).not.toContain('shadow')
   })
 
-  test("another project's session or an untagged one: 404 and nothing typed", async () => {
+  test("another project's session, one in another sandbox, or one standing for no project: 404 and nothing typed", async () => {
     signedIn(principal('member-a'))
     agent()
-    for (const id of ['2', '3', '99', 'abc']) {
-      const res = await interact(post({ command: 'id' }), params(id))
-      expect(res.status).toBe(404)
+    for (const [id, sandbox] of [['2', 'bbbbb1'], ['2', 'aaaaa1'], ['1', 'bbbbb1'], ['3', 'aaaaa1'], ['99', 'aaaaa1'], ['abc', 'aaaaa1']]) {
+      const res = await interact(post({ command: 'id' }, sandbox), params(id))
+      expect([id, sandbox, res.status]).toEqual([id, sandbox, 404])
     }
     expect(drives()).toEqual([])
+    expect(auditRows()).toEqual([])
+  })
+
+  test('the sandbox is always named: without ?sandbox= 400 sandbox_required, `shared` 400 invalid_sandbox, before any agent call', async () => {
+    signedIn(principal('admin-a', 'admin'))
+    agent()
+    const missing = await interact(post({ command: 'id' }, null), params('4'))
+    expect(missing.status).toBe(400)
+    expect((await missing.json()).code).toBe('sandbox_required')
+    const shared = await interact(post({ command: 'id' }, 'shared'), params('4'))
+    expect(shared.status).toBe(400)
+    expect((await shared.json()).code).toBe('invalid_sandbox')
+    expect(mockAgentFetch).not.toHaveBeenCalled()
     expect(auditRows()).toEqual([])
   })
 
   test('a holder types into any session', async () => {
     signedIn(principal('holder', 'standard', ['shell_sessions']))
     agent()
-    expect((await interact(post({ command: 'id' }), params('2'))).status).toBe(200)
-    expect(auditRows()[0]).toMatchObject({ after: { projectId: 'project-b', via: 'legacy' } })
+    expect((await interact(post({ command: 'id' }, 'bbbbb1'), params('2'))).status).toBe(200)
+    expect(auditRows()[0]).toMatchObject({ after: { projectId: 'project-b', via: 'legacy', sandbox: 'bbbbb1', sandboxUser: 'member-b' } })
   })
 
   test("an admin acting as a member is recorded with the member's id", async () => {
@@ -235,8 +253,8 @@ describe('POST /api/agent/sessions/[id]/kill', () => {
   test('kill of a hidden session 404', async () => {
     signedIn(principal('member-a'))
     agent()
-    for (const id of ['2', '3']) {
-      expect((await killSession(post(), params(id))).status).toBe(404)
+    for (const [id, sandbox] of [['2', 'bbbbb1'], ['3', 'aaaaa1']]) {
+      expect((await killSession(post(undefined, sandbox), params(id))).status).toBe(404)
     }
     expect(drives()).toEqual([])
     expect(auditRows()).toEqual([])
@@ -246,9 +264,9 @@ describe('POST /api/agent/sessions/[id]/kill', () => {
     signedIn(principal('member-a'))
     agent({ busy: false, output: 'Killing 1' })
     expect((await killSession(post(), params('1'))).status).toBe(200)
-    expect(drives()).toEqual(['/sessions/1/kill'])
+    expect(drives()).toEqual(['/sessions/1/kill?sandbox=aaaaa1'])
     expect(auditRows()[0]).toMatchObject({
-      action: 'agent.session_kill', targetType: 'msf_session', targetId: 'shared:1', after: { projectId: 'project-a', via: 'owner', sandbox: 'shared' },
+      action: 'agent.session_kill', targetType: 'msf_session', targetId: 'aaaaa1:1', after: { projectId: 'project-a', via: 'owner', sandbox: 'aaaaa1' },
     })
   })
 
@@ -274,7 +292,7 @@ describe('POST /api/agent/jobs/[id]/kill', () => {
     signedIn(principal('admin-a', 'admin'))
     agent({ busy: false, output: 'Stopping job 0' })
     expect((await killJob(post(), params('0'))).status).toBe(200)
-    expect(drives()).toEqual(['/jobs/0/kill'])
-    expect(auditRows()[0]).toMatchObject({ action: 'agent.job_kill', targetType: 'msf_job', targetId: 'shared:0', after: { via: 'admin', sandbox: 'shared' } })
+    expect(drives()).toEqual(['/jobs/0/kill?sandbox=aaaaa1'])
+    expect(auditRows()[0]).toMatchObject({ action: 'agent.job_kill', targetType: 'msf_job', targetId: 'aaaaa1:0', after: { via: 'admin', sandbox: 'aaaaa1' } })
   })
 })

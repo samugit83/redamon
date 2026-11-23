@@ -38,7 +38,6 @@ import { actionFailedText, failureText, saveWarningLines } from '@/components/se
 import { readApiError } from '@/lib/apiError'
 import { StepUpModal } from '@/components/auth/StepUpModal'
 import { TunnelStatusReadOnly } from '@/components/settings/TunnelStatusReadOnly'
-import { InstanceTunnelSection } from '@/components/settings/InstanceTunnelSection'
 
 /** A Secret Multiscanner credential column (TRUFFLEHOG_KEY_FIELDS). */
 type TrufflehogField = `trufflehog${string}`
@@ -247,13 +246,10 @@ export default function SettingsPage() {
     cancel: () => void
   } | null>(null)
   const [visibleFields, setVisibleFields] = useState<Record<string, boolean>>({})
-  // The tunnel is one listener for the whole instance (HD-06). Only an explicit `false`
-  // from the settings GET hides its controls: the PUT is what refuses a change.
+  // A tunnel is an internet-facing listener (HD-06): turning one on takes platform:tunnels. Only an
+  // explicit `false` from the settings GET hides its controls: the PUT is what refuses a change.
+  // The tunnel is this person's own, in their own Kali sandbox (group 1), whatever the identity switch.
   const [canManageTunnels, setCanManageTunnels] = useState(true)
-  // With the identity switch on the tunnel is an instance setting, saved on its own (step 2.4).
-  const [tunnelAtInstance, setTunnelAtInstance] = useState(false)
-  // Per-user Kali sandboxes: the tunnel is this person's own, in their own sandbox (group 1).
-  const [tunnelsPerPerson, setTunnelsPerPerson] = useState(false)
   const [tunnelTurningOff, setTunnelTurningOff] = useState(false)
   // Remounts the tunnel status after a turn-off, so it reads the state again.
   const [tunnelStatusKey, setTunnelStatusKey] = useState(0)
@@ -564,9 +560,7 @@ export default function SettingsPage() {
           setRotationConfigs(data.rotationConfigs)
         }
         setCanManageTunnels(data.canManageTunnels !== false)
-        setTunnelsPerPerson(data.tunnelScope === 'own_sandbox')
         setTunnelToggled(false)
-        setTunnelAtInstance(data.sharedSettingsAt === 'instance' && data.tunnelScope !== 'own_sandbox')
         setSettingsLoaded(true)
         setSettingsLoadError(null)
       } else {
@@ -655,7 +649,7 @@ export default function SettingsPage() {
         Object.entries(settings).filter(([k]) =>
           !k.startsWith('captureProxy') && !k.startsWith('captureEgress') && k !== 'featureModels'
           && (canManageTunnels || !(TUNNEL_SETTING_KEYS as readonly string[]).includes(k))
-          && !(k === 'tunnelsEnabled' && tunnelsPerPerson && !tunnelToggled))
+          && !(k === 'tunnelsEnabled' && !tunnelToggled))
       )
       const send = (stepUpPassword?: string) => fetch(`/api/users/${userId}/settings`, {
         method: 'PUT',
@@ -765,7 +759,7 @@ export default function SettingsPage() {
     } finally {
       setSettingsSaving(false)
     }
-  }, [userId, settings, rotationConfigs, settingsLoaded, settingsLoadError, canManageTunnels, tunnelsPerPerson, tunnelToggled])
+  }, [userId, settings, rotationConfigs, settingsLoaded, settingsLoadError, canManageTunnels, tunnelToggled])
 
   // Turning one's own tunnel off needs no permission (per-user sandboxes): a person who lost the
   // Tunnels permission still stops the tunnel their sandbox runs.
@@ -795,7 +789,7 @@ export default function SettingsPage() {
     }
   }, [userId, toast])
 
-  // Per-user Kali sandboxes: the person's own tunnel state, with its off control.
+  // The person's own tunnel state, with its off control.
   const ownTunnelStatus = (
     <TunnelStatusReadOnly
       key={tunnelStatusKey}
@@ -1644,13 +1638,9 @@ export default function SettingsPage() {
           </h2>
         </div>
         <p className={styles.sectionHint}>
-          {tunnelsPerPerson
-            ? (canManageTunnels
-              ? 'Configure reverse shell tunneling with your own ngrok or chisel credentials. Your tunnel runs in your own Kali sandbox, and it is turned off whenever your sandbox restarts (a sandbox stops after a while unused) - turn it on again each time. It exposes an internet-reachable listener, breaking the LAN-only posture.'
-              : 'Reverse shell tunneling runs in each person\'s own Kali sandbox, with their own credentials.')
-            : canManageTunnels
-              ? 'Configure reverse shell tunneling. Choose ngrok (free, single port) or chisel (requires VPS). Tunnels must be explicitly enabled below and are turned OFF automatically on restart - re-enable them each session (they expose an internet-reachable listener, breaking the LAN-only posture).'
-              : 'Reverse shell tunneling (ngrok or chisel) is one listener shared by every user of this instance.'}
+          {canManageTunnels
+            ? 'Configure reverse shell tunneling with your own ngrok or chisel credentials. Your tunnel runs in your own Kali sandbox, and it is turned off whenever your sandbox restarts (a sandbox stops after a while unused) - turn it on again each time. It exposes an internet-reachable listener, breaking the LAN-only posture.'
+            : 'Reverse shell tunneling runs in each person\'s own Kali sandbox, with their own credentials.'}
         </p>
         {settingsLoading ? (
           <div className={styles.emptyState}><Loader2 size={16} className={styles.spin} /> Loading...</div>
@@ -1659,13 +1649,11 @@ export default function SettingsPage() {
             {settingsLoadError}. Saving is off until they load, so nothing stored is overwritten.{' '}
             <button type="button" className="textButton" onClick={retrySettings}>Retry</button>
           </div>
-        ) : tunnelAtInstance ? (
-          <InstanceTunnelSection />
         ) : !canManageTunnels ? (
-          tunnelsPerPerson ? ownTunnelStatus : <TunnelStatusReadOnly />
+          ownTunnelStatus
         ) : (
           <>
-          {tunnelsPerPerson && ownTunnelStatus}
+          {ownTunnelStatus}
           <div className={styles.settingsGrid}>
             <div className="formGroup">
               <label className="formLabel" style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
@@ -1677,9 +1665,7 @@ export default function SettingsPage() {
                 <span>Enable tunnels</span>
               </label>
               <span className="formHint">
-                {tunnelsPerPerson
-                  ? 'When off, saved credentials are stored but no tunnel is started. Enabling starts your Kali sandbox if needed and exposes its reverse-shell listener to the internet via ngrok/chisel.'
-                  : 'When off, saved credentials are stored but no tunnel is started. Enabling exposes port 4444 to the internet via ngrok/chisel.'}
+                When off, saved credentials are stored but no tunnel is started. Enabling starts your Kali sandbox if needed and exposes its reverse-shell listener to the internet via ngrok/chisel.
               </span>
             </div>
             <SecretField
@@ -1968,9 +1954,7 @@ export default function SettingsPage() {
             <ul style={{ margin: 0, paddingLeft: '18px' }}>
               {pendingImport.keyCount > 0 && <li><strong>{pendingImport.keyCount}</strong> API key{pendingImport.keyCount > 1 ? 's' : ''}</li>}
               {pendingImport.rotationCount > 0 && <li><strong>{pendingImport.rotationCount}</strong> rotation config{pendingImport.rotationCount > 1 ? 's' : ''}</li>}
-              {pendingImport.tunnelingCount > 0 && <li><strong>{pendingImport.tunnelingCount}</strong> tunneling field{pendingImport.tunnelingCount > 1 ? 's' : ''}{!canManageTunnels && (tunnelAtInstance
-                ? ' (not imported: the tunnel is an instance setting, saved in the Tunneling section)'
-                : ' (not imported: the tunnel is managed by an administrator)')}</li>}
+              {pendingImport.tunnelingCount > 0 && <li><strong>{pendingImport.tunnelingCount}</strong> tunneling field{pendingImport.tunnelingCount > 1 ? 's' : ''}{!canManageTunnels && ' (not imported: turning on or changing a tunnel takes the Tunnels permission)'}</li>}
             </ul>
             <p style={{ marginTop: '12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>
               Empty values and masked values are skipped. You must click <strong>Save Settings</strong> after import to persist.

@@ -694,9 +694,10 @@ class Harness:
 
     def drain_fork_load(self):
         """Before the clean-up execs into containers: end a load LV-D22 left (an error or a signal
-        came first, or its own stop failed). The load does not run out while the container runs:
-        its PID 1 (run_servers.py, no init) never reaps the orphaned sleeps, whose zombies keep
-        their pids slots. So the stop (or restart) is retried every 20 s until it works, the
+        came first, or its own stop failed). The load may not run out while the container runs:
+        a sandbox started before Docker's init was its PID 1, and the shared container, never
+        reap the orphaned sleeps, whose zombies keep their pids slots (a current sandbox's init
+        does). So the stop (or restart) is retried every 20 s until it works, the
         container is gone or its count falls under the mark; it gives up kali_shell's `bash -c`
         timeout plus the sleeps' time after the load was sent."""
         why = self.end_fork_load()

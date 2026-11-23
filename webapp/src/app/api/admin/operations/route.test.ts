@@ -175,8 +175,8 @@ beforeEach(() => {
   agentShells = () => json({ sessions: [], jobs: [], non_msf_sessions: [] })
   agentStop = () => json({ stopped: true })
   liveAnswer = () => json({ scans: [] })
-  sandboxList = () => json({ mode: 'shared', sandboxes: [] })
-  sandboxStatus = () => json({ mode: 'per_user', instances: [] })
+  sandboxList = () => json({ sandboxes: [] })
+  sandboxStatus = () => json({ instances: [] })
   sandboxStop = () => json({ stopped: 1 })
   resetSandboxGatewayForTests()
   h.mounts.mockReset().mockImplementation(async (userId: string) => ({ 'mem-a': ['p-1'], 'mem-b': ['p-2'] } as Record<string, string[]>)[userId] ?? [])
@@ -356,18 +356,21 @@ describe('lists runs with owners and actors', () => {
     expect(h.db.triageUpdateMany).not.toHaveBeenCalled()
   })
 
-  test('shell sessions name their project owner and the chat person, never the target; jobs are a count', async () => {
+  test('shell sessions name their project owner and their sandbox\'s person, never the target; jobs are a count', async () => {
+    const own = (sandbox: string, person: string) => ({ sandbox, sandbox_user: person, sandbox_view: 'own' })
     agentShells = () => json({
       sessions: [
-        { id: 3, type: 'meterpreter', info: 'root @ host', connection: '198.51.100.1:4444 -> 203.0.113.9:5555', target_ip: '203.0.113.9', chat_session_id: 'chat-1' },
-        { id: 4, type: 'shell', target_ip: '203.0.113.10', chat_session_id: null },
+        { id: 3, type: 'meterpreter', info: 'root @ host', connection: '198.51.100.1:4444 -> 203.0.113.9:5555', target_ip: '203.0.113.9', chat_session_id: 'chat-1', ...own('aaaaa1', 'own-a') },
+        { id: 4, type: 'shell', target_ip: '203.0.113.10', chat_session_id: null, ...own('aaaaa1', 'own-a') },
+        // A row the agent did not tag with its sandbox stands for no project and no person.
+        { id: 5, type: 'shell', chat_session_id: 'chat-1' },
       ],
-      non_msf_sessions: [{ id: 'raw-1', type: 'netcat', chat_session_id: 'chat-2' }],
-      jobs: [{ id: 0 }, { id: 1 }],
+      non_msf_sessions: [{ id: 'raw-1', type: 'netcat', chat_session_id: 'chat-2', ...own('bbbbb1', 'own-b') }],
+      jobs: [{ id: 0, sandbox: 'aaaaa1' }, { id: 1, sandbox: 'bbbbb1' }],
     })
     h.db.conversationFindMany.mockResolvedValue([
-      { sessionId: 'chat-1', projectId: 'p-1', userId: 'mem-a' },
-      { sessionId: 'chat-2', projectId: 'p-2', userId: 'mem-b' },
+      { sessionId: 'chat-1', projectId: 'p-1', userId: 'own-a' },
+      { sessionId: 'chat-2', projectId: 'p-2', userId: 'own-b' },
     ])
     const res = await view()
     const raw = await res.clone().text()
@@ -376,9 +379,10 @@ describe('lists runs with owners and actors', () => {
     expect(out.shells.jobs).toBe(2)
     expect(out.shells.unavailable).toBe(0)
     expect(out.shells.sessions).toEqual([
-      { key: 'session:3', id: '3', kind: 'session', type: 'meterpreter', sandbox: null, project: { id: 'p-1', name: 'p-1 name', owner: { id: 'own-a', name: 'Name own-a' } }, person: { id: 'mem-a', name: 'Name mem-a' } },
-      { key: 'session:4', id: '4', kind: 'session', type: 'shell', sandbox: null, project: null, person: null },
-      { key: 'listener:raw-1', id: 'raw-1', kind: 'listener', type: 'netcat', sandbox: null, project: { id: 'p-2', name: 'p-2 name', owner: { id: 'own-b', name: 'Name own-b' } }, person: { id: 'mem-b', name: 'Name mem-b' } },
+      { key: 'session:aaaaa1:3', id: '3', kind: 'session', type: 'meterpreter', sandbox: 'aaaaa1', project: { id: 'p-1', name: 'p-1 name', owner: { id: 'own-a', name: 'Name own-a' } }, person: { id: 'own-a', name: 'Name own-a' } },
+      { key: 'session:aaaaa1:4', id: '4', kind: 'session', type: 'shell', sandbox: 'aaaaa1', project: null, person: { id: 'own-a', name: 'Name own-a' } },
+      { key: 'session:5', id: '5', kind: 'session', type: 'shell', sandbox: null, project: null, person: null },
+      { key: 'listener:bbbbb1:raw-1', id: 'raw-1', kind: 'listener', type: 'netcat', sandbox: 'bbbbb1', project: { id: 'p-2', name: 'p-2 name', owner: { id: 'own-b', name: 'Name own-b' } }, person: { id: 'own-b', name: 'Name own-b' } },
     ])
     expect(raw).not.toContain('203.0.113')
     expect(raw).not.toContain('root @ host')
@@ -391,7 +395,7 @@ describe('lists runs with owners and actors', () => {
     expect(out.scans).toEqual({ orchestrator: { ok: true }, running: [], queued: [], queuedTotal: 0 })
     expect(out.triageRuns).toEqual([])
     expect(out.shells).toEqual({ state: { ok: true }, sessions: [], jobs: 0, unavailable: 0 })
-    expect(out.sandboxes).toEqual({ state: { ok: true }, mode: 'shared', list: [] })
+    expect(out.sandboxes).toEqual({ state: { ok: true }, list: [] })
     expect(h.db.projectFindMany).not.toHaveBeenCalled()
     expect(h.db.userFindMany).not.toHaveBeenCalled()
     expect(h.db.conversationFindMany).not.toHaveBeenCalled()
@@ -429,7 +433,7 @@ describe('a source that does not answer', () => {
     const out = await body(await view())
     expect(out.scans.orchestrator).toEqual({ ok: false, code: 'orchestrator_unreachable' })
     expect(out.scans.running.map((s: any) => s.key)).toEqual(['scan:sj-1'])
-    expect(out.sandboxes).toEqual({ state: { ok: false, code: 'orchestrator_unreachable' }, mode: null, list: [] })
+    expect(out.sandboxes).toEqual({ state: { ok: false, code: 'orchestrator_unreachable' }, list: [] })
   })
 
   test('a failed database read is a coded 500 without the error text', async () => {
@@ -551,14 +555,12 @@ describe('Kali sandboxes and shells across sandboxes (group 1, WI-S16-6)', () =>
 
   beforeEach(() => {
     sandboxList = () => json({
-      mode: 'per_user',
       sandboxes: [
         { user_id: 'mem-a', view: 'own', instance: 'aaaaa1', host: 'redamon-kali-0123456789abcdef-aaaaa1', token: 'tok-SECRET-a', state: 'running' },
         { user_id: 'mem-b', view: 'act_as', instance: 'bbbbb1', host: 'redamon-kali-fedcba9876543210-bbbbb1', token: 'tok-SECRET-b', state: 'draining' },
       ],
     })
     sandboxStatus = (userId) => json({
-      mode: 'per_user',
       instances: userId === 'mem-a'
         ? [{ instance: 'aaaaa1', view: 'own', state: 'running', projects_hash: 'feedfacecafebeef', created_at: T0, last_used: T0 + 600, lease_kinds: ['run'], stop_at: T0 + 1800, stop_reason: null, warn: false, reverse_port: 4444 }]
         : [],
@@ -570,7 +572,7 @@ describe('Kali sandboxes and shells across sandboxes (group 1, WI-S16-6)', () =>
     const raw = await res.clone().text()
     const out = await body(res)
     expect(out.sandboxes.state).toEqual({ ok: true })
-    expect(out.sandboxes.mode).toBe('per_user')
+    expect('mode' in out.sandboxes).toBe(false)
     expect(out.sandboxes.list).toEqual([
       {
         key: 'mem-a:aaaaa1', instance: 'aaaaa1', person: { id: 'mem-a', name: 'Name mem-a' }, view: 'own', state: 'running',
@@ -615,7 +617,7 @@ describe('Kali sandboxes and shells across sandboxes (group 1, WI-S16-6)', () =>
   test('the sandbox source does not answer, or answers outside the contract: its code, the rest still render', async () => {
     sandboxList = () => json({ detail: 'Internal Server Error' }, 500)
     let out = await body(await view())
-    expect(out.sandboxes).toEqual({ state: { ok: false, code: 'orchestrator_error' }, mode: null, list: [] })
+    expect(out.sandboxes).toEqual({ state: { ok: false, code: 'orchestrator_error' }, list: [] })
     expect(out.scans.orchestrator).toEqual({ ok: true })
     sandboxList = () => new Promise<Response>(() => {})
     vi.useFakeTimers({ shouldAdvanceTime: true })
@@ -626,12 +628,12 @@ describe('Kali sandboxes and shells across sandboxes (group 1, WI-S16-6)', () =>
     } finally {
       vi.useRealTimers()
     }
-    expect(out.sandboxes).toEqual({ state: { ok: false, code: 'orchestrator_timeout' }, mode: null, list: [] })
+    expect(out.sandboxes).toEqual({ state: { ok: false, code: 'orchestrator_timeout' }, list: [] })
   })
 
-  test('an orchestrator without the sandbox routes: shared mode, no sandbox', async () => {
+  test('an orchestrator without the sandbox routes is a source that does not answer, never "no sandbox"', async () => {
     sandboxList = () => json({ detail: 'Not Found' }, 404)
-    expect((await body(await view())).sandboxes).toEqual({ state: { ok: true }, mode: 'shared', list: [] })
+    expect((await body(await view())).sandboxes).toEqual({ state: { ok: false, code: 'sandbox_routes_missing' }, list: [] })
   })
 })
 

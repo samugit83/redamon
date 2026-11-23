@@ -14,9 +14,8 @@ Each test pins one point the reviewers raised on the router S09 committed:
   (e) for_person(None or "") binds "no person" and never falls back to the run actor;
   (f) the finalizer of a dropped handle cancels its renewal on the renewal's own loop,
       whichever thread collects the handle;
-  (g) one mode rule: an answer outside the contract (a 5xx, a 401, a code-less 404, any
-      4xx without a contract code) is an outage and keeps the last mode answered (the
-      default before any), while a 403 refusing the person proves per-user mode;
+  (g) an answer outside the contract (a 5xx, a 401, a code-less 404, any 4xx without a
+      contract code) is an outage, which fails closed (there is no other sandbox);
   (h) the job map records the view: job_sandbox(job_id) -> (person, view).
 
 Plus the gateway calls written as literal webapp URLs, which the drift test of the
@@ -248,7 +247,7 @@ class TestFinalizerOnTheLoopThread(RouterTest):
 
 
 # =============================================================================
-# (g) one mode rule (the driver's ruling on S10's reviews)
+# (g) an answer outside the contract is an outage, which fails closed
 # =============================================================================
 
 NOT_CONTRACT = {
@@ -260,20 +259,7 @@ NOT_CONTRACT = {
 }
 
 
-class TestOneModeRuleShared(RouterTest):
-    mode = contract.MODE_SHARED
-
-    async def test_an_answer_outside_the_contract_keeps_shared(self):
-        for name, answer in NOT_CONTRACT.items():
-            with self.subTest(answer=name):
-                self.gateway.script[contract.INTERNAL_ROUTE_ENSURE] = lambda b, a=answer: a
-                handle = await router.acquire("bob", project_id="p1", kind="run")
-                self.assertEqual(handle.mode, contract.MODE_SHARED)
-                self.assertEqual(router.current_mode(), contract.MODE_SHARED)
-
-
-class TestOneModeRulePerUser(RouterTest):
-    mode = contract.MODE_PER_USER
+class TestAnswersOutsideTheContract(RouterTest):
 
     async def test_an_answer_outside_the_contract_fails_closed(self):
         for name, answer in NOT_CONTRACT.items():
@@ -283,37 +269,21 @@ class TestOneModeRulePerUser(RouterTest):
                     await router.acquire("bob", project_id="p1", kind="run")
                 self.assertEqual(ctx.exception.reason, "error")
 
-
-class TestOneModeRuleNoAnswerYet(RouterTest):
-    mode = None
-
-    async def test_a_refusal_proves_per_user_so_a_later_outage_fails_closed(self):
+    async def test_a_refusal_then_an_outage_both_fail_closed(self):
         self.gateway.script[contract.INTERNAL_ROUTE_ENSURE] = lambda b: (403, {"code": contract.ERR_USER_REFUSED})
         with self.assertRaises(SandboxUnavailable) as ctx:
             await router.acquire("bob", project_id="p1", kind="run")
         self.assertEqual(ctx.exception.reason, "refused")
-        self.assertEqual(router.current_mode(), contract.MODE_PER_USER)
         self.gateway.script[contract.INTERNAL_ROUTE_ENSURE] = lambda b: (503, {})
         with self.assertRaises(SandboxUnavailable) as ctx:
             await router.acquire("bob", project_id="p1", kind="run")
-        self.assertEqual(ctx.exception.reason, "error", "an outage after a per-user refusal went shared")
-
-    # The default is per_user, so an outage before any answer fails closed: never a
-    # handle on the shared container, which no answer named.
-
-    async def test_an_answer_outside_the_contract_takes_the_default_before_any_answer(self):
-        self.gateway.script[contract.INTERNAL_ROUTE_ENSURE] = lambda b: (404, {})
-        with self.assertRaises(SandboxUnavailable) as ctx:
-            await router.acquire("bob", project_id="p1", kind="run")
         self.assertEqual(ctx.exception.reason, "error")
-        self.assertEqual(router.current_mode(), contract.MODE_PER_USER)
 
-    async def test_a_real_outage_keeps_the_default(self):
+    async def test_a_real_outage_fails_closed(self):
         self.gateway.raises = _connect_refused
         with self.assertRaises(SandboxUnavailable) as ctx:
             await router.acquire("bob", project_id="p1", kind="run")
         self.assertEqual(ctx.exception.reason, "error")
-        self.assertEqual(router.current_mode(), contract.MODE_PER_USER)
 
 
 # =============================================================================

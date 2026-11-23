@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -211,9 +210,9 @@ class CveIntel:
         return self.by_cve
 
     async def _fetch(self, cve_ids: list) -> dict:
-        """Call vulnx through the kali-sandbox MCP server, in batches."""
+        """Call vulnx through the network recon MCP server of the person's Kali sandbox, in
+        batches."""
         try:
-            from mcp_registry import BearerAuth, MCPServer
             from langchain_mcp_adapters.client import MultiServerMCPClient  # noqa: F401
         except Exception:                                         # noqa: BLE001
             logger.info("No MCP client available; ranking uses class priors")
@@ -268,41 +267,7 @@ class CveIntel:
             async with self._sandbox() as own:
                 return await self._call_tool(ids_argument, own) if own is not None else ""
 
-        import sandbox_contract
-
-        if handle.mode == sandbox_contract.MODE_PER_USER:
-            return await self._call_per_user(ids_argument, handle)
-
-        try:
-            from langchain_mcp_adapters.client import MultiServerMCPClient
-
-            url = os.environ.get(
-                "MCP_NETWORK_RECON_URL", "http://host.docker.internal:8000/sse")
-            token = os.environ.get("MCP_AUTH_TOKEN", "")
-            config = {
-                "network_recon": {
-                    "transport": "sse",
-                    "url": url,
-                    **({"headers": {"Authorization": f"Bearer {token}"}}
-                       if token else {}),
-                }
-            }
-            client = MultiServerMCPClient(config)
-            tools = await client.get_tools()
-            tool = next((t for t in tools if t.name == ALLOWED_TOOL), None)
-            if tool is None:
-                logger.info(f"{ALLOWED_TOOL} is not available on the MCP server")
-                return ""
-            result = await tool.ainvoke({
-                "args": ids_argument,
-                "api_key": self.pdcp_api_key,
-            })
-            return str(result or "")
-        except Exception as e:                                    # noqa: BLE001
-            logger.warning(
-                f"cve_intel lookup failed ({e.__class__.__name__}); "
-                f"the ranking falls back to class priors")
-            return ""
+        return await self._call_per_user(ids_argument, handle)
 
     async def _call_per_user(self, ids_argument: str, handle) -> str:
         """The call through the handle's own client: its instance's address and bearer, so

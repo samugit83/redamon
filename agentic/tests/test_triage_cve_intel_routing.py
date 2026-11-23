@@ -6,15 +6,15 @@ person it is for is `actor_user_id` (who pressed Start, or the MCP token's owner
 admin behind an act-as in `real_actor_user_id`. Its one Kali call, `cve_intel`, carries the
 owner's ProjectDiscovery key as an argument, so it must run in that person's sandbox:
 
-- per-user mode: `using(actor, project_id=<project>, kind="triage")`, in the `act_as` view when
-  an admin acts as the person (TD-26), through that handle's own client (its own bearer); the
-  owner's key reaches only that handle's sandbox, never the tenant's, never the shared one;
+- `using(actor, project_id=<project>, kind="triage")`, in the `act_as` view when an admin
+  acts as the person (TD-26), through that handle's own client (its own bearer); the owner's
+  key reaches only that handle's sandbox, never the tenant's, never the old shared address
+  (MCP_NETWORK_RECON_URL with MCP_AUTH_TOKEN, set here to show neither is read);
 - one lease for a whole refresh, released at its end;
-- shared mode: today's call to MCP_NETWORK_RECON_URL with MCP_AUTH_TOKEN, unchanged;
 - a refused or unavailable sandbox degrades to the class priors (no call at all), as any
   intel failure does.
 
-The router's public functions are stubbed; every test sets the mode it means.
+The router's public functions are stubbed.
 
 Run: ./agentic/run_tests.sh tests/test_triage_cve_intel_routing.py
 """
@@ -35,12 +35,12 @@ OWNER_KEY = "pdcp-owner-key-goes-only-to-the-actors-sandbox"
 SHARED_TOKEN = "shared-mcp-token"
 
 
-def handle(person, view=contract.VIEW_OWN, mode=contract.MODE_PER_USER, instance="a1b2c3"):
+def handle(person, view=contract.VIEW_OWN, instance="a1b2c3"):
     return router.SandboxHandle(
         user_id=person, view=view, instance=instance,
-        host=contract.container_name(person, view, instance) if mode == contract.MODE_PER_USER else "kali-sandbox",
+        host=contract.container_name(person, view, instance),
         token="tok-" + person + "-" + "x" * 20, tunnel_token="", ports=contract.PORTS,
-        reverse_port=4444, mode=mode)
+        reverse_port=4444)
 
 
 class FakeTool:
@@ -57,8 +57,7 @@ class FakeTool:
 class Router:
     """The router's public interface, recording who asked for which sandbox."""
 
-    def __init__(self, mode=contract.MODE_PER_USER, refuse=None):
-        self.mode = mode
+    def __init__(self, refuse=None):
         self.refuse = refuse
         self.acquired = []
         self.released = []
@@ -70,7 +69,7 @@ class Router:
                               "view": seen_view, "bound_person": router.sandbox_user()})
         if self.refuse:
             raise router.SandboxUnavailable(self.refuse)
-        return handle(user_id, seen_view, self.mode)
+        return handle(user_id, seen_view)
 
     async def release(self, h):
         self.released.append(h)
@@ -89,7 +88,7 @@ class Router:
 
 
 class FakeMCPClient:
-    """langchain_mcp_adapters' MultiServerMCPClient, recording its config (shared mode)."""
+    """langchain_mcp_adapters' MultiServerMCPClient, recording its config: a client on a fixed address must never be built."""
     configs = []
 
     def __init__(self, config):
@@ -143,12 +142,13 @@ class TestPerUser(unittest.TestCase):
         self.assertFalse(router.current_sandbox_user.get(), "unbound after the call")
         self.assertFalse(router.current_sandbox_acting.get())
 
-    def test_the_shared_token_is_never_used_per_user(self):
+    def test_the_old_shared_address_and_token_are_never_used(self):
         r = Router()
         FakeMCPClient.configs = []
         loader = intel.CveIntel(pdcp_api_key=OWNER_KEY, actor_user_id="bob", project_id="p1")
+        env = {"MCP_NETWORK_RECON_URL": "http://kali-sandbox:8000/sse", "MCP_AUTH_TOKEN": SHARED_TOKEN}
         with r.installed(), \
-                mock.patch.dict(os.environ, {"MCP_AUTH_TOKEN": SHARED_TOKEN}), \
+                mock.patch.dict(os.environ, env), \
                 mock.patch("langchain_mcp_adapters.client.MultiServerMCPClient", FakeMCPClient):
             run(loader._call_tool("CVE-2021-41773"))
         self.assertEqual(FakeMCPClient.configs, [], "no client on the shared address")
@@ -183,23 +183,6 @@ class TestPerUser(unittest.TestCase):
         with r.installed():
             self.assertEqual(run(loader._call_tool("CVE-2021-41773; id")), "")
         self.assertEqual(r.acquired, [])
-
-
-class TestShared(unittest.TestCase):
-
-    def test_shared_mode_keeps_todays_call(self):
-        r = Router(mode=contract.MODE_SHARED)
-        FakeMCPClient.configs = []
-        loader = intel.CveIntel(pdcp_api_key=OWNER_KEY, actor_user_id="bob", project_id="p1")
-        env = {"MCP_NETWORK_RECON_URL": "http://kali-sandbox:8000/sse", "MCP_AUTH_TOKEN": SHARED_TOKEN}
-        with r.installed(), mock.patch.dict(os.environ, env), \
-                mock.patch("langchain_mcp_adapters.client.MultiServerMCPClient", FakeMCPClient):
-            raw = run(loader._call_tool("CVE-2021-41773"))
-        self.assertIn("CVE-2021-41773", raw)
-        self.assertEqual(FakeMCPClient.configs, [{"network_recon": {
-            "transport": "sse", "url": "http://kali-sandbox:8000/sse",
-            "headers": {"Authorization": f"Bearer {SHARED_TOKEN}"}}}])
-        self.assertEqual(r.tools, [], "no per-user client in shared mode")
 
 
 class TestOrchestratorPassesThePerson(unittest.TestCase):

@@ -7,10 +7,11 @@
  * Answers are cut to the contract's keys, so nothing the orchestrator adds later reaches the agent or
  * a browser unreviewed. An error keeps its code only when it is one of the contract's (a FastAPI
  * `{detail: {code}}` or a bare `{code}`); anything else is a 502 `orchestrator_error`, never the
- * body's text, which can quote a traceback. A mode is only ever one the orchestrator named: a 404
- * without a code (a route this orchestrator does not have yet) is `orchestrator_error` for `ensure`
- * and `sandbox_routes_missing` for the mode, the statuses and the list, never "shared". It is "no
- * sandbox" for the stops and the reconcile, which then have nothing to stop.
+ * body's text, which can quote a traceback. A 404 without a code (a route this orchestrator does not
+ * have) is `orchestrator_error` for `ensure` and `sandbox_routes_missing` for the statuses and the
+ * list, which the gateway reads as no answer. It is "no sandbox" for the stops and the reconcile,
+ * which then have nothing to stop. An answer the contract does not describe (one carrying the old
+ * `{mode: "shared"}`, say) is `orchestrator_bad_answer`, never handed on.
  *
  * Only `ensure` with `wait` (and not `touch`) gets the long timeout, above the orchestrator's own
  * start timeout (B.15); every other call keeps `orchestratorFetch`'s default.
@@ -21,11 +22,11 @@ import { orchestratorFetch } from '@/lib/orchestrator'
 import {
   ENSURE_RUNNING_KEYS, ENSURE_STARTING_KEYS, ERR_DRAINING, ERR_HARD, ERR_IMAGE_MISSING, ERR_INVALID_PROJECT_ID,
   ERR_INVALID_USER_ID, ERR_INVALID_VIEW, ERR_NOT_RUNNING, ERR_PROJECT_REFUSED, ERR_RAM, ERR_START_FAILED,
-  ERR_START_TIMEOUT, ERR_UNKNOWN_INSTANCE, ERR_USER_REFUSED, LEASE_KINDS, MODES, ORCHESTRATOR_ENSURE_TIMEOUT_S,
-  ROUTE_ENSURE, ROUTE_LEASE, ROUTE_LEASES, ROUTE_LIST, ROUTE_MODE, ROUTE_RECONCILE, ROUTE_STATUS, ROUTE_STOP_ALL,
+  ERR_START_TIMEOUT, ERR_UNKNOWN_INSTANCE, ERR_USER_REFUSED, LEASE_KINDS, ORCHESTRATOR_ENSURE_TIMEOUT_S,
+  ROUTE_ENSURE, ROUTE_LEASE, ROUTE_LEASES, ROUTE_LIST, ROUTE_RECONCILE, ROUTE_STATUS, ROUTE_STOP_ALL,
   ROUTE_STOP_PROJECT, ROUTE_STOP_USER, STATES, STOP_REASONS, VIEWS,
   type EnsureAnswer, type EnsureRequest, type LeaseAnswer, type LeaseKind, type LeaseRequest, type SandboxInstanceStatus,
-  type SandboxLimit, type SandboxListAnswer, type SandboxListEntry, type SandboxMode, type SandboxStatusAnswer, type StopReason,
+  type SandboxLimit, type SandboxListAnswer, type SandboxListEntry, type SandboxStatusAnswer, type StopReason,
 } from './contract'
 
 // The contract's id rules (USER_ID_RE, PROJECT_ID_RE, INSTANCE_RE, RESERVED_USER_IDS and the Windows
@@ -34,7 +35,7 @@ import {
 export const USER_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
 export const PROJECT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 export const INSTANCE_PATTERN = /^[0-9a-f]{6}$/
-export const RESERVED_USER_IDS: readonly string[] = Object.freeze(['ensure', 'mode', 'stop-all', 'stop-project'])
+export const RESERVED_USER_IDS: readonly string[] = Object.freeze(['ensure', 'stop-all', 'stop-project'])
 const WINDOWS_DEVICE_NAMES = new Set([
   'CON', 'PRN', 'AUX', 'NUL',
   ...Array.from({ length: 10 }, (_, i) => `COM${i}`),
@@ -77,7 +78,7 @@ const LIMIT_KEYS = ['admitted', 'limitType', 'resource', 'current', 'ceiling', '
 export const ORCHESTRATOR_ERROR = 'orchestrator_error'
 /** A 200 the contract does not describe. */
 export const BAD_ANSWER = 'orchestrator_bad_answer'
-/** The orchestrator predates the sandbox routes: it named no mode. */
+/** The orchestrator predates the sandbox routes. */
 export const ROUTES_MISSING = 'sandbox_routes_missing'
 
 type Json = Record<string, unknown>
@@ -141,9 +142,7 @@ function badAnswer(): SandboxError {
 }
 
 function ensureAnswer(res: Response, body: unknown): EnsureAnswer {
-  if (!isObject(body)) throw badAnswer()
-  if (res.status === 200 && body.mode === 'shared') return { mode: 'shared' }
-  if (body.mode !== 'per_user' || !validInstance(body.instance) || typeof body.fresh !== 'boolean') throw badAnswer()
+  if (!isObject(body) || !validInstance(body.instance) || typeof body.fresh !== 'boolean') throw badAnswer()
   if (res.status === 202 && body.state === 'starting') return pick(body, ENSURE_STARTING_KEYS) as unknown as EnsureAnswer
   if (res.status !== 200 || body.state !== 'running') throw badAnswer()
   const answer = pick(body, ENSURE_RUNNING_KEYS)
@@ -214,7 +213,6 @@ export async function orchestratorStopAll(reason: StopReason): Promise<number> {
   return stoppedCount(res, body)
 }
 
-const isMode = (v: unknown): v is SandboxMode => (MODES as readonly unknown[]).includes(v)
 const STATUS_KEYS = [
   'instance', 'view', 'state', 'projects_hash', 'created_at', 'last_used', 'lease_kinds', 'stop_at', 'stop_reason', 'warn', 'reverse_port',
 ] as const
@@ -225,9 +223,9 @@ export async function orchestratorStatus(userId: string): Promise<SandboxStatusA
   const { res, body } = await call(url(ROUTE_STATUS, { user_id: userId }), { method: 'GET' })
   if (routeMissing(res, body)) throw new SandboxError(404, ROUTES_MISSING)
   if (!res.ok) throw failure(res, body)
-  if (!isObject(body) || !isMode(body.mode) || !Array.isArray(body.instances)) throw badAnswer()
+  if (!isObject(body) || !Array.isArray(body.instances)) throw badAnswer()
   const instances = body.instances.filter(isObject).map((i) => pick(i, STATUS_KEYS) as unknown as SandboxInstanceStatus)
-  return { mode: body.mode, instances }
+  return { instances }
 }
 
 /** GET /sandboxes: every running sandbox, WITH its host and token (the agent's fan-out list). */
@@ -235,21 +233,9 @@ export async function orchestratorList(): Promise<SandboxListAnswer> {
   const { res, body } = await call(url(ROUTE_LIST), { method: 'GET' })
   if (routeMissing(res, body)) throw new SandboxError(404, ROUTES_MISSING)
   if (!res.ok) throw failure(res, body)
-  if (!isObject(body) || !isMode(body.mode) || !Array.isArray(body.sandboxes)) throw badAnswer()
+  if (!isObject(body) || !Array.isArray(body.sandboxes)) throw badAnswer()
   const sandboxes = body.sandboxes
     .filter((s): s is Json => isObject(s) && validUserId(s.user_id) && validInstance(s.instance))
     .map((s) => pick(s, LIST_KEYS) as unknown as SandboxListEntry)
-  return { mode: body.mode, sandboxes }
-}
-
-/**
- * GET /sandboxes/mode. It answers only 200 `{mode}` (B.9): any error, contract code or not, is no
- * answer, never passed on (a coded one is another route's, e.g. `GET /sandboxes/{user_id}` matched first).
- */
-export async function orchestratorMode(): Promise<SandboxMode> {
-  const { res, body } = await call(url(ROUTE_MODE), { method: 'GET' })
-  if (routeMissing(res, body)) throw new SandboxError(404, ROUTES_MISSING)
-  if (!res.ok) throw new SandboxError(502, ORCHESTRATOR_ERROR)
-  if (!isObject(body) || !isMode(body.mode)) throw badAnswer()
-  return body.mode
+  return { sandboxes }
 }

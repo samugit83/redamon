@@ -74,13 +74,13 @@ def event(**over):
 
 class StatusTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        router._reset(mode=contract.MODE_PER_USER)
+        router._reset()
         self.mgr = WebSocketManager()
         websocket_api.subscribe_sandbox_status(self.mgr)
 
     async def asyncTearDown(self):
         websocket_api.unsubscribe_sandbox_status()
-        router._reset(mode=None)
+        router._reset()
 
     async def socket(self, user, project, session, actor_id=None, fail=False):
         conn = WebSocketConnection(_FakeWS(fail=fail))
@@ -306,7 +306,7 @@ class TestListener(StatusTest):
 
 
 class Gateway:
-    """The webapp's internal sandbox routes (per-user mode) behind httpx.MockTransport: a cold
+    """The webapp's internal sandbox routes behind httpx.MockTransport: a cold
     start answers 202 to the first, non-waiting ensure, then 200 with the running instance."""
 
     def __init__(self):
@@ -326,12 +326,12 @@ class Gateway:
                 self.instances[key] = {"instance": contract.new_instance(),
                                        "token": secrets.token_urlsafe(32)}
                 if not body.get("wait"):
-                    return httpx.Response(202, json={"mode": "per_user", "state": "starting",
+                    return httpx.Response(202, json={"state": "starting",
                                                      "instance": self.instances[key]["instance"],
                                                      "fresh": True})
             inst = self.instances[key]
             return httpx.Response(200, json={
-                "mode": "per_user", "user_id": person, "view": view, "instance": inst["instance"],
+                "user_id": person, "view": view, "instance": inst["instance"],
                 "host": contract.container_name(person, view, inst["instance"]),
                 "token": inst["token"], "tunnel_token": secrets.token_urlsafe(32),
                 "ports": dict(contract.PORTS), "reverse_port": 4444, "projects": ["p1", "p2"],
@@ -342,17 +342,17 @@ class Gateway:
         if path == contract.INTERNAL_ROUTE_RELEASE:
             return httpx.Response(204)
         if path == contract.INTERNAL_ROUTE_LIST:
-            return httpx.Response(200, json={"mode": "per_user", "sandboxes": []})
+            return httpx.Response(200, json={"sandboxes": []})
         return httpx.Response(404)
 
 
 class TestThroughTheRouter(unittest.IsolatedAsyncioTestCase):
     """Review finding 2: the router's own events (a run's acquire inside its run scope, the
-    run actor bound, per-user mode) reach the run's socket and no other."""
+    run actor bound) reach the run's socket and no other."""
 
     async def asyncSetUp(self):
         self.gateway = Gateway()
-        router._reset(mode=contract.MODE_PER_USER)
+        router._reset()
         self._patches = [
             mock.patch.object(router, "_transport", httpx.MockTransport(self.gateway.handler)),
             mock.patch.dict(router.INTERNAL_HEADERS, {"X-Internal-Key": "test-internal-key"}),
@@ -371,7 +371,7 @@ class TestThroughTheRouter(unittest.IsolatedAsyncioTestCase):
         await router._shutdown()
         for p in reversed(self._patches):
             p.stop()
-        router._reset(mode=None)
+        router._reset()
 
     async def socket(self, user, project, session, actor_id=None):
         conn = WebSocketConnection(_FakeWS())
@@ -438,7 +438,7 @@ class TestStartupWiring(unittest.TestCase):
         self.assertLess(unsubscribed, closed)
 
     def test_subscribe_never_raises_into_start_up(self):
-        router._reset(mode=None)
+        router._reset()
         original = router.add_status_listener
         try:
             def boom(fn):
@@ -448,7 +448,7 @@ class TestStartupWiring(unittest.TestCase):
         finally:
             router.add_status_listener = original
             websocket_api.unsubscribe_sandbox_status()
-            router._reset(mode=None)
+            router._reset()
 
 
 if __name__ == "__main__":

@@ -37,7 +37,7 @@ import workspace_fs
 import job_runner
 import output_offload
 from neo4j_read_pool import run_neo4j_read
-from kali_auth import kali_auth_headers, note_kali_refusal
+from kali_auth import note_kali_refusal
 import sandbox_contract
 import sandbox_router
 import sandbox_runs
@@ -286,86 +286,41 @@ def _maybe_attach_curl_session(tool_args: dict) -> dict:
 # SYSTEM MCP SERVERS (baseline — shipped with the product, not user-managed)
 # =============================================================================
 
-# These five servers run inside kali-sandbox and provide the core pentest tools.
-# Their tool wrappers are registered in prompts/tool_registry.py as built-ins
-# (execute_nmap, execute_nuclei, kali_shell, etc.). The MCPServer entries below
-# carry only transport config; tools=[] because TOOL_REGISTRY already owns the
-# rendering metadata for them.
-def _build_system_mcp_servers():
-    """Lazy import — mcp_registry imports tool_registry which imports tools."""
+# These five servers run inside each person's Kali sandbox and provide the core pentest
+# tools. Their tool wrappers are registered in prompts/tool_registry.py as built-ins
+# (execute_nmap, execute_nuclei, kali_shell, etc.). The MCPServer entries below carry
+# only transport config; tools=[] because TOOL_REGISTRY already owns the rendering
+# metadata for them.
+_SYSTEM_SERVERS = (
+    # (id, name, description, read_timeout)
+    ("network_recon", "Network Recon", "curl, naabu, hydra, command exec", 1800),
+    ("nmap", "Nmap", "Network mapper", 600),
+    ("metasploit", "Metasploit", "Exploitation framework", 1800),
+    ("nuclei", "Nuclei", "Template-based vulnerability scanner", 600),
+    ("playwright", "Playwright", "Browser automation", 120),
+)
+
+
+def _build_system_mcp_servers(host: str, token: str):
+    """The five system servers of one sandbox instance: on its own host (the container
+    name, sandbox_contract.PORTS for each port) with its own static bearer, which the
+    servers check (they fail closed: STRIDE S9). Lazy import: mcp_registry imports
+    tool_registry, which imports tools."""
     from mcp_registry import MCPServer, BearerAuth, mark_system
 
-    # STRIDE S10: authenticate to the Kali MCP servers with a shared bearer
-    # token resolved at request time from MCP_AUTH_TOKEN. When the env var is
-    # unset, _resolve_auth_header emits no Authorization header and the servers,
-    # which fail closed (STRIDE S9), refuse the call: no token means no Kali tools.
-    _mcp_auth = BearerAuth(token_env_var="MCP_AUTH_TOKEN")
-
-    servers = [
-        MCPServer(
-            id="network_recon",
-            name="Network Recon (kali-sandbox)",
-            description="curl, naabu, hydra, command exec",
-            transport="sse",
-            url=os.environ.get("MCP_NETWORK_RECON_URL", "http://host.docker.internal:8000/sse"),
-            connect_timeout=60,
-            read_timeout=1800,
-            tools=[],
-            auth=_mcp_auth,
-        ),
-        MCPServer(
-            id="nmap",
-            name="Nmap (kali-sandbox)",
-            description="Network mapper",
-            transport="sse",
-            url=os.environ.get("MCP_NMAP_URL", "http://host.docker.internal:8004/sse"),
-            connect_timeout=60,
-            read_timeout=600,
-            tools=[],
-            auth=_mcp_auth,
-        ),
-        MCPServer(
-            id="metasploit",
-            name="Metasploit (kali-sandbox)",
-            description="Exploitation framework",
-            transport="sse",
-            url=os.environ.get("MCP_METASPLOIT_URL", "http://host.docker.internal:8003/sse"),
-            connect_timeout=60,
-            read_timeout=1800,
-            tools=[],
-            auth=_mcp_auth,
-        ),
-        MCPServer(
-            id="nuclei",
-            name="Nuclei (kali-sandbox)",
-            description="Template-based vulnerability scanner",
-            transport="sse",
-            url=os.environ.get("MCP_NUCLEI_URL", "http://host.docker.internal:8002/sse"),
-            connect_timeout=60,
-            read_timeout=600,
-            tools=[],
-            auth=_mcp_auth,
-        ),
-        MCPServer(
-            id="playwright",
-            name="Playwright (kali-sandbox)",
-            description="Browser automation",
-            transport="sse",
-            url=os.environ.get("MCP_PLAYWRIGHT_URL", "http://host.docker.internal:8005/sse"),
-            connect_timeout=60,
-            read_timeout=120,
-            tools=[],
-            auth=_mcp_auth,
-        ),
-    ]
-    # Each runs in a Kali sandbox, which per user sits in the sandbox pool that a user's
-    # own MCP server may never reach (mcp_registry.user_server_http_client).
-    return [mark_system(srv) for srv in servers]
+    auth = BearerAuth(token=token)
+    # Each runs in a Kali sandbox, which sits in the sandbox pool that a user's own MCP
+    # server may never reach (mcp_registry.user_server_http_client).
+    return [mark_system(MCPServer(
+        id=server_id, name=f"{name} (Kali sandbox)", description=description, transport="sse",
+        url=f"http://{host}:{sandbox_contract.PORTS[server_id]}/sse",
+        connect_timeout=60, read_timeout=read_timeout, tools=[], auth=auth))
+        for server_id, name, description, read_timeout in _SYSTEM_SERVERS]
 
 
 # Tool names backed by the system MCP servers. These pass through any
 # declared-tool-name filter applied to register_mcp_tools(). Includes every
-# tool name the kali-sandbox MCP servers expose (whether or not it has a
+# tool name the Kali sandbox's MCP servers expose (whether or not it has a
 # TOOL_REGISTRY entry — phantom tools are simply unused by the LLM but
 # their registration shouldn't be filtered as if they were a stray user
 # manifest entry).
@@ -396,8 +351,7 @@ SYSTEM_MCP_TOOL_NAMES = frozenset({
 # =============================================================================
 # A system tool call runs in the sandbox of the person doing the work (sandbox_router):
 # the chat run's `run` lease, or a background job's own `job` lease, bound here for
-# the job's whole runner. In shared mode the handle is the shared container's and the
-# call takes today's path through the shared manager.
+# the job's whole runner. There is no other path to a Kali tool.
 
 PROGRESS_POLL_S = 5.0
 
@@ -440,23 +394,18 @@ def current_sandbox_handle(project_id: Optional[str] = None):
     return sandbox_router.current_handle(project_id)
 
 
-def kali_base_for_run(port_name: str, shared_url: str, handle, path: str = "") -> Optional[str]:
-    """The address of one of the run's sandbox ports: the handle's own instance per user;
-    `shared_url` (today's whole address) for a shared handle or, without one, in shared
-    mode; None for a per-user run holding no usable sandbox, which then calls nothing."""
-    if handle is not None and handle.mode == sandbox_contract.MODE_PER_USER:
-        return sandbox_router.url_for(handle, port_name, path) if handle.usable else None
-    if handle is None and sandbox_router.current_mode() == sandbox_contract.MODE_PER_USER:
+def kali_base_for_run(port_name: str, handle, path: str = "") -> Optional[str]:
+    """The address of one of the run's sandbox ports, on the handle's own instance; None
+    for a run holding no usable sandbox, which then calls nothing."""
+    if handle is None or not handle.usable:
         return None
-    return shared_url
+    return sandbox_router.url_for(handle, port_name, path)
 
 
 def kali_auth_headers_for_run(handle) -> dict:
-    """The bearer for kali_base_for_run's address: the handle's own instance token per
-    user, the shared MCP_AUTH_TOKEN otherwise."""
-    if handle is not None and handle.mode == sandbox_contract.MODE_PER_USER:
-        return sandbox_router.headers_for(handle)
-    return kali_auth_headers()
+    """The bearer for kali_base_for_run's address: the handle's own instance token, none
+    without a handle."""
+    return sandbox_router.headers_for(handle) if handle is not None else {}
 
 
 def _sandbox_refusal(exc) -> dict:
@@ -575,8 +524,8 @@ class MCPToolsManager:
         return list(self._tools_cache.values())
 
     async def disconnect(self) -> None:
-        """Forget the client and its tools: no server is configured (per-user mode and no
-        user MCP server), so there is nothing to connect to."""
+        """Forget the client and its tools: no server is configured (no user MCP server),
+        so there is nothing to connect to."""
         async with self._reconnect_lock:
             self._server_configs = {}
             self.client = None
@@ -2409,9 +2358,6 @@ class PhaseAwareToolExecutor:
         self.mcp_manager = mcp_manager
         self.graph_tool = graph_tool
         self.web_search_tool = web_search_tool
-        # Loads the system servers into the shared manager when shared mode is answered
-        # while it holds none (it was last loaded in per-user mode); set by the orchestrator.
-        self.shared_system_loader: Optional[Callable[[], Awaitable[None]]] = None
         self._all_tools: Dict[str, callable] = {}
         # Names of tools backed by MCP servers; only these trigger a reconnect
         # on transport errors. Graph / web_search / shodan / google_dork /
@@ -2985,8 +2931,6 @@ class PhaseAwareToolExecutor:
         handle = None
         try:
             handle = await self._sandbox_for_call(bound, kind)
-            if handle.mode != sandbox_contract.MODE_PER_USER:
-                return await self._call_shared(tool_name, invoke, output_override)
             run_key = sandbox_runs.current_run_key()
             for attempt in range(2):
                 sandbox_runs.note_run_sandbox(run_key, handle)
@@ -3032,19 +2976,6 @@ class PhaseAwareToolExecutor:
             return bound.handle
         return await sandbox_router.acquire(
             sandbox_router.sandbox_user(), project_id=current_project_id.get() or None, kind=kind)
-
-    async def _call_shared(self, tool_name: str, invoke, output_override) -> dict:
-        """Shared mode: today's path, the shared manager's tool."""
-        tool = self._all_tools.get(tool_name)
-        if not tool and self.shared_system_loader is not None:
-            try:
-                await self.shared_system_loader()
-            except Exception as exc:  # noqa: BLE001 - the call then reports the tool missing
-                logger.warning(f"[sandbox] loading the shared system servers failed: {type(exc).__name__}")
-            tool = self._all_tools.get(tool_name)
-        if not tool:
-            return {"success": False, "output": None, "error": f"Tool '{tool_name}' not found"}
-        return await self._call_with_reconnect(tool_name, tool, invoke, output_override)
 
     def _tool_success(self, tool_name: str, clean_output: str, output_override) -> dict:
         clean_output = output_offload.maybe_offload(
@@ -3188,7 +3119,6 @@ class PhaseAwareToolExecutor:
         phase: str,
         progress_callback: Callable[[str, str, bool], Awaitable[None]],
         poll_interval: float | None = None,
-        progress_url: str | None = None,
         progress_port: str | None = None,
     ) -> dict:
         """
@@ -3204,11 +3134,10 @@ class PhaseAwareToolExecutor:
             phase: Current agent phase
             progress_callback: Async callback(tool_name, chunk, is_final)
             poll_interval: How often to poll for progress (seconds); PROGRESS_POLL_S.
-            progress_url: The shared sandbox's progress URL. Defaults to Metasploit's.
             progress_port: The contract's port name of the progress endpoint ("sessions"
-                for Metasploit, "hydra" for Hydra; from the tool name when omitted). A
-                per-user run polls its own sandbox's port with its own bearer, read at
-                each poll: the call acquires the sandbox after polling starts.
+                for Metasploit, "hydra" for Hydra; from the tool name when omitted). The
+                run polls its own sandbox's port with its own bearer, read at each poll:
+                the call acquires the sandbox after polling starts.
 
         Returns:
             dict with 'success', 'output', and optionally 'error'
@@ -3222,15 +3151,11 @@ class PhaseAwareToolExecutor:
             poll_interval = PROGRESS_POLL_S
         if progress_port is None:
             progress_port = "hydra" if tool_name == "execute_hydra" else "sessions"
-        shared_url = progress_url or os.environ.get(
-            'MCP_METASPLOIT_PROGRESS_URL',
-            'http://host.docker.internal:8013/progress'
-        )
 
         try:
             # Called on the class: tests run this method with a stand-in `self`.
             return await PhaseAwareToolExecutor._poll_progress(execution_task, tool_name, progress_callback, poll_interval,
-                                             progress_port, shared_url)
+                                             progress_port)
         finally:
             # A cancelled poller (the tool's Stop, the run's end) takes its call along: the
             # call would otherwise run on, and send to its sandbox, with no one waiting.
@@ -3239,7 +3164,7 @@ class PhaseAwareToolExecutor:
 
     @staticmethod
     async def _poll_progress(execution_task, tool_name, progress_callback, poll_interval,
-                             progress_port, shared_url) -> dict:
+                             progress_port) -> dict:
         last_line_count = 0
         last_output = ""
         refusal_logged = False
@@ -3253,7 +3178,7 @@ class PhaseAwareToolExecutor:
 
                 try:
                     run_sandbox = current_sandbox_handle()
-                    url = kali_base_for_run(progress_port, shared_url, run_sandbox, "/progress")
+                    url = kali_base_for_run(progress_port, run_sandbox, "/progress")
                     if url is None:
                         continue
                     resp = await client.get(url, headers=kali_auth_headers_for_run(run_sandbox))

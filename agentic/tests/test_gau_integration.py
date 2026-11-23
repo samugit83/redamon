@@ -175,16 +175,8 @@ class TestGauStealthRules(unittest.TestCase):
 class TestGauApiKeyInjection(unittest.TestCase):
     """Verify URLScan API key injection into execute_gau."""
 
-    def setUp(self):
-        import sandbox_contract
-        import sandbox_router
-
-        # The shared sandbox's path: shared mode is named, since the default is
-        # per_user and no gateway answers here.
-        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
-        self.addCleanup(sandbox_router._reset)
-
     def _make_executor(self):
+        from one_sandbox import route_to
         from tools import PhaseAwareToolExecutor
         mock_mcp = MagicMock()
         executor = PhaseAwareToolExecutor(
@@ -195,6 +187,8 @@ class TestGauApiKeyInjection(unittest.TestCase):
         mock_gau_tool = AsyncMock()
         mock_gau_tool.name = 'execute_gau'
         executor._all_tools['execute_gau'] = mock_gau_tool
+        # The call runs in the person's sandbox, whose client serves this table.
+        route_to(self, lambda: executor._all_tools)
         # Set phase map so tool is allowed
         executor._phase_map = {'execute_gau': ['informational', 'exploitation']}
         executor._current_phase = 'informational'

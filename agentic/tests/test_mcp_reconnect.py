@@ -461,16 +461,10 @@ class RegisterMcpToolsTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class ExecuteReconnectTests(unittest.IsolatedAsyncioTestCase):
-    """End-to-end behaviour of the execute() retry-after-reconnect path."""
-
-    def setUp(self):
-        import sandbox_contract
-        import sandbox_router
-
-        # The executor's MCP tools here are the shared sandbox's (no person is bound).
-        # No gateway answers and the default mode is per_user, so shared mode is named.
-        sandbox_router._reset(mode=sandbox_contract.MODE_SHARED)
-        self.addCleanup(sandbox_router._reset)
+    """End-to-end behaviour of the execute() retry-after-reconnect path of the agent's
+    shared MCP manager, which holds the user-managed MCP servers' tools. A Kali tool runs
+    on its person's own sandbox client instead, and reconnects there
+    (test_sandbox_executor_routing.py)."""
 
     def _make_mcp_tool(self, name, ainvoke):
         t = MagicMock()
@@ -482,7 +476,7 @@ class ExecuteReconnectTests(unittest.IsolatedAsyncioTestCase):
                reconnect_result=None):
         """
         Build an executor with:
-          - a stale MCP tool 'execute_ffuf' (currently in _all_tools),
+          - a stale MCP tool 'user_ffuf' (currently in _all_tools),
           - a mock mcp_manager.reconnect() that returns (new_gen, [fresh_tool])
             when called, or whatever `reconnect_result` overrides.
         """
@@ -490,10 +484,10 @@ class ExecuteReconnectTests(unittest.IsolatedAsyncioTestCase):
         mgr = MCPToolsManager({"fake": {"url": "http://x/sse", "transport": "sse", "timeout": 60, "sse_read_timeout": 60}})
         mgr._generation = 1  # pretend we already loaded once
 
-        stale = self._make_mcp_tool("execute_ffuf", stale_ainvoke)
+        stale = self._make_mcp_tool("user_ffuf", stale_ainvoke)
         fresh = None
         if fresh_ainvoke is not None:
-            fresh = self._make_mcp_tool("execute_ffuf", fresh_ainvoke)
+            fresh = self._make_mcp_tool("user_ffuf", fresh_ainvoke)
 
         # Default: reconnect returns (2, [fresh]) if fresh given; else (1, []).
         if reconnect_result is None:
@@ -511,7 +505,7 @@ class ExecuteReconnectTests(unittest.IsolatedAsyncioTestCase):
     async def test_mcp_tool_success_first_try_no_reconnect(self, _phase):
         ok = AsyncMock(return_value="ffuf output")
         ex, mgr, _, _ = self._build(stale_ainvoke=ok, fresh_ainvoke=None)
-        result = await ex.execute("execute_ffuf", {"args": "-u x"}, phase="informational")
+        result = await ex.execute("user_ffuf", {"args": "-u x"}, phase="informational")
         self.assertTrue(result["success"])
         self.assertEqual(result["output"], "ffuf output")
         self.assertIsNone(result["error"])
@@ -522,7 +516,7 @@ class ExecuteReconnectTests(unittest.IsolatedAsyncioTestCase):
         stale = AsyncMock(side_effect=RemoteProtocolError("peer closed"))
         fresh = AsyncMock(return_value="recovered output")
         ex, mgr, _, _ = self._build(stale_ainvoke=stale, fresh_ainvoke=fresh)
-        result = await ex.execute("execute_ffuf", {"args": "-u x"}, phase="informational")
+        result = await ex.execute("user_ffuf", {"args": "-u x"}, phase="informational")
         self.assertTrue(result["success"], result)
         self.assertEqual(result["output"], "recovered output")
         mgr.reconnect.assert_awaited_once()
@@ -543,7 +537,7 @@ class ExecuteReconnectTests(unittest.IsolatedAsyncioTestCase):
         )
         fresh = AsyncMock(return_value="ok")
         ex, mgr, _, _ = self._build(stale_ainvoke=stale, fresh_ainvoke=fresh)
-        result = await ex.execute("execute_ffuf", {"args": ""}, phase="informational")
+        result = await ex.execute("user_ffuf", {"args": ""}, phase="informational")
         self.assertTrue(result["success"])
         mgr.reconnect.assert_awaited_once()
 
@@ -554,7 +548,7 @@ class ExecuteReconnectTests(unittest.IsolatedAsyncioTestCase):
         ex, mgr, _, _ = self._build(
             stale_ainvoke=stale, fresh_ainvoke=None, reconnect_result=(1, [])
         )
-        result = await ex.execute("execute_ffuf", {"args": ""}, phase="informational")
+        result = await ex.execute("user_ffuf", {"args": ""}, phase="informational")
         self.assertFalse(result["success"])
         self.assertIn("peer closed", result["error"])
         mgr.reconnect.assert_awaited_once()
@@ -564,7 +558,7 @@ class ExecuteReconnectTests(unittest.IsolatedAsyncioTestCase):
         stale = AsyncMock(side_effect=RemoteProtocolError("peer closed"))
         fresh = AsyncMock(side_effect=RuntimeError("target actually 500'd"))
         ex, mgr, _, _ = self._build(stale_ainvoke=stale, fresh_ainvoke=fresh)
-        result = await ex.execute("execute_ffuf", {"args": ""}, phase="informational")
+        result = await ex.execute("user_ffuf", {"args": ""}, phase="informational")
         self.assertFalse(result["success"])
         # The retry's error is the one the caller needs to see, not the
         # transport noise that caused the reconnect.
@@ -576,7 +570,7 @@ class ExecuteReconnectTests(unittest.IsolatedAsyncioTestCase):
         # ValueError (bad tool args) must not spuriously rebuild the client.
         stale = AsyncMock(side_effect=ValueError("bad args"))
         ex, mgr, _, _ = self._build(stale_ainvoke=stale, fresh_ainvoke=None)
-        result = await ex.execute("execute_ffuf", {"args": ""}, phase="informational")
+        result = await ex.execute("user_ffuf", {"args": ""}, phase="informational")
         self.assertFalse(result["success"])
         self.assertIn("bad args", result["error"])
         mgr.reconnect.assert_not_awaited()
@@ -611,12 +605,12 @@ class ExecuteReconnectTests(unittest.IsolatedAsyncioTestCase):
         ex, mgr, stale_tool, fresh_tool = self._build(
             stale_ainvoke=stale, fresh_ainvoke=fresh
         )
-        result = await ex.execute("execute_ffuf", {"args": ""}, phase="informational")
+        result = await ex.execute("user_ffuf", {"args": ""}, phase="informational")
         self.assertTrue(result["success"])
         self.assertEqual(stale.await_count, 1, "stale tool used once for the first try only")
         self.assertEqual(fresh.await_count, 1, "fresh tool used once for the retry")
         # After a successful reconnect, _all_tools must point at the fresh tool.
-        self.assertIs(ex._all_tools["execute_ffuf"], fresh_tool)
+        self.assertIs(ex._all_tools["user_ffuf"], fresh_tool)
 
     @patch("tools.is_tool_allowed_in_phase", return_value=True)
     async def test_wpscan_token_injection_preserved_on_retry(self, _phase):
@@ -634,7 +628,9 @@ class ExecuteReconnectTests(unittest.IsolatedAsyncioTestCase):
         fresh_tool = MagicMock(); fresh_tool.name = "execute_wpscan"; fresh_tool.ainvoke = fresh
         mgr.reconnect = AsyncMock(return_value=(2, [fresh_tool]))
         ex = PhaseAwareToolExecutor(mgr, graph_tool=None)
-        ex.register_mcp_tools([stale_tool])
+        # A Kali tool: it runs on the person's sandbox client, which rebuilds itself.
+        from one_sandbox import route_to
+        route_to(self, {"execute_wpscan": stale_tool}, reconnect=mgr.reconnect)
         ex.set_wpscan_api_token("TOKEN123")
 
         result = await ex.execute(
@@ -665,7 +661,9 @@ class ExecuteReconnectTests(unittest.IsolatedAsyncioTestCase):
         fresh_tool = MagicMock(); fresh_tool.name = "execute_gau"; fresh_tool.ainvoke = fresh
         mgr.reconnect = AsyncMock(return_value=(2, [fresh_tool]))
         ex = PhaseAwareToolExecutor(mgr, graph_tool=None)
-        ex.register_mcp_tools([stale_tool])
+        # A Kali tool: it runs on the person's sandbox client, which rebuilds itself.
+        from one_sandbox import route_to
+        route_to(self, {"execute_gau": stale_tool}, reconnect=mgr.reconnect)
         ex.set_gau_urlscan_api_key("URLSCAN_KEY")
 
         await ex.execute("execute_gau", {"args": "example.com"}, phase="informational")
@@ -680,7 +678,7 @@ class ExecuteReconnectTests(unittest.IsolatedAsyncioTestCase):
         stale = AsyncMock(side_effect=grp)
         fresh = AsyncMock(return_value="recovered")
         ex, mgr, _, _ = self._build(stale_ainvoke=stale, fresh_ainvoke=fresh)
-        result = await ex.execute("execute_ffuf", {"args": ""}, phase="informational")
+        result = await ex.execute("user_ffuf", {"args": ""}, phase="informational")
         self.assertTrue(result["success"])
         self.assertEqual(result["output"], "recovered")
         mgr.reconnect.assert_awaited_once()
@@ -690,7 +688,7 @@ class ExecuteReconnectTests(unittest.IsolatedAsyncioTestCase):
         """A phase-disallowed call must not hit the tool OR the reconnect path."""
         stale = AsyncMock(side_effect=RemoteProtocolError("should not be called"))
         ex, mgr, _, _ = self._build(stale_ainvoke=stale, fresh_ainvoke=None)
-        result = await ex.execute("execute_ffuf", {"args": ""}, phase="informational")
+        result = await ex.execute("user_ffuf", {"args": ""}, phase="informational")
         self.assertFalse(result["success"])
         self.assertIn("not allowed", result["error"].lower())
         stale.assert_not_awaited()
@@ -710,7 +708,7 @@ class ExecuteReconnectTests(unittest.IsolatedAsyncioTestCase):
         mgr._generation = 1
         # Real reconnect-like stub: first caller bumps gen to 2, provides a
         # fresh tool; subsequent callers see gen advanced and reuse it.
-        fresh_tool = self._make_mcp_tool("execute_ffuf",
+        fresh_tool = self._make_mcp_tool("user_ffuf",
                                           AsyncMock(return_value="ok"))
         lock = asyncio.Lock()
         current = {"gen": 1, "tools": None}
@@ -724,13 +722,13 @@ class ExecuteReconnectTests(unittest.IsolatedAsyncioTestCase):
         mgr.reconnect = AsyncMock(side_effect=fake_reconnect)
 
         stale_tool = self._make_mcp_tool(
-            "execute_ffuf", AsyncMock(side_effect=RemoteProtocolError("peer closed"))
+            "user_ffuf", AsyncMock(side_effect=RemoteProtocolError("peer closed"))
         )
         ex = PhaseAwareToolExecutor(mgr, graph_tool=None)
         ex.register_mcp_tools([stale_tool])
 
         results = await asyncio.gather(*[
-            ex.execute("execute_ffuf", {"args": f"-{i}"}, phase="informational")
+            ex.execute("user_ffuf", {"args": f"-{i}"}, phase="informational")
             for i in range(5)
         ])
         for r in results:

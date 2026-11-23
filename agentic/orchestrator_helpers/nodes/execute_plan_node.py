@@ -6,7 +6,6 @@ lifecycles in a single node execution.
 """
 
 import asyncio
-import os
 import re
 import logging
 from uuid import uuid4
@@ -55,7 +54,6 @@ async def _execute_single_step(
     session_id: str,
     tool_executor,
     streaming_cb,
-    session_manager_base: str,
 ) -> bool:
     """Execute a single tool step within a wave. Returns True if successful."""
     tool_name = step.get("tool_name")
@@ -125,7 +123,6 @@ async def _execute_single_step(
             _tool_coro = tool_executor.execute_with_progress(
                 tool_name, tool_args, phase,
                 progress_callback=_wave_progress,
-                progress_url=os.environ.get('MCP_HYDRA_PROGRESS_URL', 'http://kali-sandbox:8014/progress'),
                 progress_port="hydra",
             )
         else:
@@ -259,10 +256,10 @@ async def _execute_single_step(
         except Exception as e:
             logger.warning(f"Error emitting tool_complete: {e}")
 
-    # The session manager of the sandbox this call ran in, with that sandbox's bearer:
-    # today's address and token in shared mode, none for a per-user run without one.
+    # The session manager of the sandbox this call ran in, with that sandbox's bearer;
+    # none for a run without one.
     run_sandbox = current_sandbox_handle(project_id)
-    session_manager_base = kali_base_for_run("sessions", session_manager_base, run_sandbox)
+    session_manager_base = kali_base_for_run("sessions", run_sandbox)
 
     # Detect new Metasploit sessions
     if tool_name == "metasploit_console" and tool_output and session_manager_base:
@@ -304,7 +301,6 @@ async def execute_plan_node(
     *,
     tool_executor,
     streaming_callbacks,
-    session_manager_base,
     graph_view_cyphers=None,
 ) -> dict:
     """Execute a wave of independent tools in parallel using asyncio.gather."""
@@ -409,7 +405,6 @@ async def execute_plan_node(
                 session_id=session_id,
                 tool_executor=tool_executor,
                 streaming_cb=streaming_cb,
-                session_manager_base=session_manager_base,
             )
 
     from tradecraft import run_state as _tc_run_state

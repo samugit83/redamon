@@ -535,13 +535,13 @@ def test_dispatch_single_and_plan(monkeypatch):
         executor = PhaseAwareToolExecutor(None, graph_tool=None)
         single = await tool_node.execute_tool_node(
             {**STATE, "_current_step": {"tool_name": "tradecraft_ask", "tool_args": args}}, config,
-            tool_executor=executor, streaming_callbacks={}, session_manager_base="")
+            tool_executor=executor, streaming_callbacks={})
         plan = {"plan_rationale": "two asks", "steps": [
             {"tool_name": "tradecraft_ask", "tool_args": {**args, "need": NEED + " (a)"}},
             {"tool_name": "tradecraft_ask", "tool_args": {**args, "need": NEED + " (b)"}}]}
         waved = await plan_node.execute_plan_node(
             {**STATE, **single, "_current_plan": plan}, config,
-            tool_executor=executor, streaming_callbacks={}, session_manager_base="")
+            tool_executor=executor, streaming_callbacks={})
         return single, waved
 
     single, waved = in_run(work, bind=False)

@@ -1,9 +1,8 @@
 /**
- * Global Settings' Tunneling section once the tunnel moves to the admin console (step 6.7, UI-04):
- * with RBAC_GOVERNANCE_ENABLED on, whoever may change the tunnel is linked to the Instance page
- * instead of the controls, a person who may not keeps the read-only status, and the Instance page
- * itself (`placement="instance"`) keeps the controls. With the switch off nothing changes (the
- * editor as in step 2.4: app/settings/page.instanceTunnel.test.tsx; governance.flags.off.test.ts).
+ * The instance tunnel group (Global Settings → Tunneling with the identity switch on, and the
+ * admin console's Instance page): unused since every person runs their own tunnel from their own
+ * Kali sandbox (group 1, OQ-G1-2 A). Whoever holds platform:tunnels sees a notice saying so, with
+ * no controls and no Save, whatever the switches; anyone else sees the tunnel status.
  *
  * Run: npx vitest run --no-file-parallelism src/components/settings/InstanceTunnelSection.test.tsx
  */
@@ -20,14 +19,14 @@ vi.mock('next/link', () => ({
   default: ({ href, children, ...rest }: { href: string; children: ReactNode }) => <a href={href} {...rest}>{children}</a>,
 }))
 
-import { InstanceTunnelSection, INSTANCE_PAGE_TUNNELS } from './InstanceTunnelSection'
+import { InstanceTunnelSection } from './InstanceTunnelSection'
 
 const FLAGS_GOV = { ...FLAGS_ON, governance: true }
 let canManageTunnels = true
 let tunnelsPerPerson: boolean | undefined
 beforeEach(() => {
   canManageTunnels = true
-  tunnelsPerPerson = undefined
+  tunnelsPerPerson = true
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     if (url === '/api/admin/instance-settings') {
       return new Response(JSON.stringify({ tunnelsEnabled: true, ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '', canManageTunnels, tunnelsPerPerson }))
@@ -40,21 +39,29 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-function renderSection(flags: typeof FLAGS_ON, placement?: 'settings' | 'instance') {
+function renderSection(flags: typeof FLAGS_ON | null) {
   return render(
     <AuthContext.Provider value={fakeAuth(flags, ['platform:tunnels'])}>
-      <ToastProvider><InstanceTunnelSection placement={placement} /></ToastProvider>
+      <ToastProvider><InstanceTunnelSection /></ToastProvider>
     </AuthContext.Provider>,
   )
 }
 
-describe('the Tunneling tab with RBAC_GOVERNANCE_ENABLED on', () => {
-  test('whoever may change the tunnel gets the link to the Instance page, not the controls', async () => {
+describe('the instance tunnel is unused: tunnels are per person (group 1, OQ-G1-2 A)', () => {
+  test.each([['governance on', FLAGS_GOV], ['permissions on', FLAGS_ON], ['every switch null', null]] as const)(
+    'a tunnels holder sees the notice, never the controls (%s)', async (_name, flags) => {
+      renderSection(flags)
+      expect(await screen.findByText(/Tunnels are per person/)).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Save tunnel settings' })).toBeNull()
+      expect(screen.queryByLabelText('Chisel Server URL')).toBeNull()
+      expect(screen.queryByText(/shared by the whole instance/)).toBeNull()
+    },
+  )
+
+  test('an older answer without the per-person mark is read the same way: no controls', async () => {
+    tunnelsPerPerson = undefined
     renderSection(FLAGS_GOV)
-    const link = await screen.findByRole('link', { name: 'Open the tunnel settings' })
-    expect(link).toHaveAttribute('href', INSTANCE_PAGE_TUNNELS)
-    expect(INSTANCE_PAGE_TUNNELS).toBe('/admin/instance#tunnels')
-    expect(screen.queryByLabelText('Chisel Server URL')).toBeNull()
+    expect(await screen.findByText(/Tunnels are per person/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Save tunnel settings' })).toBeNull()
   })
 
@@ -62,39 +69,6 @@ describe('the Tunneling tab with RBAC_GOVERNANCE_ENABLED on', () => {
     canManageTunnels = false
     renderSection(FLAGS_GOV)
     expect(await screen.findByText('On (ngrok)')).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'Open the tunnel settings' })).toBeNull()
+    expect(screen.queryByText(/Tunnels are per person/)).toBeNull()
   })
-
-  test('on the Instance page the controls stay', async () => {
-    renderSection(FLAGS_GOV, 'instance')
-    expect(await screen.findByRole('button', { name: 'Save tunnel settings' })).toBeInTheDocument()
-    expect(screen.getByLabelText('Chisel Server URL')).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'Open the tunnel settings' })).toBeNull()
-  })
-})
-
-describe('per-user Kali sandboxes (group 1, OQ-G1-2 A)', () => {
-  test.each([['the Instance page', 'instance'], ['Global Settings', 'settings']] as const)(
-    '%s: the instance tunnel is read-only, with a notice that tunnels are per person', async (_name, placement) => {
-      tunnelsPerPerson = true
-      renderSection(FLAGS_GOV, placement)
-      expect(await screen.findByText(/Tunnels are per person/)).toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Save tunnel settings' })).toBeNull()
-      expect(screen.queryByLabelText('Chisel Server URL')).toBeNull()
-      expect(screen.queryByRole('link', { name: 'Open the tunnel settings' })).toBeNull()
-    })
-})
-
-describe('with RBAC_GOVERNANCE_ENABLED off', () => {
-  test.each([['permissions on', FLAGS_ON], ['every switch null (outside an AuthProvider value)', null]] as const)(
-    'the Tunneling tab keeps the controls (%s)', async (_name, flags) => {
-      render(
-        <AuthContext.Provider value={fakeAuth(flags, [])}>
-          <ToastProvider><InstanceTunnelSection /></ToastProvider>
-        </AuthContext.Provider>,
-      )
-      expect(await screen.findByRole('button', { name: 'Save tunnel settings' })).toBeInTheDocument()
-      expect(screen.queryByRole('link', { name: 'Open the tunnel settings' })).toBeNull()
-    },
-  )
 })

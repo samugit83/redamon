@@ -323,15 +323,14 @@ describe('values saved (the confirmed Root, with its password)', () => {
 })
 
 describe('the tunnel (platform:tunnels)', () => {
-  test('its editor on this page, also with governance on; the save goes to the instance settings with the tunnel only', async () => {
-    routes['PUT /api/admin/instance-settings'] = (init) => ({ status: 200, body: { ...settingsFor(false), ...JSON.parse(String(init?.body)) } })
+  test('the section says tunnels are per person, with no editor and no save (group 1: each runs in its person\'s own Kali sandbox)', async () => {
     renderPage(auth(FULL_ADMIN, 'admin'))
     const tunnel = await screen.findByRole('region', { name: 'Tunnel' })
-    fireEvent.click(await within(tunnel).findByLabelText('Enable tunnels'))
-    fireEvent.click(within(tunnel).getByRole('button', { name: 'Save tunnel settings' }))
-    await waitFor(() => expect(calls('PUT', '/api/admin/instance-settings')).toHaveLength(1))
-    expect(Object.keys(bodyOf(calls('PUT', '/api/admin/instance-settings')[0])).sort()).toEqual(['chiselAuth', 'chiselServerUrl', 'ngrokAuthtoken', 'tunnelsEnabled'])
-    expect(within(tunnel).queryByRole('link', { name: 'Open the tunnel settings' })).toBeNull()
+    expect(await within(tunnel).findByText(/Tunnels are per person/)).toBeInTheDocument()
+    expect(within(tunnel).queryByLabelText('Enable tunnels')).toBeNull()
+    expect(within(tunnel).queryByRole('button', { name: 'Save tunnel settings' })).toBeNull()
+    expect(tunnel).not.toHaveTextContent(/every user's reverse shells share|shared by the whole instance/)
+    expect(calls('PUT', '/api/admin/instance-settings')).toHaveLength(0)
   })
 
   test('not shown to whoever the route says may not change it', async () => {

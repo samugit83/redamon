@@ -182,7 +182,7 @@ export default function AdminOperationsPage() {
 
   async function stopAll() {
     const confirmed = await alerts.dangerConfirm(
-      'Every running agent run of every user stops now, with the tool calls it has in flight. Scans and triage runs are not touched.',
+      'Every running agent run of every user stops now, with the tool calls it has in flight, and every Kali sandbox stops with its shells, sessions and tunnels. Scans and triage runs are not touched.',
       'Stop every agent run',
       { confirmLabel: 'Stop every run' },
     )
@@ -416,18 +416,14 @@ export default function AdminOperationsPage() {
               </Table>
             ))}
             {data.shells.state.ok && data.shells.jobs > 0 && (
-              <p className={overviewStyles.count}>{data.shells.jobs} background job{data.shells.jobs === 1 ? '' : 's'} (handlers) running in the shared Metasploit console.</p>
+              <p className={overviewStyles.count}>{data.shells.jobs} background job{data.shells.jobs === 1 ? '' : 's'} (handlers) running in the Kali sandboxes' Metasploit consoles.</p>
             )}
           </Section>
 
           <Section id="ops-sandboxes" title="Kali sandboxes" count={data.sandboxes.list.length}>
             <SourceDown state={data.sandboxes.state} what="Kali sandboxes cannot be listed now" />
             {data.sandboxes.state.ok && (data.sandboxes.list.length === 0 ? (
-              <p className={consoleStyles.state}>
-                {data.sandboxes.mode === 'shared'
-                  ? 'No per-user sandbox: every Kali tool runs in the shared container.'
-                  : 'No Kali sandbox is running.'}
-              </p>
+              <p className={consoleStyles.state}>No Kali sandbox is running.</p>
             ) : (
               <Table label="Kali sandboxes" head={['Person', 'Works as', 'State', 'Started', 'Last used', 'Stops', 'Actions']}>
                 {data.sandboxes.list.map((box) => (

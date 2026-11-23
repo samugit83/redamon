@@ -2,9 +2,9 @@
  * Per-user Kali sandboxes (group 1, S17, I9; OD-G1-i, OQ-G1-2 default A): a person's tunnel is
  * their own row's four fields, pushed to their own sandbox only.
  *
- * In per-user mode the settings PUT keeps the tunnel fields in the person's own row whatever the
- * identity switch (never routed to the instance settings), and pushes them through the agent to
- * that person's sandbox, never to the shared container and never another person's fields.
+ * The settings PUT keeps the tunnel fields in the person's own row whatever the identity switch
+ * (never routed to the instance settings), and pushes them through the agent to that person's
+ * sandbox, never to a fixed Kali address and never another person's fields.
  * Turning a tunnel on or changing its fields still takes platform:tunnels through the fresh
  * sharedToolAccess(principal, 'tunnels') of today's rule: only who may open the instance tunnel
  * today may open one from their own sandbox. Under act-as on a managed account the sandbox is that
@@ -27,7 +27,6 @@ const h = vi.hoisted(() => ({
   updateMany: vi.fn(),
   auditCreate: vi.fn(),
   cutoff: vi.fn(),
-  sandboxMode: vi.fn(),
   ensureSandbox: vi.fn(),
   sandboxStatus: vi.fn(),
   pushSandboxTunnel: vi.fn(),
@@ -77,7 +76,6 @@ vi.mock('@/lib/session', () => ({
 }))
 vi.mock('@/lib/authz/stepUp', () => ({ requireStepUp: vi.fn(async () => null) }))
 vi.mock('@/lib/sandbox/gateway', () => ({
-  sandboxMode: (...a: unknown[]) => h.sandboxMode(...a),
   ensureSandbox: (...a: unknown[]) => h.ensureSandbox(...a),
   sandboxStatus: (...a: unknown[]) => h.sandboxStatus(...a),
 }))
@@ -92,7 +90,6 @@ import { setFlagsForTests } from '@/lib/authz/flags'
 import { resetSharedToolsForTests } from '@/lib/authz/sharedTools'
 import { resetTunnelEffectsForTests } from '@/lib/sharedSettingsEffects'
 
-const WORKER_URL = 'http://kali-sandbox:8015/tunnel/configure'
 const EMPTY = { ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '' }
 const AFTER_CUTOFF = new Date('2026-11-12T00:00:00.000Z')
 
@@ -117,10 +114,8 @@ function signInMember(id: string, legacyGrants: string[] = []) {
 }
 
 let fetchSpy: ReturnType<typeof vi.fn>
-/** What reached the shared container's tunnel manager (the flip sends it the empty config). */
-const workerBodies = () => fetchSpy.mock.calls
-  .filter(c => c[0] === WORKER_URL)
-  .map(c => JSON.parse(String((c[1] as RequestInit).body)) as Record<string, string>)
+/** Anything sent to a fixed address instead of through the agent: never, after group 1. */
+const directCalls = () => fetchSpy.mock.calls
 const auditRows = (action: string) =>
   h.auditCreate.mock.calls.map(c => (c[0] as { data: Record<string, unknown> }).data).filter(d => d.action === action)
 
@@ -147,12 +142,10 @@ beforeEach(() => {
   })
   h.auditCreate.mockResolvedValue({})
   h.cutoff.mockResolvedValue(null)
-  h.sandboxMode.mockResolvedValue('per_user')
-  h.ensureSandbox.mockResolvedValue({ mode: 'per_user', state: 'running', fresh: false, instance: 'a1b2c3' })
-  h.sandboxStatus.mockResolvedValue({ mode: 'per_user', instances: [{ instance: 'a1b2c3', view: 'own', state: 'running' }] })
+  h.ensureSandbox.mockResolvedValue({ state: 'running', fresh: false, instance: 'a1b2c3' })
+  h.sandboxStatus.mockResolvedValue({ instances: [{ instance: 'a1b2c3', view: 'own', state: 'running' }] })
   h.pushSandboxTunnel.mockResolvedValue({ ok: true, status: 200 })
   h.agentFetch.mockResolvedValue(new Response(JSON.stringify({ ngrok: { active: true }, chisel: { active: false } })))
-  process.env.TUNNEL_AUTH_TOKEN = 'ttok'
   fetchSpy = vi.fn().mockResolvedValue(new Response(null, { status: 200 }))
   vi.stubGlobal('fetch', fetchSpy)
   vi.spyOn(console, 'info').mockImplementation(() => {})
@@ -162,10 +155,9 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
   setFlagsForTests(null)
-  delete process.env.TUNNEL_AUTH_TOKEN
 })
 
-describe('per-user mode: the tunnel is the person\'s own row, pushed to their own sandbox', () => {
+describe('the tunnel is the person\'s own row, pushed to their own sandbox', () => {
   test.each([['off', false], ['on', true]])('identity switch %s: saved in the person\'s row and pushed to their sandbox only', async (_n, identity) => {
     setFlagsForTests({ identity })
     storeRow('u1', {})
@@ -173,7 +165,7 @@ describe('per-user mode: the tunnel is the person\'s own row, pushed to their ow
     expect(res.status).toBe(200)
     expect(rows.get('u1')).toMatchObject({ tunnelsEnabled: true, ngrokAuthtoken: 'ng-own' })
     expect(h.pushSandboxTunnel.mock.calls).toEqual([['u1', { ngrokAuthtoken: 'ng-own', chiselServerUrl: '', chiselAuth: '' }]])
-    expect(workerBodies().filter(b => JSON.stringify(b) !== JSON.stringify(EMPTY))).toEqual([])
+    expect(directCalls()).toEqual([])
     expect(auditRows('settings.tunnel_changed')[0]).toMatchObject({ targetId: 'u1', after: { fields: ['ngrokAuthtoken', 'tunnelsEnabled'] } })
   })
 
@@ -209,7 +201,7 @@ describe('per-user mode: the tunnel is the person\'s own row, pushed to their ow
   })
 })
 
-describe('per-user mode: who may change their own tunnel', () => {
+describe('who may change their own tunnel', () => {
   test('a member without platform:tunnels cannot turn one on or change its fields: the existing refusal, naming their own sandbox', async () => {
     signInMember('m1')
     for (const change of [{ tunnelsEnabled: true }, { ngrokAuthtoken: 'm-tok' }, { chiselServerUrl: 'http://m.example:9090' }]) {
@@ -266,7 +258,7 @@ describe('per-user mode: who may change their own tunnel', () => {
   })
 })
 
-describe('the GET hint in per-user mode', () => {
+describe('the GET hint', () => {
   async function hint(id: string) {
     storeRow(id, {})
     const res = await GET(new NextRequest(`http://x/api/users/${id}/settings`), params(id))
@@ -284,14 +276,9 @@ describe('the GET hint in per-user mode', () => {
     expect(await hint('m1')).toEqual({ canManageTunnels: false, tunnelScope: 'own_sandbox', sharedSettingsAt: 'instance' })
   })
 
-  test('shared mode: no scope, and the identity switch still sends the tunnel to the instance settings', async () => {
-    h.sandboxMode.mockResolvedValue('shared')
-    setFlagsForTests({ identity: true })
-    expect(await hint('u1')).toEqual({ canManageTunnels: false, tunnelScope: undefined, sharedSettingsAt: 'instance' })
-  })
 })
 
-describe('an explicit "off" is always sent in per-user mode (review C3/F4)', () => {
+describe('an explicit "off" is always sent (review C3/F4)', () => {
   test('stored off already (a stop that was not delivered): the stop config is sent again', async () => {
     storeRow('u1', { tunnelsEnabled: false, ngrokAuthtoken: 'tok' })
     const res = await PUT(put('u1', { tunnelsEnabled: false }), params('u1'))
@@ -309,13 +296,6 @@ describe('an explicit "off" is always sent in per-user mode (review C3/F4)', () 
     expect(body.warnings).toEqual([expect.objectContaining({ code: 'agent_unreachable' })])
   })
 
-  test('shared mode: an unchanged "off" pushes nothing, as before', async () => {
-    h.sandboxMode.mockResolvedValue('shared')
-    storeRow('u1', { tunnelsEnabled: false })
-    await PUT(put('u1', { tunnelsEnabled: false }), params('u1'))
-    expect(fetchSpy.mock.calls.filter(c => c[0] === WORKER_URL)).toEqual([])
-    expect(h.pushSandboxTunnel).not.toHaveBeenCalled()
-  })
 })
 
 describe('one person\'s tunnel saves do not overtake each other (review C2/F6)', () => {
@@ -327,7 +307,7 @@ describe('one person\'s tunnel saves do not overtake each other (review C2/F6)',
         // The gateway's fresh-start rule (B.16): the start turns the person's tunnels off.
         const row = rows.get('u1')!
         if (row.tunnelsEnabled) rows.set('u1', { ...row, tunnelsEnabled: false })
-        resolve({ mode: 'per_user', state: 'running', fresh: true, instance: 'a1b2c3' })
+        resolve({ state: 'running', fresh: true, instance: 'a1b2c3' })
       }
     }))
     const on = PUT(put('u1', { tunnelsEnabled: true }), params('u1'))
