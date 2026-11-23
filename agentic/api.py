@@ -1617,17 +1617,33 @@ async def emergency_stop_all():
     since a run's sandbox handles go when it ends. The webapp stops the sandboxes
     themselves only after this answers, so no live run's retry starts one again."""
     navigator_stopped = navigator_runs.stop_all()
+    # Marked first: a call in flight that finds its sandbox gone once the webapp stops it
+    # must fail, not start a new sandbox and send its command again.
+    sandbox_router.note_stop_requested_all()
     try:
         sandboxes = await sandbox_runs.stop_all_runs()
         logger.warning(f"Emergency stop: {sandboxes.get('answered', 0)} of {sandboxes.get('asked', 0)} "
                        f"Kali sandbox(es) asked stopped the runs' processes")
     except Exception as exc:  # noqa: BLE001 - the runs are cancelled whatever the sandboxes say
         logger.warning(f"Emergency stop: the sandboxes were not asked ({type(exc).__name__})")
+    jobs = await _cancel_sandbox_jobs(None)
     if not ws_manager:
-        return JSONResponse(content={"stopped": 0, "navigator": navigator_stopped}, status_code=503)
+        return JSONResponse(content={"stopped": 0, "navigator": navigator_stopped, "jobs": jobs},
+                            status_code=503)
     stopped = await ws_manager.stop_all()
-    logger.warning(f"Emergency stop: cancelled {stopped} agent task(s), {navigator_stopped} AI Navigator run(s)")
-    return {"stopped": stopped, "navigator": navigator_stopped}
+    logger.warning(f"Emergency stop: cancelled {stopped} agent task(s), {jobs} Kali background "
+                   f"job(s), {navigator_stopped} AI Navigator run(s)")
+    return {"stopped": stopped, "navigator": navigator_stopped, "jobs": jobs}
+
+
+async def _cancel_sandbox_jobs(user_id: Optional[str]) -> int:
+    """The background jobs running in Kali sandboxes (MCP kali_exec commands, job_spawn
+    of a Kali tool): every person's, or one person's. Never raises: a stop goes on."""
+    try:
+        return await job_runner.get_registry().cancel_sandbox_jobs(user_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Emergency stop: background jobs not cancelled ({type(exc).__name__})")
+        return 0
 
 
 class SessionStopRequest(BaseModel):
@@ -1657,12 +1673,18 @@ async def stop_agent_sessions_for(body: StopForRequest):
     member's). Each run's in-flight tool tasks are cancelled with it. CypherFix
     triage and CodeFix runs are not agent runs and are not reached.
     """
+    jobs = 0
+    if body.project_ids is None:
+        # The person's emergency stop (every project): their sandboxes stop next, so their
+        # Kali background jobs end now and nothing in flight starts a sandbox again.
+        sandbox_router.note_stop_requested(body.user_id)
+        jobs = await _cancel_sandbox_jobs(body.user_id)
     if not ws_manager:
-        return JSONResponse(content={"stopped": 0}, status_code=503)
+        return JSONResponse(content={"stopped": 0, "jobs": jobs}, status_code=503)
     stopped = await ws_manager.stop_for_user(body.user_id, body.project_ids)
-    logger.warning("[rbac] stop-for user=%s projects=%s stopped=%d", body.user_id,
-                   "all" if body.project_ids is None else len(body.project_ids), stopped)
-    return {"stopped": stopped}
+    logger.warning("[rbac] stop-for user=%s projects=%s stopped=%d jobs=%d", body.user_id,
+                   "all" if body.project_ids is None else len(body.project_ids), stopped, jobs)
+    return {"stopped": stopped, "jobs": jobs}
 
 
 class WsCloseRequest(BaseModel):
@@ -2904,12 +2926,18 @@ async def workspace_reset(req: WorkspaceResetRequest):
 async def workspace_jobs_list(
     projectId: str = Query(...),
     active: Optional[bool] = Query(None, description="True=running only, False=terminal only, omit for all"),
+    userId: Optional[str] = Query(None, description="The viewer: another person's jobs are left out"),
 ):
-    """List background jobs for the drawer Jobs tab."""
+    """List background jobs for the drawer Jobs tab. With `userId`, a job another person
+    started (their chat's job_spawn, their MCP kali_exec) is left out; without it the list
+    is the project's, as before owners were kept."""
     if not projectId:
         return JSONResponse(content={"error": "projectId required"}, status_code=400)
     reg = job_runner.get_registry()
-    return {"projectId": projectId, "jobs": await reg.list_async(projectId, active=active)}
+    rows = await reg.list_async(projectId, active=active)
+    if userId is not None:
+        rows = [r for r in rows if not job_runner.owned_by_another(r, userId)]
+    return {"projectId": projectId, "jobs": rows}
 
 
 @app.post("/workspace/jobs/{job_id}/cancel", tags=["Workspace"],
@@ -2917,11 +2945,15 @@ async def workspace_jobs_list(
 async def workspace_job_cancel(
     job_id: str,
     projectId: str = Query(...),
+    userId: Optional[str] = Query(None, description="The viewer: another person's job is unknown"),
 ):
-    """Cancel a running background job."""
+    """Cancel a running background job. With `userId`, a job another person started is
+    the same "unknown job" as one that does not exist."""
     if not projectId:
         return JSONResponse(content={"error": "projectId required"}, status_code=400)
     reg = job_runner.get_registry()
+    if userId is not None and job_runner.owned_by_another(reg.status(projectId, job_id), userId):
+        return {"error": f"unknown job {job_id}"}
     result = await reg.cancel(projectId, job_id)
     return result
 
@@ -3325,6 +3357,9 @@ def _tagged_session_rows(data, instance: str, handle) -> Optional[dict]:
             rows.append({**own, "sandbox": instance,
                          _SANDBOX_PERSON_FIELD: handle.user_id, _SANDBOX_VIEW_FIELD: handle.view})
         lists[name] = rows
+    # Whether this sandbox's console is running the agent's command right now: per
+    # instance, as each person has their own console.
+    lists["busy"] = data.get("agent_busy") is True
     return lists
 
 
@@ -3368,15 +3403,18 @@ async def get_sessions():
     answers = await asyncio.gather(*(_sandbox_sessions(h) for h in handles))
     merged = {name: [] for name in _SESSION_LISTS}
     unavailable = []
+    busy = []
     for instance, lists in answers:
         if lists is None:
             unavailable.append(instance)
             continue
         for name in _SESSION_LISTS:
             merged[name].extend(lists[name])
+        if lists.get("busy"):
+            busy.append(instance)
     if unavailable:
         logger.warning("[sandbox] %d sandbox(es) did not answer the session list", len(unavailable))
-    return JSONResponse(content={**merged, "unavailable": unavailable})
+    return JSONResponse(content={**merged, "unavailable": unavailable, "busy": busy})
 
 
 async def _session_target(sandbox: Optional[str], person: Optional[str], view: Optional[str]):
@@ -6121,13 +6159,16 @@ def _kali_job_view(state: dict, cursor: int, project_id: str, job_id: str) -> di
     return view
 
 
-def _kali_job_of_another(job_id: str, user_id: Optional[str]) -> bool:
+def _kali_job_of_another(job_id: str, user_id: Optional[str], state: Optional[dict] = None) -> bool:
     """A caller reaches only the commands of the person it names (`user_id`): a job the
     agent recorded for someone else, or for anyone when no person is named, is the same
-    404 as one that does not exist. For a job the agent recorded for no one (a job from
-    before a restart), the project and job id decide."""
+    404 as one that does not exist. After a restart the job's record names its owner
+    (`state`, read through the store's checks); one that names no one (from before owners
+    were kept) is decided by the project and job id."""
     owner = sandbox_router.job_sandbox_user(job_id)
-    return bool(owner) and owner != user_id
+    if owner:
+        return owner != user_id
+    return state is not None and job_runner.owned_by_another(state, user_id)
 
 
 # Master key only. require_internal_auth_only also accepts SCANNER_API_KEY, which
@@ -6234,6 +6275,7 @@ async def kali_exec(body: KaliExecRequest):
         spawned = await reg.spawn(
             body.project_id, "kali_shell", {"command": safe_command}, runner,
             label=safe_command.split()[0][:40] if safe_command.split() else "kali_shell",
+            owner_user=person, owner_view=sandbox_contract.VIEW_OWN, in_sandbox=True,
         )
     if isinstance(spawned, dict) and spawned.get("error"):
         # Only a job cap is worth retrying; a refused jobs/ folder or project id is not.
@@ -6271,7 +6313,7 @@ async def kali_exec_status(
     # status() keys on (project_id, job_id) and reads a per-project directory,
     # so another project's job id resolves to nothing rather than to its output.
     state = reg.status(project_id, job_id)
-    if _kali_lookup_failed(state):
+    if _kali_lookup_failed(state) or _kali_job_of_another(job_id, user_id, state):
         return JSONResponse(status_code=404, content={"error": "no such command"})
     return JSONResponse(content=_kali_job_view(state, cursor, project_id, job_id))
 
@@ -6284,7 +6326,7 @@ async def kali_exec_cancel(job_id: str, project_id: str = Query(...),
         return JSONResponse(status_code=404, content={"error": "no such command"})
     reg = job_runner.get_registry()
     state = reg.status(project_id, job_id)
-    if _kali_lookup_failed(state):
+    if _kali_lookup_failed(state) or _kali_job_of_another(job_id, user_id, state):
         return JSONResponse(status_code=404, content={"error": "no such command"})
     result = await reg.cancel(project_id, job_id)
     if isinstance(result, dict) and result.get("error"):

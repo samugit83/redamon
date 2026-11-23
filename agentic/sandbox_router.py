@@ -187,6 +187,9 @@ class SandboxHandle:
     warn: bool = False
     stale: bool = False
     released: bool = False
+    #: Set when the webapp stopped this person's sandboxes on purpose (``drop``, an
+    #: emergency stop): a call that then finds the sandbox gone is never sent again.
+    stop_requested: bool = False
     lease_id: Optional[str] = field(default=None, repr=False)
     scoped: bool = field(default=False, repr=False)
     _scope_ref: Optional[Callable[[], Optional["_RunScope"]]] = field(default=None, repr=False)
@@ -242,6 +245,12 @@ _looked_up: "OrderedDict[Tuple[str, str], float]" = OrderedDict()
 #: The instance each unit of work (person, view, chat session) last called, with its
 #: reverse port: a call that lands on another one carries the restart note.
 _seen: "OrderedDict[Tuple[str, str, str], Tuple[str, int, Optional[str]]]" = OrderedDict()
+#: When each person's sandboxes were last stopped on request (monotonic): a call that was
+#: already in flight then finds its sandbox gone and must not start a new one for it.
+_stop_requested: "OrderedDict[str, float]" = OrderedDict()
+#: A Fireteam member's id inside its own task: members share the run's chat session, and
+#: each is a separate model context that must learn of a restart for itself.
+_note_unit: ContextVar[str] = ContextVar("sandbox_note_unit", default="")
 
 
 def _who(user_id: str, view: str) -> str:
@@ -448,12 +457,17 @@ def _starting_handle(person: str, view: str, project_id: Optional[str], data: Ma
         project_id=project_id, state="starting", fresh=data.get("fresh") is True)
 
 
-async def _ensure(person: str, view: str, project_id: Optional[str], wait: bool, kind: str):
+async def _ensure(person: str, view: str, project_id: Optional[str], wait: bool, kind: str,
+                  check_project: Optional[str] = None):
     """One gateway ``ensure``: ("running", handle) or ("starting", handle). Raises
-    SandboxUnavailable for every refusal, error and outage."""
+    SandboxUnavailable for every refusal, error and outage. ``check_project`` asks the
+    gateway to confirm the person may use that project without making the sandbox mount
+    it (``project_id`` does both)."""
     body: Dict[str, Any] = {"userId": person, "wait": bool(wait)}
     if project_id is not None:
         body["projectId"] = project_id
+    if check_project is not None:
+        body["checkProjectId"] = check_project
     if view == contract.VIEW_ACT_AS:
         body["actingAs"] = True
     try:
@@ -771,6 +785,17 @@ def _port_sentence(port: int, state: Optional[str], known: bool) -> str:
 
 
 @contextmanager
+def note_unit(unit_id: str):
+    """The calls inside (a Fireteam member's task) take the restart note for themselves,
+    beside the chat's own: each member and the chat are told once of a new instance."""
+    token = _note_unit.set(unit_id if isinstance(unit_id, str) else "")
+    try:
+        yield
+    finally:
+        _note_unit.reset(token)
+
+
+@contextmanager
 def without_restart_note():
     """The calls inside do not take the chat's restart note (see ``_hold_note``)."""
     token = _hold_note.set(True)
@@ -788,8 +813,13 @@ def new_instance_note(handle: Optional[SandboxHandle]) -> str:
     nothing."""
     if handle is None or handle.state != "running" or _hold_note.get():
         return ""
-    key = (handle.user_id, handle.view, _session_id())
+    session, unit = _session_id(), _note_unit.get()
+    key = (handle.user_id, handle.view, f"{session}#{unit}" if unit else session)
     last = _seen.get(key)
+    if last is None and unit:
+        # A member starts from what its chat already knew: it is told only of an instance
+        # that differs from the one the chat last called.
+        last = _seen.get((handle.user_id, handle.view, session))
     _seen[key] = (handle.instance, handle.reverse_port, handle.reverse_port_state)
     _seen.move_to_end(key)
     while len(_seen) > SEEN_MAX:
@@ -871,19 +901,22 @@ async def _release_now(handle: SandboxHandle) -> None:
 # acquire / release / using / run_scope
 # =============================================================================
 
-async def _acquire(user_id: str, view: str, project_id: Optional[str], kind: str, wait: bool) -> SandboxHandle:
+async def _acquire(user_id: str, view: str, project_id: Optional[str], kind: str, wait: bool,
+                   check_project: Optional[str] = None) -> SandboxHandle:
     person = user_id if contract.valid_user_id(user_id) else ""
     if not person:
         if user_id:
             logger.warning("[sandbox] a malformed person id was refused")
         raise await _refuse("", project_id, "no_user", view=view, kind=kind)
-    if project_id is not None and not contract.valid_project_id(project_id):
-        raise await _refuse(person, None, "error", view=view, kind=kind,
-                            detail=contract.ERR_INVALID_PROJECT_ID)
+    for named in (project_id, check_project):
+        if named is not None and not contract.valid_project_id(named):
+            raise await _refuse(person, None, "error", view=view, kind=kind,
+                                detail=contract.ERR_INVALID_PROJECT_ID)
 
     for _attempt in range(2):
         started = False
-        outcome, handle = await _ensure(person, view, project_id, wait=False, kind=kind)
+        outcome, handle = await _ensure(person, view, project_id, wait=False, kind=kind,
+                                        check_project=check_project)
         if outcome == "starting":
             started = True
             await _emit(person, project_id, "starting", view=view, kind=kind)
@@ -891,7 +924,8 @@ async def _acquire(user_id: str, view: str, project_id: Optional[str], kind: str
                 _register(handle)
                 return handle
             first_fresh = handle.fresh
-            outcome, handle = await _ensure(person, view, project_id, wait=True, kind=kind)
+            outcome, handle = await _ensure(person, view, project_id, wait=True, kind=kind,
+                                            check_project=check_project)
             if outcome == "starting":
                 raise await _refuse(person, project_id, "error", view=view, kind=kind,
                                     detail=contract.ERR_START_TIMEOUT)
@@ -922,10 +956,15 @@ async def _acquire(user_id: str, view: str, project_id: Optional[str], kind: str
 
 
 async def acquire(user_id: str, *, project_id: Optional[str], kind: str, wait: bool = True,
-                  view: Optional[str] = None) -> SandboxHandle:
+                  view: Optional[str] = None, check_project: Optional[str] = None) -> SandboxHandle:
     """The person's sandbox for one unit of work, with a lease renewed every
     ``LEASE_RENEW_S`` until ``release``. ``view=None`` is ``sandbox_view()``; a named view
     must be that one: who does the work decides the view, an argument never does.
+
+    ``project_id`` is a project the work needs mounted (a running instance without it is
+    replaced). Work that needs no folder but must stay within one project's access (a
+    triage lookup) passes ``project_id=None`` and ``check_project``: the gateway refuses a
+    project the person may not use, and the instance they run is served as it is.
 
     Inside ``run_scope`` a ``run`` acquire shares the scope's handle (one lease for the
     whole run, its Fireteam members included). With ``wait=False`` a cold start returns
@@ -946,7 +985,7 @@ async def acquire(user_id: str, *, project_id: Optional[str], kind: str, wait: b
     scope = _current_scope.get()
     if kind == RUN_KIND and scope is not None and not scope.closed:
         return await scope.handle_for(user_id, view, project_id, wait)
-    return await _acquire(user_id, view, project_id, kind, wait)
+    return await _acquire(user_id, view, project_id, kind, wait, check_project=check_project)
 
 
 async def release(handle: Optional[SandboxHandle]) -> None:
@@ -962,8 +1001,10 @@ async def release(handle: Optional[SandboxHandle]) -> None:
 
 
 @asynccontextmanager
-async def using(user_id: str, *, project_id: Optional[str], kind: str, view: Optional[str] = None):
-    handle = await acquire(user_id, project_id=project_id, kind=kind, view=view)
+async def using(user_id: str, *, project_id: Optional[str], kind: str, view: Optional[str] = None,
+                check_project: Optional[str] = None):
+    handle = await acquire(user_id, project_id=project_id, kind=kind, view=view,
+                           check_project=check_project)
     try:
         yield handle
     finally:
@@ -1091,6 +1132,18 @@ async def is_running(user_id: str, view: Optional[str] = None) -> bool:
         return False
     return any(h.user_id == user_id and h.view == view and h.state == "running"
                for h in _listed_handles(data))
+
+
+async def instance_running(handle: SandboxHandle) -> Optional[bool]:
+    """Whether the handle's own instance is still listed running (True), listed as gone
+    (False), or cannot be told (None: the list could not be read). Starts nothing."""
+    try:
+        status, data = await _gateway("GET", f"{WEBAPP_API_URL}/api/internal/agent/sandbox/list")
+    except (_Unreachable, _GatewayError):
+        return None
+    if status != 200 or not isinstance(data, dict):
+        return None
+    return any(h.key == handle.key and h.state == "running" for h in _listed_handles(data))
 
 
 def _listed_handles(data: Mapping) -> List[SandboxHandle]:
@@ -1230,9 +1283,38 @@ def headers_for(handle: SandboxHandle, port_name: Optional[str] = None) -> dict:
     return kali_auth_headers_for(handle.tunnel_token if port_name == "tunnel" else handle.token)
 
 
+def note_stop_requested(user_id: str) -> None:
+    """The person's sandboxes are being stopped on purpose (an emergency stop, an operator's
+    stop, an access loss): every live handle is marked, and a call in flight that then
+    finds its sandbox gone fails instead of being sent to a new one."""
+    if not isinstance(user_id, str) or not user_id:
+        return
+    _stop_requested[user_id] = time.monotonic()
+    _stop_requested.move_to_end(user_id)
+    while len(_stop_requested) > KNOWN_MAX:
+        _stop_requested.popitem(last=False)
+    for handle in list(_live.get(user_id, ())):
+        handle.stop_requested = True
+
+
+def note_stop_requested_all() -> None:
+    """``note_stop_requested`` for every person the agent holds a sandbox handle of."""
+    for user_id in list(_live):
+        note_stop_requested(user_id)
+
+
+def stop_requested_since(user_id: str, since: float) -> bool:
+    """Whether the person's sandboxes were stopped on request at or after ``since``
+    (``time.monotonic()``)."""
+    at = _stop_requested.get(user_id) if isinstance(user_id, str) else None
+    return at is not None and at >= since
+
+
 async def drop(user_id: str) -> None:
     """Forget every client and handle of the person, both views (their sandboxes were
-    stopped): in-flight handles turn stale, so the next ``acquire`` ensures again."""
+    stopped): in-flight handles turn stale and are marked stopped on request, so no call
+    in flight is sent again; the next unit of work's ``acquire`` ensures again."""
+    note_stop_requested(user_id)
     renewals = []
     for handle in list(_live.pop(user_id, ())):
         handle.stale = True
@@ -1389,6 +1471,7 @@ def _reset() -> None:
     _lookups.clear()
     _looked_up.clear()
     _seen.clear()
+    _stop_requested.clear()
 
 
 async def shutdown() -> None:

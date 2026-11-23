@@ -336,7 +336,7 @@ class TheEmergencyStop(_Base):
                 mock.patch.object(api, "ws_manager", manager):
             resp = self.client.post("/emergency-stop-all", headers=KEY)
         self.assertEqual(order, ["sandboxes", "runs"])
-        self.assertEqual(resp.json(), {"stopped": 3, "navigator": 0})
+        self.assertEqual(resp.json(), {"stopped": 3, "navigator": 0, "jobs": 0})
 
     def test_the_emergency_stop_reaches_every_sandbox(self):
         alice, bob = self.fleet.add("alice"), self.fleet.add("bob")
@@ -679,6 +679,90 @@ class TheReverseShellHints(unittest.TestCase):
         self.assertNotIn("from the host into the container", text)
         self.assertIn("not known yet", text)
         self.assertNotIn("NO DIRECT REVERSE SHELL", text)
+
+
+
+# =============================================================================
+# The emergency stops end the Kali background jobs too
+# =============================================================================
+
+class TheEmergencyStopsEndTheJobs(_Base):
+    """A job's sandbox stops after these routes answer: its job must end now, or it would
+    find the sandbox gone and run its command again in a new one."""
+
+    def setUp(self):
+        super().setUp()
+        self.registry = mock.Mock()
+        self.registry.cancel_sandbox_jobs = mock.AsyncMock(return_value=2)
+        for p in (mock.patch.object(api.job_runner, "get_registry", return_value=self.registry),
+                  mock.patch.object(api.sandbox_runs, "stop_all_runs", mock.AsyncMock(return_value={})),
+                  mock.patch.object(api, "ws_manager", None)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_stop_all_cancels_every_persons_jobs_and_marks_every_sandbox(self):
+        with mock.patch.object(router, "note_stop_requested_all") as marked:
+            resp = self.client.post("/emergency-stop-all", headers=KEY)
+        self.assertEqual(resp.json().get("jobs"), 2)
+        self.registry.cancel_sandbox_jobs.assert_awaited_once_with(None)
+        marked.assert_called_once_with()
+
+    def test_a_persons_stop_cancels_their_jobs_only(self):
+        with mock.patch.object(router, "note_stop_requested") as marked:
+            resp = self.client.post("/agent-sessions/stop-for", headers=KEY, json={"user_id": "bob"})
+        self.assertEqual(resp.json().get("jobs"), 2)
+        self.registry.cancel_sandbox_jobs.assert_awaited_once_with("bob")
+        marked.assert_called_once_with("bob")
+
+    def test_a_stop_of_some_projects_leaves_the_jobs(self):
+        """An access loss on one project reconciles the sandbox instead of stopping it."""
+        with mock.patch.object(router, "note_stop_requested") as marked:
+            resp = self.client.post("/agent-sessions/stop-for", headers=KEY,
+                                    json={"user_id": "bob", "project_ids": ["p1"]})
+        self.assertEqual(resp.json().get("jobs"), 0)
+        self.registry.cancel_sandbox_jobs.assert_not_awaited()
+        marked.assert_not_called()
+
+    def test_a_failing_cancel_never_fails_the_stop(self):
+        self.registry.cancel_sandbox_jobs = mock.AsyncMock(side_effect=RuntimeError("boom"))
+        resp = self.client.post("/emergency-stop-all", headers=KEY)
+        self.assertEqual(resp.json().get("jobs"), 0)
+
+
+# =============================================================================
+# The drawer's job routes, with the viewer named
+# =============================================================================
+
+class TheDrawerJobRoutes(_Base):
+
+    def setUp(self):
+        super().setUp()
+        self.registry = mock.Mock()
+        self.registry.list_async = mock.AsyncMock(return_value=[
+            {"job_id": "a" * 32, "owner_user": "alice"}, {"job_id": "b" * 32, "owner_user": "bob"},
+            {"job_id": "c" * 32}])
+        self.registry.status = mock.Mock(return_value={"job_id": "a" * 32, "owner_user": "alice"})
+        self.registry.cancel = mock.AsyncMock(return_value={"status": "cancelled"})
+        p = mock.patch.object(api.job_runner, "get_registry", return_value=self.registry)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_the_list_leaves_out_another_persons_jobs(self):
+        resp = self.client.get("/workspace/jobs", headers=KEY, params={"projectId": "p1", "userId": "bob"})
+        self.assertEqual([j["job_id"] for j in resp.json()["jobs"]], ["b" * 32, "c" * 32])
+
+    def test_without_a_viewer_the_list_is_the_projects(self):
+        resp = self.client.get("/workspace/jobs", headers=KEY, params={"projectId": "p1"})
+        self.assertEqual(len(resp.json()["jobs"]), 3)
+
+    def test_another_persons_job_cannot_be_cancelled(self):
+        resp = self.client.post(f"/workspace/jobs/{'a' * 32}/cancel", headers=KEY,
+                                params={"projectId": "p1", "userId": "bob"})
+        self.assertIn("unknown job", resp.json().get("error", ""))
+        self.registry.cancel.assert_not_awaited()
+        resp = self.client.post(f"/workspace/jobs/{'a' * 32}/cancel", headers=KEY,
+                                params={"projectId": "p1", "userId": "alice"})
+        self.assertEqual(resp.json(), {"status": "cancelled"})
 
 
 if __name__ == "__main__":

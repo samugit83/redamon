@@ -11,7 +11,9 @@ one at once, each read bounded by
 READ_TIMEOUT_S so a hung sandbox never delays another's hold, and by sandbox_http's size and
 encoding rules, since whoever is root in a sandbox writes its answers: the session manager with the
 instance's MCP token, and the tunnel manager with the instance's tunnel token once the tunnel
-push has handed it over (`note_tunnel`; the gateway's list carries no tunnel token). An
+push has handed it over (`note_tunnel`), else with the MCP token, which the tunnel manager
+accepts for its status (the gateway's list carries no tunnel token, and a restarted agent
+holds none). An
 instance holding anything has its hold taken at once; one holding nothing has it released.
 
 Renewals run on their own every HOLD_RENEW_S (a third of the lease), so one failed or slow
@@ -156,10 +158,14 @@ class HoldWatcher:
         """True when the instance holds a session, a job or an active tunnel; False when it
         holds none; None when that cannot be told (a read failed or timed out)."""
         token = self._tunnel_tokens.get(handle.key)
+        # The tunnel manager also answers its status to the instance's own MCP token, which
+        # every listed handle carries: an agent restarted since the tunnel was pushed has no
+        # tunnel token, and a live tunnel must keep holding its sandbox all the same.
+        tunnel_headers = kali_auth_headers_for(token) if token else sandbox_router.headers_for(handle)
         async with httpx.AsyncClient(timeout=READ_TIMEOUT_S, transport=_transport) as client:
             sessions, tunnel = await asyncio.gather(
                 self._bounded(self._sessions_live(client, handle)),
-                self._bounded(self._tunnel_active(client, handle, token)) if token else _false())
+                self._bounded(self._tunnel_active(client, handle, tunnel_headers)))
         if sessions is True or tunnel is True:
             return True
         if sessions is None or tunnel is None:
@@ -190,9 +196,9 @@ class HoldWatcher:
         return any(lists)
 
     @staticmethod
-    async def _tunnel_active(client: httpx.AsyncClient, handle, token: str) -> Optional[bool]:
+    async def _tunnel_active(client: httpx.AsyncClient, handle, headers: dict) -> Optional[bool]:
         answer = await read_answer(client, "GET", sandbox_router.url_for(handle, "tunnel", TUNNEL_STATUS_PATH),
-                                   headers=kali_auth_headers_for(token), deadline_s=READ_TIMEOUT_S)
+                                   headers=headers, deadline_s=READ_TIMEOUT_S)
         if answer.status != 200:
             return None
         data = answer.json()
@@ -286,10 +292,6 @@ class HoldWatcher:
         pending = [t for t in tasks if not t.done()]
         if pending:
             await asyncio.wait(pending, timeout=contract.GATEWAY_TIMEOUT_S)
-
-
-async def _false() -> bool:
-    return False
 
 
 async def _gateway_post(path: str, body: dict) -> Tuple[int, Optional[str]]:

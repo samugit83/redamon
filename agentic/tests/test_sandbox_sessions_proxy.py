@@ -88,8 +88,9 @@ class TheListAcrossSandboxes(_Base):
                           "non_msf_sessions": [{"id": "raw-1700000000000", "type": "netcat"}]}
         bob.sessions = {"sessions": [_session(1), _session(2)], "jobs": [], "non_msf_sessions": []}
         body = _body(await api.get_sessions())
-        self.assertEqual(set(body), {"sessions", "jobs", "non_msf_sessions", "unavailable"})
+        self.assertEqual(set(body), {"sessions", "jobs", "non_msf_sessions", "unavailable", "busy"})
         self.assertEqual(body["unavailable"], [])
+        self.assertEqual(body["busy"], [])
         by_instance = {}
         for row in body["sessions"]:
             by_instance.setdefault(row["sandbox"], []).append(row["id"])
@@ -100,6 +101,25 @@ class TheListAcrossSandboxes(_Base):
                 self.assertEqual((row[PERSON], row[VIEW]), (box.person, box.view))
         self.assertEqual(body["non_msf_sessions"][0]["id"], "raw-1700000000000")
         self.assertNoToken(body)
+
+    async def test_a_busy_console_is_named_by_its_instance(self):
+        """Each person has their own console: the session terminal's "the agent is running a
+        command" banner needs to know which one is busy, never one flag for all."""
+        alice = self.fleet.add("alice")
+        bob = self.fleet.add("bob")
+        alice.sessions = {"sessions": [_session(1)], "jobs": [], "non_msf_sessions": [],
+                          "agent_busy": True}
+        bob.sessions = {"sessions": [_session(1)], "jobs": [], "non_msf_sessions": [],
+                        "agent_busy": False}
+        body = _body(await api.get_sessions())
+        self.assertEqual(body["busy"], [alice.instance])
+        for row in body["sessions"]:
+            self.assertNotIn("busy", row)
+
+    async def test_only_a_true_flag_counts_as_busy(self):
+        alice = self.fleet.add("alice")
+        alice.sessions = {"sessions": [], "jobs": [], "non_msf_sessions": [], "agent_busy": "yes"}
+        self.assertEqual(_body(await api.get_sessions())["busy"], [])
 
     async def test_the_agents_tags_are_set_after_the_sandboxs_row(self):
         """A sandbox's root writes its session manager's answer: whatever instance or

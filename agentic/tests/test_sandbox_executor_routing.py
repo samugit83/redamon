@@ -177,7 +177,9 @@ class Registry:
         self.tasks = {}
         self.results = {}
 
-    async def spawn(self, project_id, tool_name, args, runner, label=None):
+    async def spawn(self, project_id, tool_name, args, runner, label=None, **owner):
+        self.owners = getattr(self, "owners", [])
+        self.owners.append(owner)
         job_id = f"job-{len(self.tasks) + 1}"
 
         async def append_log(chunk):
@@ -213,8 +215,6 @@ class Routing(unittest.IsolatedAsyncioTestCase):
             mock.patch("tools.is_tool_allowed_in_phase", return_value=True),
             mock.patch.object(roe_gate, "check_tool_call", return_value=None),
             mock.patch.object(roe_gate, "check_unasked_call", mock.AsyncMock(return_value=None)),
-            mock.patch.object(tool_mod, "httpx", FAKE_HTTPX),
-            mock.patch.object(plan_mod, "httpx", FAKE_HTTPX),
             mock.patch.object(tools, "httpx", FAKE_HTTPX),
         ]
         for p in patches:
@@ -778,8 +778,10 @@ class TestNodesFollowTheHandle(Routing):
                 await self.run_as("bob", bob)
                 host = self._host("bob")
                 posts = [(u, h) for m, u, _j, h in Recorder.calls if m == "POST"]
-                self.assertEqual(posts, [(f"http://{host}:8013/non-msf-sessions",
-                                          {"Authorization": f"Bearer {self.gateway.token('bob')}"})])
+                self.assertEqual([u for u, _h in posts], [f"http://{host}:8013/non-msf-sessions"])
+                # The sandbox's own bearer, and an answer it may not send compressed.
+                self.assertEqual(posts[0][1], {"Authorization": f"Bearer {self.gateway.token('bob')}",
+                                               "Accept-Encoding": "identity"})
 
     async def test_no_handle_means_no_post_in_per_user_mode(self):
         self.gateway.script[contract.INTERNAL_ROUTE_ENSURE] = lambda b: (403, {"code": contract.ERR_USER_REFUSED})

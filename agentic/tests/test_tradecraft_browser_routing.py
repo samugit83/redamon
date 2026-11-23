@@ -458,3 +458,77 @@ def test_outside_the_agent_process_there_is_no_browser(monkeypatch):
     with r.installed():
         assert run(go()) == ("", "browser_unavailable")
     assert r.used == []
+
+
+# --------------------------------------------------------------------------------------
+# A refusal that lasts ends the browser for the rest of the job
+# --------------------------------------------------------------------------------------
+
+def test_a_lasting_refusal_is_asked_once_per_job(agent_process):
+    """No memory, the sandbox limit or no sandbox for this account holds for the whole job:
+    a crawl of many pages asks for the sandbox once, and every page reads as the browser
+    being unavailable, not as a page that failed in it."""
+    for reason in ("ram", "hard", "refused", "no_user"):
+        r = Router(refuse=reason)
+        fetcher = net.GuardedFetcher(jobs._agent_mcp_manager())
+
+        async def go():
+            with jobs.sandbox_person("bob"):
+                return [await fetcher.run_browser_script("print(1)") for _ in range(3)]
+
+        with r.installed():
+            results = run(go())
+        assert results == [("", "browser_unavailable")] * 3, reason
+        assert len(r.used) == 1, (reason, r.used)
+
+
+def test_a_passing_outage_is_asked_again_at_the_next_page(agent_process):
+    for reason in ("error", "stopped"):
+        r = Router(refuse=reason)
+        fetcher = net.GuardedFetcher(jobs._agent_mcp_manager())
+
+        async def go():
+            with jobs.sandbox_person("bob"):
+                return [await fetcher.run_browser_script("print(1)") for _ in range(2)]
+
+        with r.installed():
+            results = run(go())
+        assert results == [("", "browser_unavailable")] * 2, reason
+        assert len(r.used) == 2, reason
+
+
+def test_each_job_starts_with_the_browser_offered(agent_process):
+    r = Router(refuse="ram")
+
+    async def go():
+        with jobs.sandbox_person("bob"):
+            first = await net.GuardedFetcher(jobs._agent_mcp_manager()).run_browser_script("print(1)")
+        r.refuse = None
+        with jobs.sandbox_person("bob"):
+            second = await net.GuardedFetcher(jobs._agent_mcp_manager()).run_browser_script("print(1)")
+        return first, second
+
+    with r.installed():
+        first, second = run(go())
+    assert first == ("", "browser_unavailable")
+    assert second == ("rendered for bob/own", "")
+
+
+def test_a_failure_inside_the_browser_is_still_a_browser_error(agent_process):
+    """Only a missing sandbox reads as unavailable: a tool that fails is the page's error."""
+    r = Router()
+
+    async def failing(name, h):
+        class Broken:
+            name = "execute_playwright"
+
+            async def ainvoke(self, args):
+                raise KeyError("boom")
+        return Broken()
+
+    async def go():
+        with jobs.sandbox_person("bob"):
+            return await browse()
+
+    with r.installed(), mock.patch.object(router, "tool_for", failing):
+        assert run(go()) == ("", "browser_error")

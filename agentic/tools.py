@@ -11,6 +11,7 @@ import json
 import asyncio
 import hashlib
 import logging
+import time
 from collections import OrderedDict
 from contextlib import contextmanager
 from typing import List, Optional, Dict, Callable, Awaitable, TYPE_CHECKING
@@ -412,6 +413,30 @@ def kali_auth_headers_for_run(handle) -> dict:
     """The bearer for kali_base_for_run's address: the handle's own instance token, none
     without a handle."""
     return sandbox_router.headers_for(handle) if handle is not None else {}
+
+
+#: The session manager answers the agent's bookkeeping posts with a small JSON ack.
+SESSION_POST_MAX_BYTES = 64 * 1024
+SESSION_POST_TIMEOUT_S = 5.0
+
+
+async def post_session_manager(handle, path: str, body: dict) -> None:
+    """One bookkeeping post to the session manager of the run's own sandbox (the chat a
+    new Metasploit session belongs to, a netcat listener), for both execution nodes. The
+    answer is read under a byte cap and a deadline, compression refused: whoever is root
+    in that sandbox decides what it answers, and this process serves every tenant. Best
+    effort: nothing when the run holds no sandbox, and it never raises."""
+    url = kali_base_for_run("sessions", handle, path)
+    if url is None:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=SESSION_POST_TIMEOUT_S) as client:
+            answer = await read_answer(client, "POST", url, headers=kali_auth_headers_for_run(handle),
+                                       json=body, max_bytes=SESSION_POST_MAX_BYTES,
+                                       deadline_s=SESSION_POST_TIMEOUT_S)
+        note_kali_refusal(answer.status, path)
+    except Exception:  # noqa: BLE001 - best effort; the run goes on
+        pass
 
 
 def _sandbox_refusal(exc) -> dict:
@@ -2727,25 +2752,36 @@ class PhaseAwareToolExecutor:
                     await append_log(str(result["output"]))
                 return result
 
-            spawn_result = await reg.spawn(project_id, target_tool, target_args, runner, label=label)
+            spawn_result = await reg.spawn(project_id, target_tool, target_args, runner, label=label,
+                                           owner_user=person or None, owner_view=view,
+                                           in_sandbox=target_tool in SYSTEM_MCP_TOOL_NAMES)
             # spawn() returns an {"error": ...} dict when it can't start (e.g. the
             # memory-governor job cap); surface that as a failure, not success.
             if isinstance(spawn_result, dict) and spawn_result.get("error"):
                 return {"success": False, "output": None, "error": spawn_result["error"]}
             return {"success": True, "output": str(spawn_result), "error": None}
 
-        if tool_name == "job_status":
+        # A project's jobs are each their starter's: another member's commands, output and
+        # cancel button are not this run's, as on MCP's kali_output and kali_cancel.
+        caller = sandbox_router.sandbox_user()
+
+        def unknown(jid) -> dict:
+            return {"success": True, "output": str({"error": f"unknown job {jid}"}), "error": None}
+
+        if tool_name in ("job_status", "job_wait", "job_cancel"):
             jid = args.get("job_id", "")
+            if job_runner.owned_by_another(reg.status(project_id, jid), caller):
+                return unknown(jid)
+
+        if tool_name == "job_status":
             return {"success": True, "output": str(reg.status(project_id, jid)), "error": None}
 
         if tool_name == "job_wait":
-            jid = args.get("job_id", "")
             timeout = float(args.get("timeout_sec", 30))
             result = await reg.wait(project_id, jid, timeout_sec=timeout)
             return {"success": True, "output": str(result), "error": None}
 
         if tool_name == "job_cancel":
-            jid = args.get("job_id", "")
             result = await reg.cancel(project_id, jid)
             return {"success": True, "output": str(result), "error": None}
 
@@ -2753,6 +2789,7 @@ class PhaseAwareToolExecutor:
             active = args.get("active", None)
             # Off the event loop: the disk part reads a jobs/ folder a sandbox writes.
             rows = await reg.list_async(project_id, active=active)
+            rows = [r for r in rows if not job_runner.owned_by_another(r, caller)]
             return {"success": True, "output": str(rows), "error": None}
 
         return {"success": False, "output": None, "error": f"unknown job tool: {tool_name}"}
@@ -2981,6 +3018,7 @@ class PhaseAwareToolExecutor:
             return bound is None and kind == sandbox_router.RUN_KIND and not sandbox_router.run_scope_open()
 
         handle = None
+        started = time.monotonic()
         try:
             handle = await self._sandbox_for_call(bound, kind)
             run_key = sandbox_runs.current_run_key()
@@ -2991,11 +3029,15 @@ class PhaseAwareToolExecutor:
                     return _with_restart_note(outcome, handle, bound, kind)
                 # The sandbox went away (stopped, replaced, unreachable): once more on a
                 # fresh handle, never a loop, and never for a run that has ended (its
-                # sandbox is let go; the command must not be sent again elsewhere).
-                if attempt or run_ended():
+                # sandbox is let go; the command must not be sent again elsewhere). Nor
+                # for a background job, or after a stop someone asked for (an emergency
+                # or operator stop, an access loss): sending the command again would undo
+                # that stop by starting a new sandbox for it.
+                if (attempt or run_ended() or bound is not None or handle.stop_requested
+                        or sandbox_router.stop_requested_since(handle.user_id, started)):
                     break
                 logger.warning(f"[sandbox] {tool_name}: the sandbox went away; acquiring it again")
-                handle = await self._reacquire(handle, bound, kind)
+                handle = await self._reacquire(handle, kind)
                 if run_ended():
                     break
             return {"success": False, "output": None, "error": sandbox_contract.SANDBOX_STOPPED}
@@ -3013,19 +3055,18 @@ class PhaseAwareToolExecutor:
         if bound is not None:
             if bound.handle.usable:
                 return bound.handle
-            return await self._reacquire(bound.handle, bound, kind)
+            # A background job holds one sandbox for its whole life: once that one is gone
+            # (stopped, crashed, replaced) the job fails rather than restart its work in a
+            # new sandbox nobody asked for.
+            raise sandbox_router.SandboxUnavailable("stopped", detail="sandbox_stopped")
         return await sandbox_router.acquire(
             sandbox_router.sandbox_user(), project_id=current_project_id.get() or None, kind=kind)
 
-    async def _reacquire(self, handle, bound, kind: str):
-        """A fresh handle for the same work after `handle`'s sandbox went away, with the
-        lease kind the call started with. Raises SandboxUnavailable."""
+    async def _reacquire(self, handle, kind: str):
+        """A fresh handle for the same chat run's call after `handle`'s sandbox went away,
+        with the lease kind the call started with. Raises SandboxUnavailable."""
         sandbox_router.retire(handle)
         await sandbox_router.release(handle)
-        if bound is not None:
-            bound.handle = await sandbox_router.acquire(
-                handle.user_id, project_id=handle.project_id, kind=bound.kind, view=handle.view)
-            return bound.handle
         return await sandbox_router.acquire(
             sandbox_router.sandbox_user(), project_id=current_project_id.get() or None, kind=kind)
 
@@ -3040,7 +3081,18 @@ class PhaseAwareToolExecutor:
         try:
             client = await sandbox_router.client_for(handle)
         except sandbox_router.SandboxUnavailable as exc:
-            if exc.reason == "stopped" or exc.detail == "mcp_connect_failed":
+            if exc.reason == "stopped":
+                return _SANDBOX_GONE
+            if exc.detail == "mcp_connect_failed":
+                # The tool servers did not load. When the instance is still running, its
+                # servers failed, not the sandbox: retiring it and asking again would hand
+                # the same instance back after a minute of retries, and the model would
+                # read "stopped".
+                if await sandbox_router.instance_running(handle) is True:
+                    logger.warning(f"[sandbox] {tool_name}: the tool servers of a running "
+                                   "sandbox did not load")
+                    return {"success": False, "output": None,
+                            "error": sandbox_contract.SANDBOX_UNAVAILABLE_ERROR}
                 return _SANDBOX_GONE
             return _sandbox_refusal(exc)
         tool = _named_tool(client.list_tools(), tool_name)

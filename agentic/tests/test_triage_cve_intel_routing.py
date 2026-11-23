@@ -6,7 +6,10 @@ person it is for is `actor_user_id` (who pressed Start, or the MCP token's owner
 admin behind an act-as in `real_actor_user_id`. Its one Kali call, `cve_intel`, carries the
 owner's ProjectDiscovery key as an argument, so it must run in that person's sandbox:
 
-- `using(actor, project_id=<project>, kind="triage")`, in the `act_as` view when an admin
+- `acquire(actor, project_id=None, check_project=<project>, kind="triage")`: the gateway
+  checks the person may use the project, but no mount is asked, so a running sandbox that
+  lacks the project is served as it is (asking for the mount would replace it and end its
+  sessions and tunnels); in the `act_as` view when an admin
   acts as the person (TD-26), through that handle's own client (its own bearer); the owner's
   key reaches only that handle's sandbox, never the tenant's, never the old shared address
   (MCP_NETWORK_RECON_URL with MCP_AUTH_TOKEN, set here to show neither is read);
@@ -63,9 +66,10 @@ class Router:
         self.released = []
         self.tools = []
 
-    async def acquire(self, user_id, *, project_id, kind, wait=True, view=None):
+    async def acquire(self, user_id, *, project_id, kind, wait=True, view=None, check_project=None):
         seen_view = router.sandbox_view() if view is None else view
         self.acquired.append({"user_id": user_id, "project_id": project_id, "kind": kind,
+                              "check_project": check_project,
                               "view": seen_view, "bound_person": router.sandbox_user()})
         if self.refuse:
             raise router.SandboxUnavailable(self.refuse)
@@ -113,7 +117,9 @@ class TestPerUser(unittest.TestCase):
         self.assertIn("CVE-2021-41773", raw)
         self.assertEqual([a["user_id"] for a in r.acquired], ["bob"])
         self.assertEqual(r.acquired[0]["kind"], "triage")
-        self.assertEqual(r.acquired[0]["project_id"], "p1")
+        # Checked, never mounted: a mount would replace a running sandbox without it.
+        self.assertIsNone(r.acquired[0]["project_id"])
+        self.assertEqual(r.acquired[0]["check_project"], "p1")
         self.assertEqual(r.acquired[0]["view"], contract.VIEW_OWN)
         (tool,) = r.tools
         self.assertEqual(tool.name, intel.ALLOWED_TOOL)

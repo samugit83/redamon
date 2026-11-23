@@ -578,6 +578,24 @@ def session_config_needed(phase: str, is_statefull: bool, attack_path_type: str)
     )
 
 
+#: Built-in skills whose out-of-band steps serve a file for the target to fetch (an XXE
+#: DTD, an RFI payload) and send the agent to the payload-settings block for the port.
+_SERVES_TO_TARGET = ("xxe", "path_traversal")
+
+
+def reachable_port_note_needed(phase: str, is_statefull: bool, attack_path_type: str) -> bool:
+    """Whether a run without the full payload-settings block still gets its one-line
+    summary (utils.get_reachable_port_note): the block is off (stateless mode, or before
+    exploitation), yet the agent may exploit, or its skill names the block for the port a
+    target can reach."""
+    if session_config_needed(phase, is_statefull, attack_path_type):
+        return False
+    if phase in ("exploitation", "post_exploitation") or attack_path_type in _SERVES_TO_TARGET:
+        return True
+    skill = resolve_user_skill(attack_path_type)
+    return bool(skill) and "Payload Settings" in (skill.get("content") or "")
+
+
 def get_phase_tools(
     phase: str,
     activate_post_expl: bool = True,

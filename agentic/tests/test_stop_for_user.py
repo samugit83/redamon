@@ -282,18 +282,18 @@ class Route(unittest.TestCase):
     def test_stops_only_that_users_runs(self):
         res = self._post({"user_id": "uA"})
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.json(), {"stopped": 2})
+        self.assertEqual(res.json(), {"stopped": 2, "jobs": 0})
         self.assertEqual(self._cancelled(), ["uA:p1:s1", "uA:p2:s2"])
 
     def test_project_filter(self):
         res = self._post({"user_id": "uA", "project_ids": ["p2"]})
-        self.assertEqual(res.json(), {"stopped": 1})
+        self.assertEqual(res.json(), {"stopped": 1, "jobs": 0})
         self.assertEqual(self._cancelled(), ["uA:p2:s2"])
 
     def test_unknown_user_is_a_noop(self):
         res = self._post({"user_id": "nobody"})
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.json(), {"stopped": 0})
+        self.assertEqual(res.json(), {"stopped": 0, "jobs": 0})
         self.assertEqual(self._cancelled(), [])
 
     def test_the_body_must_name_a_user_and_any_projects(self):
@@ -315,7 +315,7 @@ class Route(unittest.TestCase):
     def test_the_global_stop_still_stops_every_users_runs(self):
         res = self.client.post("/emergency-stop-all", headers={"x-internal-key": MASTER})
         # AI Navigator runs are cancelled by the same press and counted apart.
-        self.assertEqual(res.json(), {"stopped": 3, "navigator": 0})
+        self.assertEqual(res.json(), {"stopped": 3, "navigator": 0, "jobs": 0})
         self.assertEqual(self._cancelled(), ["uA:p1:s1", "uA:p2:s2", "uB:p1:s3"])
 
 

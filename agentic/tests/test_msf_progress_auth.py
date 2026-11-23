@@ -247,7 +247,8 @@ class ProgressPolls(_Case):
 # ------------------------------------------------------------- no caller left out
 
 class NoCallerLeftOut(unittest.TestCase):
-    """A request to the session manager added later must carry the bearer too."""
+    """A request to the session manager added later must carry the bearer, and read the
+    answer bounded, too: both nodes post only through tools.post_session_manager."""
 
     FILES = {
         "orchestrator_helpers/nodes/execute_tool_node.py": "session_manager_base",
@@ -255,22 +256,28 @@ class NoCallerLeftOut(unittest.TestCase):
     }
 
     def test_every_request_to_the_session_manager_passes_the_bearer_headers(self):
-        for rel, base in self.FILES.items():
+        for rel in self.FILES:
             tree = ast.parse((_AGENTIC_DIR / rel).read_text())
-            requests = [
+            direct = [
                 node for node in ast.walk(tree)
                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr in {"get", "post", "put", "delete", "patch", "request"}
-                and node.args and any(isinstance(n, ast.Name) and n.id == base
-                                      for n in ast.walk(node.args[0]))
+                and node.func.attr in {"get", "post", "put", "delete", "patch", "request", "stream"}
             ]
+            posts = sorted(
+                node.args[1].value for node in ast.walk(tree)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "post_session_manager" and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant))
             with self.subTest(file=rel):
-                self.assertGreater(len(requests), 0, f"no request to {base} found in {rel}")
-                for call in requests:
-                    headers = [k for k in call.keywords if k.arg == "headers"]
-                    self.assertTrue(
-                        headers and "kali_auth_headers_for_run" in ast.unparse(headers[0].value),
-                        f"{rel}:{call.lineno} calls the session manager without kali_auth_headers_for_run()")
+                self.assertEqual([ast.unparse(n) for n in direct if "client" in ast.unparse(n.func)], [],
+                                 f"{rel} sends a request of its own instead of post_session_manager")
+                self.assertEqual(posts, ["/non-msf-sessions", "/session-chat-map"], rel)
+        helper = ast.unparse(next(
+            node for node in ast.walk(ast.parse((_AGENTIC_DIR / "tools.py").read_text()))
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "post_session_manager"))
+        self.assertIn("kali_auth_headers_for_run(handle)", helper)
+        self.assertIn("read_answer(", helper)
+        self.assertNotIn(".post(", helper)
 
     def test_the_session_manager_has_no_fixed_address_left(self):
         # The base comes from the run's handle (kali_base_for_run), never the environment.

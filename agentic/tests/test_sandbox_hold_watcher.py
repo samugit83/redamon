@@ -117,7 +117,9 @@ class World:
                 "sessions": data["sessions"], "jobs": data["jobs"],
                 "non_msf_sessions": data["non_msf"], "cache_age_seconds": 1.0, "agent_busy": False})
         if url.port == contract.PORTS["tunnel"] and url.path == "/tunnel/status":
-            if request.headers.get("authorization") != f"Bearer {data['tunnel_token']}":
+            # As tunnel_manager.py: the tunnel token, or the instance's MCP token, may read it.
+            if request.headers.get("authorization") not in (f"Bearer {data['tunnel_token']}",
+                                                            f"Bearer {data['token']}"):
                 return httpx.Response(401, json={"error": "unauthorized"})
             active = data["tunnel"]
             return httpx.Response(200, json={"ngrok": {"active": active == "ngrok"},
@@ -569,13 +571,16 @@ class TestTokens(HoldTest):
             self.assertEqual(headers.get("authorization"), f"Bearer {want}", (host, port))
         self.assertEqual(len(self.world.leases()), 2)
 
-    async def test_no_tunnel_token_no_tunnel_read(self):
-        """The gateway's list carries no tunnel token: until the push hands it over, the tunnel
-        manager is not asked (and an active tunnel justifies nothing)."""
-        self.world.add("alice", tunnel="ngrok")
+    async def test_without_a_pushed_tunnel_token_the_mcp_token_reads_the_tunnel(self):
+        """The gateway's list carries no tunnel token, and an agent restarted since the push
+        holds none: the tunnel manager is read with the instance's MCP token, which it accepts
+        for its status, so a live tunnel still holds its sandbox."""
+        key = self.world.add("alice", tunnel="ngrok")
         await self.watcher.watch_once()
-        self.assertEqual(self.world.reads("tunnel"), [])
-        self.assertEqual(self.world.leases(), [])
+        reads = self.world.reads("tunnel")
+        self.assertEqual(len(reads), 1)
+        self.assertEqual(reads[0][5].get("authorization"), f"Bearer {self.world.inst(key)['token']}")
+        self.assertEqual(len(self.world.leases()), 1)
 
     async def test_note_tunnel_ignores_malformed_handles(self):
         key = self.world.add("alice", tunnel="ngrok")
@@ -584,7 +589,9 @@ class TestTokens(HoldTest):
         self.watcher.note_tunnel(bad)
         self.watcher.note_tunnel(None)
         await self.watcher.watch_once()
-        self.assertEqual(self.world.reads("tunnel"), [])
+        # The malformed token is never sent: the read falls back to the instance's MCP token.
+        headers = [r[5].get("authorization") for r in self.world.reads("tunnel")]
+        self.assertEqual(headers, [f"Bearer {self.world.inst(key)['token']}"])
 
     async def test_nothing_secret_is_logged(self):
         key = self.world.add("alice", sessions=[SESSION], non_msf=[NON_MSF], tunnel="ngrok")

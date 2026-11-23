@@ -62,6 +62,8 @@ _SCAN_MAX_NAMES = 1_000_000
 # a crash leaves its running jobs among the newest, and a flood cannot hold the boot.
 _BOOT_MAX_PER_PROJECT = 20_000
 _OWN_ID_RE = re.compile(r"[0-9a-f]{32}")
+# sandbox_contract.USER_ID_RE, without the import: a person id as the contract allows it.
+_OWNER_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 # spawn() names jobs uuid4().hex; a disk record or an id the model typed into
 # job_status is held to the same single safe path component.
 _JOB_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
@@ -295,6 +297,26 @@ def _read_log_end(project_id: str, job_id: str, max_bytes: int) -> tuple[int, by
             os.close(fd)
 
 
+#: Every person's sandbox jobs together, whatever each person's own cap: each still holds
+#: a task and a log in the agent, which every tenant shares.
+SANDBOX_JOBS_MAX = 256
+
+
+def owner_of(row) -> Optional[str]:
+    """The person a job row names as its owner, or None: no owner, or a value that is not a
+    person id (a record from before owners were kept, or one a sandbox rewrote)."""
+    owner = row.get("owner_user") if isinstance(row, dict) else None
+    return owner if isinstance(owner, str) and _OWNER_RE.fullmatch(owner) else None
+
+
+def owned_by_another(row, person: Optional[str]) -> bool:
+    """True when the row names an owner other than ``person``. A row with no owner stays
+    the project's, as before owners were kept. A sandbox can rewrite a record on disk, but
+    only to name someone or no one: that never shows a job to anyone the project did not."""
+    owner = owner_of(row)
+    return owner is not None and owner != person
+
+
 def _governed_max_jobs() -> Optional[int]:
     """Concurrent-background-job ceiling byte-budgeted to available RAM, or None to
     not cap (governor disabled / unavailable). Each job is a real subprocess
@@ -337,6 +359,14 @@ class JobHandle:
     # False for workspace upload/import jobs: they run in-process and are capped
     # by WORKSPACE_IMPORT_MAX_JOBS instead of taking a governed subprocess slot.
     counts_toward_cap: bool = True
+    # The person (and view) whose chat or MCP token started the job. Only the copy in this
+    # process decides who may see or stop it: the record on disk sits in a folder every
+    # sandbox that mounts the project writes.
+    owner_user: Optional[str] = None
+    owner_view: Optional[str] = None
+    # True when the job's tool runs in the owner's Kali sandbox: its process uses that
+    # sandbox's memory, so it is capped per person rather than against the agent's own.
+    in_sandbox: bool = False
     task: Optional[asyncio.Task] = field(default=None, repr=False)
 
     def to_dict(self) -> dict:
@@ -515,8 +545,15 @@ class JobRegistry:
         runner: RunnerFn,
         label: Optional[str] = None,
         counts_toward_cap: bool = True,
+        owner_user: Optional[str] = None,
+        owner_view: Optional[str] = None,
+        in_sandbox: bool = False,
     ) -> dict:
-        """Kick off a background tool execution. Returns synchronously."""
+        """Kick off a background tool execution. Returns synchronously.
+
+        ``owner_user``/``owner_view``: who started it (a chat run's person, an MCP token's
+        owner); only they see and stop it. ``in_sandbox``: its tool runs in that person's
+        Kali sandbox, so it counts against their own cap, not every tenant's."""
         if not project_id:
             return {"error": "project_id required"}
         if not valid_project_id(project_id):
@@ -546,13 +583,28 @@ class JobRegistry:
             started_at=started,
             output_path=str(log_path),
             counts_toward_cap=counts_toward_cap,
+            owner_user=owner_user if owner_of({"owner_user": owner_user}) else None,
+            owner_view=owner_view if owner_view in ("own", "act_as") else None,
+            in_sandbox=bool(in_sandbox and owner_of({"owner_user": owner_user})),
         )
         # Count-and-insert atomically under the lock so two concurrent spawns
         # can't both pass the cap and over-admit.
         async with self._lock:
-            if cap is not None:
-                active = sum(1 for h in self._jobs.values()
-                             if h.status == "running" and h.counts_toward_cap)
+            running = [h for h in self._jobs.values() if h.status == "running" and h.counts_toward_cap]
+            if cap is not None and handle.in_sandbox:
+                # Each person's sandbox carries its own jobs: one person's many scans must
+                # not refuse everyone else's, as a count over every tenant would.
+                mine = sum(1 for h in running if h.in_sandbox and h.owner_user == handle.owner_user)
+                if mine >= cap:
+                    return {"error": f"Too many background jobs running in your Kali sandbox "
+                                     f"({mine}/{cap}); wait for one to end or cancel one.",
+                            "limitType": "ram"}
+                total = sum(1 for h in running if h.in_sandbox)
+                if total >= SANDBOX_JOBS_MAX:
+                    return {"error": f"Too many background jobs running ({total}/"
+                                     f"{SANDBOX_JOBS_MAX}); retry shortly.", "limitType": "ram"}
+            elif cap is not None:
+                active = sum(1 for h in running if not h.in_sandbox)
                 if active >= cap:
                     return {"error": f"Too many background jobs running ({active}/{cap}); "
                                      f"memory-limited, retry shortly.", "limitType": "ram"}
@@ -691,6 +743,20 @@ class JobRegistry:
                 await self._notify({"type": "job_update", "project_id": project_id,
                                     "job_id": job_id, "status": "cancelled"})
         return self.status(project_id, job_id)
+
+    async def cancel_sandbox_jobs(self, user_id: Optional[str] = None, *,
+                                  timeout: float = 5.0) -> int:
+        """Cancel the running jobs whose tool runs in a Kali sandbox: every person's, or
+        ``user_id``'s alone. The emergency stop calls it before the sandboxes stop: a job
+        whose sandbox is then gone must not be left to start its work again in a new one.
+        Bounded: a job that does not end in ``timeout`` is left cancelling."""
+        targets = [h for h in list(self._jobs.values())
+                   if h.status == "running" and h.in_sandbox
+                   and (user_id is None or h.owner_user == user_id)]
+        if targets:
+            await asyncio.wait([asyncio.ensure_future(self.cancel(h.project_id, h.job_id))
+                                for h in targets], timeout=timeout)
+        return len(targets)
 
     def list(self, project_id: str, active: Optional[bool] = None) -> list[dict]:
         rows = [h.to_dict() for h in self._jobs.values() if h.project_id == project_id]

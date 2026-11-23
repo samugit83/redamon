@@ -122,20 +122,27 @@ def _stop_targets(run_key: str) -> List[Target]:
     return targets
 
 
+#: The stop's answer is `{"signalled": n}`; anything larger is not the sandbox's server.
+STOP_ANSWER_MAX_BYTES = 64 * 1024
+
+
 async def _post_stop(url: str, headers: dict, run_key: str, timeout: float) -> Optional[int]:
     """One stop request; how many processes the sandbox signalled, None on any failure.
-    Never raises."""
+    Never raises. The answer is read under a cap and the deadline, compression refused:
+    the sandbox's root decides what it answers, and the stop runs in the shared agent."""
     import httpx
+    from sandbox_http import read_answer
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(url, json={"run": run_key}, headers=headers)
+            resp = await read_answer(client, "POST", url, headers=headers, json={"run": run_key},
+                                     max_bytes=STOP_ANSWER_MAX_BYTES, deadline_s=timeout)
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[stop] sandbox processes of run {run_key} not stopped: {type(exc).__name__}")
         return None
-    if resp.status_code != 200:
-        note_kali_refusal(resp.status_code, "the run stop")
-        logger.warning(f"[stop] sandbox refused the stop of run {run_key}: HTTP {resp.status_code}")
+    if resp.status != 200:
+        note_kali_refusal(resp.status, "the run stop")
+        logger.warning(f"[stop] sandbox refused the stop of run {run_key}: HTTP {resp.status}")
         return None
     try:
         signalled = int(resp.json().get("signalled", 0))

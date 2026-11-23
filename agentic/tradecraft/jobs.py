@@ -98,31 +98,56 @@ def _agent_mcp_manager() -> Any:
     return SandboxBrowser() if _orchestrator_mcp_manager() is not None else None
 
 
+#: Refusals that hold for the rest of a job: the memory pool or the sandbox count is full,
+#: or the person may not have a sandbox. An outage or a stop may clear at the next page.
+_LASTING_REFUSALS = ("ram", "hard", "refused", "no_user")
+
+
 class SandboxBrowser:
     """The sandbox's browser, for the person bound to the work when it renders (group 1):
     a job's owner, a synchronous route's account, a chat run's person (the run actor, in the
     `act_as` view under act-as). No person, no browser: a page is never rendered in someone
-    else's sandbox."""
+    else's sandbox.
+
+    One instance serves one job (``default_fetcher``). After a refusal that lasts (no memory,
+    the sandbox limit, no sandbox for this account) it offers no browser for the rest of the
+    job: a crawl would otherwise ask for a sandbox again for every page, each refused."""
+
+    def __init__(self) -> None:
+        self.refused_reason: Optional[str] = None
 
     async def get_tools(self) -> list:
         from sandbox_router import sandbox_user
 
-        return [_SandboxBrowserTool()] if sandbox_user() else []
+        if self.refused_reason is not None or not sandbox_user():
+            return []
+        return [_SandboxBrowserTool(self)]
 
 
 class _SandboxBrowserTool:
     name = BROWSER_TOOL
 
+    def __init__(self, browser: Optional[SandboxBrowser] = None) -> None:
+        self._browser = browser
+
     async def ainvoke(self, args: dict) -> Any:
         import sandbox_router
 
-        # One `tradecraft` lease for the render, ended with it.
-        async with sandbox_router.using(sandbox_router.sandbox_user(), project_id=None,
-                                        kind="tradecraft") as handle:
-            tool = await sandbox_router.tool_for(BROWSER_TOOL, handle)
-            if tool is None:
-                raise LookupError("browser_unavailable")
-            return await tool.ainvoke(args)
+        try:
+            # One `tradecraft` lease for the render, ended with it.
+            async with sandbox_router.using(sandbox_router.sandbox_user(), project_id=None,
+                                            kind="tradecraft") as handle:
+                tool = await sandbox_router.tool_for(BROWSER_TOOL, handle)
+                if tool is None:
+                    raise net.BrowserUnavailable("no_tool")
+                return await tool.ainvoke(args)
+        except sandbox_router.SandboxUnavailable as exc:
+            if exc.reason in _LASTING_REFUSALS and self._browser is not None:
+                if self._browser.refused_reason is None:
+                    logger.info(f"[tradecraft] the Kali sandbox cannot render ({exc.reason}); "
+                                "the rest of this job reads pages without the browser")
+                self._browser.refused_reason = exc.reason
+            raise net.BrowserUnavailable(exc.reason) from None
 
 
 @contextlib.contextmanager

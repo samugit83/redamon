@@ -619,10 +619,13 @@ class TheRestartNote(RouterCase):
 
         executor, _ = self._executor(fresh=True, reverse_port=POOL)
         self.actor("bob")
-        async with router.run_scope("chat-1"):
-            swept = await sweep_session_bodies(
-                executor, {"execution_trace": [{"tool_args": {"command": "cat /tmp/rex-abc"}}]})
-            chat = await executor.execute("kali_shell", {"command": "id"}, "exploitation")
+        # The sweep runs only on a sandbox that is up (an earlier message used it); it never
+        # starts one, which test_body_sweep.py holds.
+        with mock.patch.object(router, "is_running", mock.AsyncMock(return_value=True)):
+            async with router.run_scope("chat-1"):
+                swept = await sweep_session_bodies(
+                    executor, {"execution_trace": [{"tool_args": {"command": "cat /tmp/rex-abc"}}]})
+                chat = await executor.execute("kali_shell", {"command": "id"}, "exploitation")
         self.assertEqual(swept, 1)
         self.assertTrue(chat.get("sandbox_note", "").startswith("[Kali sandbox started]"), chat)
 
@@ -647,11 +650,11 @@ class TheRestartNote(RouterCase):
                 return fail
 
         class Registry(_FakeRegistry):
-            async def spawn(self, project_id, tool_name, args, runner, label=None):
+            async def spawn(self, project_id, tool_name, args, runner, label=None, **owner):
                 async def keep(*a):
                     self.result = await runner(*a)
                     return self.result
-                return await super().spawn(project_id, tool_name, args, keep, label)
+                return await super().spawn(project_id, tool_name, args, keep, label, **owner)
 
         async def run(restart):
             router._reset()

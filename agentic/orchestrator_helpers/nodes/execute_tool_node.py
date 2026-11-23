@@ -4,17 +4,14 @@ import asyncio
 import re
 import logging
 
-import httpx
-
 from state import AgentState
 from orchestrator_helpers import roe_gate
 from orchestrator_helpers.json_utils import json_dumps_safe
 from orchestrator_helpers.config import get_identifiers, get_tenant_id
 from tools import (
-    current_sandbox_handle, kali_auth_headers_for_run, kali_base_for_run,
+    current_sandbox_handle, kali_base_for_run, post_session_manager,
     set_graph_view_context, set_phase_context, set_tenant_context,
 )
-from kali_auth import note_kali_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -296,32 +293,15 @@ async def execute_tool_node(
     if tool_name == "metasploit_console" and tool_output and session_manager_base:
         for match in re.finditer(r'session\s+(\d+)\s+opened', tool_output, re.IGNORECASE):
             msf_session_id = int(match.group(1))
-            try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    resp = await client.post(
-                        f"{session_manager_base}/session-chat-map",
-                        json={"msf_session_id": msf_session_id, "chat_session_id": session_id},
-                        headers=kali_auth_headers_for_run(run_sandbox),
-                    )
-                    note_kali_refusal(resp.status_code, "/session-chat-map")
-            except Exception:
-                pass  # Best effort, don't break execution
+            await post_session_manager(run_sandbox, "/session-chat-map", {
+                "msf_session_id": msf_session_id, "chat_session_id": session_id})
 
     # Register non-MSF listeners (netcat, socat) created via kali_shell
     if tool_name == "kali_shell" and tool_args and session_manager_base:
         cmd = tool_args.get("command", "")
         if re.search(r'(nc|ncat)\s+.*-l', cmd) or 'socat' in cmd:
-            try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    resp = await client.post(
-                        f"{session_manager_base}/non-msf-sessions",
-                        json={"type": "listener", "tool": "netcat", "command": cmd,
-                               "chat_session_id": session_id},
-                        headers=kali_auth_headers_for_run(run_sandbox),
-                    )
-                    note_kali_refusal(resp.status_code, "/non-msf-sessions")
-            except Exception:
-                pass
+            await post_session_manager(run_sandbox, "/non-msf-sessions", {
+                "type": "listener", "tool": "netcat", "command": cmd, "chat_session_id": session_id})
 
     updates = {
         "_current_step": step_data,

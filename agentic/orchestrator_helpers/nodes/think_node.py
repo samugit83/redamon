@@ -68,6 +68,7 @@ from prompts import (
     DEEP_THINK_SECTION,
     DEEP_THINK_SELF_REQUEST_INSTRUCTION,
     get_phase_tools,
+    reachable_port_note_needed,
     session_config_needed,
     build_phase_definitions,
     build_informational_guidance,
@@ -86,7 +87,7 @@ from prompts.base import (
 from prompts.skill_part_seam import applied_skill_workflow
 from prompts.classification import build_skill_menu
 from prompt_safety import wrap_untrusted
-from utils import get_session_config_prompt
+from utils import get_reachable_port_note, get_session_config_prompt
 from tools import set_tenant_context, set_phase_context, set_graph_view_context
 from sandbox_router import model_note
 
@@ -706,6 +707,9 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
     _session_config_text = ""
     if session_config_needed(phase, _post_expl_type == "statefull", attack_path_type):
         _session_config_text = get_session_config_prompt() or ""
+    elif reachable_port_note_needed(phase, _post_expl_type == "statefull", attack_path_type):
+        # The skill still sends the agent to the block for the one port a target reaches.
+        _session_config_text = get_reachable_port_note() or ""
     # Read now: a later LATS build in this node would overwrite it.
     skill_workflow = applied_skill_workflow.get()
 

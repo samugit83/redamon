@@ -347,6 +347,35 @@ def get_session_config_prompt() -> str:
     return "\n".join(lines)
 
 
+def get_reachable_port_note() -> str:
+    """One line for a run that does not show the full payload-settings block (stateless
+    mode, or before exploitation) but whose skill names it: an out-of-band XXE DTD, an RFI
+    payload or a takeover PoC served for the target to fetch needs the one port of the
+    person's sandbox a target can reach, and the address it reaches it at."""
+    p = payload_plan()
+    head = "### Pre-Configured Payload Settings (summary)\n"
+    if p.mode == "reverse" and p.tunnel:
+        name = _TUNNEL_NAMES.get(p.tunnel, p.tunnel)
+        return head + (f"Your one target-reachable inbound port: serve or listen on `4444` inside your "
+                       f"Kali sandbox; the target reaches it at `{p.lhost}:{p.lport}` through your "
+                       f"{name} tunnel. Nothing else in the sandbox is reachable from the target.")
+    if p.mode == "reverse":
+        return head + (f"Your one target-reachable inbound port: serve or listen on `{p.lport}` inside "
+                       f"your Kali sandbox; the target reaches it at `{p.lhost}:{p.lport}`. Nothing "
+                       f"else in the sandbox is reachable from the target.")
+    if p.mode == "ask_lhost":
+        return head + (f"Your Kali sandbox's target-reachable port is `{p.lport}`, but no LHOST is set: "
+                       f"the address a target reaches the RedAmon host at is not known. Ask the person "
+                       f"for it, or use OAST (interactsh) instead of serving a file.")
+    if p.mode == "unknown":
+        return head + ("Your sandbox's reverse port is not known yet: run `echo $MSF_REVERSE_PORT` in "
+                       "kali_shell (`4444` means it has none) before serving anything a target must "
+                       "fetch.")
+    return head + ("No port of your Kali sandbox is reachable from the target (no reverse port and no "
+                   "tunnel): never serve a file for the target to fetch; use OAST (interactsh) or a "
+                   "hosted endpoint that returns a body.")
+
+
 def _reverse_mode(p: PayloadPlan) -> list:
     LHOST, LPORT = p.lhost, p.lport
     if p.https:

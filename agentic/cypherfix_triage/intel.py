@@ -241,7 +241,12 @@ class CveIntel:
         person = self.actor_user_id
         with sandbox_router.for_person(person, acting=bool(self.real_actor_user_id)):
             try:
-                handle = await sandbox_router.acquire(person, project_id=self.project_id, kind="triage")
+                # The lookup reads no project folder: asking for the project to be mounted
+                # would replace a running sandbox that lacks it (its sessions and tunnels
+                # end with it). The project is still checked: the owner's key goes only to
+                # a sandbox of someone who may use it.
+                handle = await sandbox_router.acquire(person, project_id=None, kind="triage",
+                                                      check_project=self.project_id)
             except sandbox_router.SandboxUnavailable as e:
                 logger.info(f"No Kali sandbox for cve_intel ({e.reason}); the ranking uses class priors")
                 handle = None

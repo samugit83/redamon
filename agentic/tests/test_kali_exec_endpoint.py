@@ -73,10 +73,10 @@ class _FakeRegistry:
         d.mkdir(parents=True, exist_ok=True)
         return d / f"{job_id}.log"
 
-    async def spawn(self, project_id, tool_name, args, runner, label=None):
+    async def spawn(self, project_id, tool_name, args, runner, label=None, **owner):
         if self.spawn_error:
             return {"error": self.spawn_error}
-        self.spawned.append({"project_id": project_id, "tool_name": tool_name, "args": args})
+        self.spawned.append({"project_id": project_id, "tool_name": tool_name, "args": args, **owner})
         log = self._log(project_id, self.job_id)
         log.touch()
 
@@ -660,9 +660,20 @@ class PerUserPollAndCancelTests(_PerUserBase):
         self.assertEqual(self.registry.status("p1", self.job)["status"], "running")
 
     async def test_a_job_recorded_for_no_one_is_decided_by_project_and_id(self):
-        # A job from before an agent restart has no recorded person.
+        # A record written before owners were kept names no one (and the agent's own map
+        # is gone after a restart).
         router.forget_job(self.job)
+        self.registry._jobs[self.job].owner_user = None
         self.assertEqual((await self._poll(self.job)).status_code, 200)
+
+    async def test_after_a_restart_the_record_still_names_its_owner(self):
+        """The agent's own map is gone after a restart; the job's record names who started
+        it, so another person still reads and stops nothing."""
+        router.forget_job(self.job)
+        self.assertEqual((await self._poll(self.job, user_id="bob")).status_code, 404)
+        resp = await api.kali_exec_cancel(self.job, project_id="p1", user_id="bob")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual((await self._poll(self.job, user_id="carol")).status_code, 200)
 
     async def test_a_starting_job_reads_starting_when_polled(self):
         view = _body(await self._poll(self.job, user_id="carol"))
