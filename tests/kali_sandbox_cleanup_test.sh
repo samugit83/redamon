@@ -2,9 +2,14 @@
 # =============================================================================
 # redamon.sh handles the per-user Kali sandboxes the orchestrator spawns (group 1,
 # WI-S06-4). Compose does not manage them, so:
-#   - remove_spawned_containers (down, clean, purge) removes every container
-#     labelled redamon.sandbox=1, by label and never by name, so the shared
-#     `redamon-kali` and other plans' containers are never caught;
+#   - remove_spawned_containers (purge) removes every container labelled
+#     redamon.sandbox=1, by label and never by name, so the shared `redamon-kali`
+#     and other plans' containers are never caught; down and clean first ask the
+#     orchestrator to stop them all, then STOP (never remove) what is left
+#     (--stop-sandboxes), so the next adoption holds each one's reverse-shell pool
+#     port for its person (G-04);
+#   - purge also removes the sandboxes' output, template copies and port holds
+#     under mcp/output (G-31);
 #   - purge also removes the labelled sandbox networks (endpoints disconnected
 #     first) and the nuclei templates volume, whose name has no <project>_ prefix;
 #   - status lists them in a block of their own;
@@ -60,7 +65,7 @@ docker() {
     local mine=0
     [[ " $* " == *" $OWNER_FILTER "* ]] && mine=1
     case "$1 ${2:-}" in
-        "ps -aq")
+        "ps -aq"|"ps -q")
             if [[ "$*" == *"label=redamon.sandbox=1"* ]]; then
                 [[ -n "$SANDBOX_IDS" ]] && printf '%s\n' $SANDBOX_IDS
                 [[ $mine -eq 1 ]] || printf '%s\n' $OTHER_IDS
@@ -157,8 +162,88 @@ else
     fail "cmd_purge removes the sandboxes before their networks (containers at '$spawned_at', networks at '$sandbox_at')"
 fi
 for f in cmd_down cmd_clean; do
-    assert_contains "$f removes the spawned containers" "$(declare -f "$f")" "remove_spawned_containers"
+    body="$(declare -f "$f")"
+    assert_contains "$f stops the spawned containers" "$body" "remove_spawned_containers --stop-sandboxes"
+    assert_not_contains "$f never removes a sandbox" "$(grep -E 'remove_spawned_containers *;?$' <<< "$body")" "remove_spawned_containers"
+    post_at="$(grep -n '_sandbox_stop_all_post' <<< "$body" | head -n1 | cut -d: -f1)"
+    stop_at="$(grep -n 'remove_spawned_containers --stop-sandboxes' <<< "$body" | head -n1 | cut -d: -f1)"
+    if [[ -n "$post_at" && -n "$stop_at" && "$post_at" -lt "$stop_at" ]]; then
+        pass "$f asks the orchestrator to stop them first"
+    else
+        fail "$f asks the orchestrator to stop them first (post at '$post_at', stop at '$stop_at')"
+    fi
 done
+assert_not_contains "cmd_purge removes the sandboxes" "$purge_body" "--stop-sandboxes"
+out_at="$(grep -n '_purge_kali_sandbox_output' <<< "$purge_body" | head -n1 | cut -d: -f1)"
+if [[ -n "$out_at" && -n "$sandbox_at" && "$sandbox_at" -lt "$out_at" ]]; then
+    pass "cmd_purge removes the sandboxes' output after the sandboxes"
+else
+    fail "cmd_purge removes the sandboxes' output after the sandboxes (resources at '$sandbox_at', output at '$out_at')"
+fi
+
+# =============================================================================
+section "down and clean stop the sandboxes, so their pool ports stay held (G-04)"
+reset
+SPAWNED_IDS="ai01"
+SANDBOX_IDS="sbx01 sbx02"
+remove_spawned_containers --stop-sandboxes
+assert_contains "the AI containers are still removed" "$(grep -E '^rm -f' "$CALLS")" "ai01"
+assert_not_contains "no sandbox is removed" "$(grep -E '^rm -f' "$CALLS")" "sbx0"
+assert_contains "every sandbox is stopped" "$(grep -E '^stop ' "$CALLS")" "sbx01 sbx02"
+assert_not_contains "another stack's sandbox is left alone" "$(grep -E '^stop ' "$CALLS")" "other01"
+
+# The orchestrator's stop-all, reached only with the key, and only while a sandbox runs.
+FAKE="$TMP/checkout"; mkdir -p "$FAKE"
+CURLS="$TMP/curls"
+curl() { printf '%s\n' "$*" >> "$CURLS"; return 0; }
+( SCRIPT_DIR="$FAKE"; : > "$CURLS"; reset; SANDBOX_IDS="sbx01"; _sandbox_stop_all_post; echo "rc=$?" > "$TMP/rc" )
+assert_eq "no .env key: no call" "$(cat "$CURLS")" ""
+assert_eq "and a failure the caller ignores" "$(cat "$TMP/rc")" "rc=1"
+printf 'ORCHESTRATOR_API_KEY=k123\nRECON_ORCH_PORT=8011\n' > "$FAKE/.env"
+( SCRIPT_DIR="$FAKE"; : > "$CURLS"; reset; _sandbox_stop_all_post )
+assert_eq "no sandbox running: no call" "$(cat "$CURLS")" ""
+( SCRIPT_DIR="$FAKE"; : > "$CURLS"; reset; SANDBOX_IDS="sbx01"; _sandbox_stop_all_post )
+posted="$(cat "$CURLS")"
+assert_contains "stop-all on the orchestrator's port" "$posted" "http://127.0.0.1:8011/sandboxes/stop-all"
+assert_contains "with the orchestrator key" "$posted" "X-Orchestrator-Key: k123"
+assert_contains "as an operator stop" "$posted" '{"reason":"operator"}'
+assert_contains "bounded" "$posted" "--max-time"
+unset -f curl
+
+# =============================================================================
+section "purge removes the sandboxes' output, template copies and port holds (G-31)"
+OUT="$FAKE/mcp/output"
+mkdir -p "$OUT/users/aaaa" "$OUT/templates/bbbb" "$OUT/keep"
+touch "$OUT/users/aaaa/scan.txt" "$OUT/.sandbox-port-holds.json" "$OUT/.sandbox-port-holds.json.prev" "$OUT/n.py"
+SUDOS="$TMP/sudos"; : > "$SUDOS"
+sudo() { printf '%s\n' "$*" >> "$SUDOS"; return 0; }
+( SCRIPT_DIR="$FAKE"; _purge_kali_sandbox_output )
+for gone in users templates .sandbox-port-holds.json .sandbox-port-holds.json.prev; do
+    if [[ ! -e "$OUT/$gone" ]]; then pass "purge removes mcp/output/$gone"; else fail "purge removes mcp/output/$gone"; fi
+done
+if [[ -e "$OUT/n.py" && -d "$OUT/keep" ]]; then pass "anything else in mcp/output is kept"; else fail "anything else in mcp/output is kept"; fi
+assert_eq "no sudo when a plain rm works" "$(cat "$SUDOS")" ""
+unset -f sudo
+
+# =============================================================================
+section "the shared container's other knobs are named as ignored too (G-39)"
+# They reached its environment or moved its published ports; a sandbox's environment
+# is fixed by the contract and it publishes none of those ports.
+RET="$TMP/retired"; mkdir -p "$RET"
+printf '%s\n' MSF_AUTO_UPDATE=true NUCLEI_AUTO_UPDATE=false MSF_PROJECT_LEASE_IDLE_S=60 \
+    MCP_NETWORK_RECON_PORT=9000 MCP_NUCLEI_PORT=9002 MCP_METASPLOIT_PORT=9003 MCP_NMAP_PORT=9004 \
+    MCP_PLAYWRIGHT_PORT=9005 MCP_SERVER_TOKEN=keep TERMINAL_MAX_SESSIONS=4 > "$RET/.env"
+info() { printf 'INFO %s\n' "$*"; }
+out="$(SCRIPT_DIR="$RET"; _RETIRED_KALI_NOTED=""; _env_note_retired_kali_keys)"
+info() { :; }
+for k in MSF_AUTO_UPDATE NUCLEI_AUTO_UPDATE MSF_PROJECT_LEASE_IDLE_S MCP_NETWORK_RECON_PORT \
+         MCP_NUCLEI_PORT MCP_METASPLOIT_PORT MCP_NMAP_PORT MCP_PLAYWRIGHT_PORT; do
+    assert_contains "$k is named as ignored" "$out" "$k in .env is ignored"
+done
+assert_contains "a port knob says why" "$out" "MCP_NMAP_PORT in .env is ignored: it moved a port of the shared Kali container"
+assert_contains "an update knob says why" "$out" "MSF_AUTO_UPDATE in .env is ignored: a sandbox never updates itself"
+assert_not_contains "a key still in use is not named" "$out" "MCP_SERVER_TOKEN"
+assert_not_contains "the terminal cap still reaches each sandbox" "$out" "TERMINAL_MAX_SESSIONS"
 
 # =============================================================================
 section "status lists the sandboxes in a block of their own"

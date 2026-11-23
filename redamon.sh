@@ -3136,8 +3136,13 @@ cmd_reset_password() {
 # scan containers + the on-demand local LLM). Safe to call anytime — a no-op when
 # none are present. Must run BEFORE `compose down --volumes` so the local-llm
 # container releases the models volume and it can actually be removed.
+# With --stop-sandboxes (down, clean) the per-user Kali sandboxes are stopped, not
+# removed: the orchestrator's next start adopts nothing that exited and removes it,
+# holding its reverse-shell pool port for its person (KALI_SANDBOX_PORT_HOLD_HOURS),
+# so a late callback never reaches whoever starts next. purge removes them.
 remove_spawned_containers() {
-    local ids sandboxes
+    local ids sandboxes keep_sandboxes=0
+    [[ "${1:-}" == "--stop-sandboxes" ]] && keep_sandboxes=1
     ids=$(docker ps -aq "${SPAWNED_CONTAINER_NAME_FILTERS[@]}" 2>/dev/null || true)
     # A separate call: docker ps ANDs a label filter with the name filters.
     sandboxes=$(docker ps -aq "${_SANDBOX_LABEL_FILTERS[@]}" --filter "$(_sandbox_owner_filter)" 2>/dev/null || true)
@@ -3146,11 +3151,32 @@ remove_spawned_containers() {
         # shellcheck disable=SC2086
         docker rm -f $ids >/dev/null 2>&1 || true
     fi
-    if [[ -n "$sandboxes" ]]; then
+    if [[ -n "$sandboxes" && $keep_sandboxes -eq 1 ]]; then
+        info "Stopping per-user Kali sandboxes..."
+        # shellcheck disable=SC2086
+        docker stop -t 10 $sandboxes >/dev/null 2>&1 || true
+    elif [[ -n "$sandboxes" ]]; then
         info "Removing per-user Kali sandboxes..."
         # shellcheck disable=SC2086
         docker rm -f $sandboxes >/dev/null 2>&1 || true
     fi
+}
+
+# Asks the running orchestrator to stop every sandbox (reason "operator"): it holds
+# each one's pool port for its person and removes the sandbox networks. Best effort,
+# bounded; what it leaves (no key, the orchestrator down or slow) is stopped by
+# remove_spawned_containers --stop-sandboxes and held at the next adoption.
+_sandbox_stop_all_post() {
+    local env_file="$SCRIPT_DIR/.env" okey="" port=""
+    okey="$(_env_get ORCHESTRATOR_API_KEY "$env_file")"
+    port="$(_env_get RECON_ORCH_PORT "$env_file")"
+    port="${port:-8010}"
+    [ -z "$okey" ] && return 1
+    docker ps -q "${_SANDBOX_LABEL_FILTERS[@]}" --filter "$(_sandbox_owner_filter)" 2>/dev/null | grep -q . || return 0
+    info "Stopping per-user Kali sandboxes through the orchestrator..."
+    curl -fsS --max-time 60 -X POST "http://127.0.0.1:${port}/sandboxes/stop-all" \
+        -H "X-Orchestrator-Key: ${okey}" -H 'Content-Type: application/json' \
+        -d '{"reason":"operator"}' -o /dev/null 2>/dev/null
 }
 
 # Per-user Kali sandboxes and their networks carry the label redamon.sandbox=1
@@ -3176,6 +3202,20 @@ _purge_kali_sandbox_resources() {
         docker network rm "$net" >/dev/null 2>&1 || true
     done
     docker volume rm redamon-kali-nuclei-templates >/dev/null 2>&1 || true
+}
+
+# What the sandboxes left in mcp/output: every person's output folder (their Kali
+# tools' output, possibly target data), the per-view custom templates copies and the
+# reverse-shell port holds, which would keep pool ports from new people for a day
+# after a reinstall. The orchestrator made them as root, so a plain rm may fail.
+_purge_kali_sandbox_output() {
+    local out="$SCRIPT_DIR/mcp/output"
+    local paths=("$out/users" "$out/templates" "$out/.sandbox-port-holds.json" "$out/.sandbox-port-holds.json.prev")
+    if ! rm -rf -- "${paths[@]}" 2>/dev/null; then
+        warn "Root-owned Kali sandbox output detected, elevating with sudo..."
+        sudo rm -rf -- "${paths[@]}" \
+            || warn "Could not remove the Kali sandbox output; remove it manually: sudo rm -rf ${paths[*]}"
+    fi
 }
 
 # The third-party tool images recon/entrypoint.sh pre-pulls (its IMAGES array),
@@ -5100,12 +5140,13 @@ cmd_down() {
     # The on-demand LLM + any in-flight AI scan containers are orchestrator-spawned
     # (not compose-managed), so stop them too — otherwise the local LLM keeps
     # holding RAM after `down`.
-    remove_spawned_containers
+    _sandbox_stop_all_post || true
+    remove_spawned_containers --stop-sandboxes
     _retire_shared_kali
     # --profile plugins: older Compose leaves profile containers running otherwise.
     docker compose --profile plugins down
     # Again: a sandbox the orchestrator started while compose was stopping it.
-    remove_spawned_containers
+    remove_spawned_containers --stop-sandboxes
     success "All services stopped. Volumes and images preserved."
 }
 
@@ -5120,15 +5161,22 @@ cmd_clean() {
     fi
 
     info "Stopping containers..."
-    remove_spawned_containers
+    _sandbox_stop_all_post || true
+    remove_spawned_containers --stop-sandboxes
     docker compose --profile tools --profile plugins down
     # Again: a sandbox the orchestrator started while compose was stopping it.
-    remove_spawned_containers
+    remove_spawned_containers --stop-sandboxes
 
     info "Removing RedAmon images..."
     remove_redamon_images
     docker image prune -f >/dev/null 2>&1 || true
 
+    local kept
+    kept=$(docker ps -aq "${_SANDBOX_LABEL_FILTERS[@]}" --filter "$(_sandbox_owner_filter)" 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "${kept:-0}" -gt 0 ]]; then
+        info "${kept} stopped Kali sandbox(es) are kept, with the Kali image they use, so their reverse-shell"
+        info "ports stay held for their people; the next start removes them, and ./redamon.sh purge does now."
+    fi
     success "All RedAmon containers and images removed. Volumes preserved."
     echo ""
     info "To reinstall: ./redamon.sh install"
@@ -5139,6 +5187,7 @@ cmd_purge() {
     warn "This will PERMANENTLY DELETE:"
     warn "  - All RedAmon containers and images"
     warn "  - ALL DATA: PostgreSQL, Neo4j, GVM feeds, reports, scan results"
+    warn "  - Every person's Kali sandbox output (mcp/output/users) and reverse-shell port holds"
     warn "  - Host-side KB index state (FAISS index, manifest, last-ingest marker)"
     warn "  - KB dedup state (.manifest.json, .file_hashes.json)"
     warn "  - Downloaded source files under services/knowledge_base/data/cache are PRESERVED"
@@ -5178,6 +5227,7 @@ cmd_purge() {
     docker network rm redamon-codefix-net >/dev/null 2>&1 || true
     docker network rm "${TRUFFLEHOG_NETWORK:-redamon-trufflehog-net}" >/dev/null 2>&1 || true
     _purge_kali_sandbox_resources
+    _purge_kali_sandbox_output
     # No profile of the down above has a service on it (_ensure_pentest_net).
     docker network rm "${_proj}_pentest-net" >/dev/null 2>&1 || true
     # Per-run TruffleHog scratch dirs (job file + findings before publication).
@@ -5981,8 +6031,12 @@ _ensure_pentest_net() {
 # Knobs of the shared Kali container that nothing reads any more. An operator's
 # line stays where it is (a roll-back needs it, and --preview writes nothing) and is
 # named once per run; KALI_MEM is the allocator's to name (_mem_note_ignored_pool_pins).
-# The *_HOST_PORT keys moved the host side of that container's published ports.
-_RETIRED_KALI_KEYS=(KALI_SANDBOX_MODE KALI_PIDS KALI_CPUS MSF_PROGRESS_HOST_PORT HYDRA_PROGRESS_HOST_PORT NGROK_API_HOST_PORT)
+# The *_HOST_PORT and MCP_*_PORT keys moved the host side of that container's
+# published ports; the other three reached its environment, and a sandbox's
+# environment is fixed (sandbox_contract.py CONTAINER_ENV_FIXED).
+_RETIRED_KALI_KEYS=(KALI_SANDBOX_MODE KALI_PIDS KALI_CPUS MSF_PROGRESS_HOST_PORT HYDRA_PROGRESS_HOST_PORT NGROK_API_HOST_PORT
+    MCP_NETWORK_RECON_PORT MCP_NUCLEI_PORT MCP_METASPLOIT_PORT MCP_NMAP_PORT MCP_PLAYWRIGHT_PORT
+    MSF_AUTO_UPDATE NUCLEI_AUTO_UPDATE MSF_PROJECT_LEASE_IDLE_S)
 _RETIRED_KALI_NOTED=""
 _env_note_retired_kali_keys() {
     local env_file="$SCRIPT_DIR/.env" key why
@@ -5991,7 +6045,9 @@ _env_note_retired_kali_keys() {
     for key in "${_RETIRED_KALI_KEYS[@]}"; do
         grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}=[[:space:]]*[^[:space:]]" "$env_file" 2>/dev/null || continue
         case "$key" in
-            *_HOST_PORT) why="it moved a port of the shared Kali container, and no person's sandbox publishes that port" ;;
+            *_HOST_PORT|MCP_*_PORT) why="it moved a port of the shared Kali container, and no person's sandbox publishes that port" ;;
+            MSF_AUTO_UPDATE|NUCLEI_AUTO_UPDATE) why="a sandbox never updates itself: update refreshes the Kali image's Metasploit daily and the orchestrator the shared nuclei templates" ;;
+            MSF_PROJECT_LEASE_IDLE_S) why="each person's Kali sandbox has a fixed environment, with the default handover time" ;;
             *) why="each person's Kali sandbox has fixed limits and no mode switch" ;;
         esac
         info "${key} in .env is ignored: ${why}"
