@@ -2751,7 +2751,8 @@ class PhaseAwareToolExecutor:
 
         if tool_name == "job_list":
             active = args.get("active", None)
-            rows = reg.list(project_id, active=active)
+            # Off the event loop: the disk part reads a jobs/ folder a sandbox writes.
+            rows = await reg.list_async(project_id, active=active)
             return {"success": True, "output": str(rows), "error": None}
 
         return {"success": False, "output": None, "error": f"unknown job tool: {tool_name}"}

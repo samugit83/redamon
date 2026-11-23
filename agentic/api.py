@@ -2909,7 +2909,7 @@ async def workspace_jobs_list(
     if not projectId:
         return JSONResponse(content={"error": "projectId required"}, status_code=400)
     reg = job_runner.get_registry()
-    return {"projectId": projectId, "jobs": reg.list(projectId, active=active)}
+    return {"projectId": projectId, "jobs": await reg.list_async(projectId, active=active)}
 
 
 @app.post("/workspace/jobs/{job_id}/cancel", tags=["Workspace"],
@@ -3069,7 +3069,8 @@ async def workspace_properties(
     if not projectId:
         return JSONResponse(content={"error": "projectId required"}, status_code=400)
     try:
-        return workspace_fs.properties_for_project(projectId, path)
+        # Off the event loop: the popover hashes the file (up to 256 MiB).
+        return await workspace_fs._off_loop(workspace_fs.properties_for_project, projectId, path)
     except ValueError as e:
         return JSONResponse(content={"error": str(e)}, status_code=400)
     except Exception as e:
@@ -6022,41 +6023,40 @@ def _kali_failure_text(phase) -> str:
 # is what JobRegistry.spawn generates, and nothing else is accepted. This is NOT
 # part of the removed command guard - it protects the AGENT container from a
 # poisoned id, and stays whatever kali_exec is allowed to run.
-_KALI_JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+# fullmatch: `$` alone also matches before a trailing newline.
+_KALI_JOB_ID_RE = re.compile(r"[0-9a-f]{32}")
+# JobRegistry.spawn's refusals that are not a job cap (those carry no code: 429).
+_KALI_SPAWN_ERROR_STATUS = {"invalid_project_id": 400, "job_store_refused": 409,
+                            "job_store_error": 503}
 
 
-def _kali_log_path(project_id: str, job_id: str) -> str:
-    """Derive the log path from the tenant and job id, SERVER-SIDE.
+def _kali_read_log(project_id: str, job_id: str, cursor: int) -> dict:
+    """Read the job's log forward from a byte offset, reporting where to resume.
 
-    Never from the job's own metadata. `JobRegistry.status()` falls back to
-    reading `<workspace>/<project>/jobs/<job_id>.meta.json` off disk and returns
-    its parsed contents, and kali_exec can write into that same workspace - so
-    trusting the `output_path` it carries turned two allowed calls into an
-    arbitrary file read on THIS container (INTERNAL_API_KEY, NEO4J_PASSWORD via
-    /proc/self/environ). Composing the path here means a poisoned meta file
-    cannot redirect the read.
-    """
-    root = os.environ.get("WORKSPACE_ROOT", "/workspace")
-    return os.path.join(root, project_id, "jobs", f"{job_id}.log")
-
-
-def _kali_read_log(path: str, cursor: int) -> dict:
-    """Read forward from a byte offset, reporting where to resume.
+    The log is named by (project_id, job_id) here, SERVER-SIDE, never by the job's
+    own metadata: `JobRegistry.status()` falls back to the sandbox-writable
+    `<job_id>.meta.json`, and trusting the `output_path` it carries was an arbitrary
+    file read on THIS container (INTERNAL_API_KEY, NEO4J_PASSWORD via
+    /proc/self/environ). The composed name is not enough either, since the sandbox
+    can put a link AT it, or make jobs/ a link: job_runner.read_log opens it by
+    descriptor, without following a link, regular files only (FU-29, STRIDE I6).
 
     Byte offsets, not lines: the caller resumes exactly where it stopped, and a
     partial read can never be mistaken for the whole output.
     """
-    if not path:
-        return {"output": "", "next_cursor": cursor, "truncated": False}
+    empty = {"output": "", "next_cursor": cursor, "truncated": False}
     try:
-        with open(path, "rb") as fh:
-            fh.seek(max(0, int(cursor)))
-            chunk = fh.read(KALI_EXEC_MAX_OUTPUT_BYTES + 1)
+        chunk = job_runner.read_log(
+            project_id, job_id, cursor, KALI_EXEC_MAX_OUTPUT_BYTES + 1,
+            root=os.environ.get("WORKSPACE_ROOT", "/workspace"))
     except FileNotFoundError:
-        return {"output": "", "next_cursor": cursor, "truncated": False}
-    except OSError as exc:
+        return empty
+    except job_runner.JobFileRefused as exc:
+        job_runner.note_refusal(project_id, f"{job_id}.log", exc)
+        return empty
+    except (OSError, ValueError, OverflowError) as exc:
         logger.error("kali_exec log read failed: %s", exc)
-        return {"output": "", "next_cursor": cursor, "truncated": False}
+        return empty
 
     truncated = len(chunk) > KALI_EXEC_MAX_OUTPUT_BYTES
     chunk = chunk[:KALI_EXEC_MAX_OUTPUT_BYTES]
@@ -6085,8 +6085,8 @@ def _kali_lookup_failed(state: dict) -> bool:
 def _kali_job_view(state: dict, cursor: int, project_id: str, job_id: str) -> dict:
     """The wire shape shared by exec, poll and cancel, so a caller parses one.
 
-    The log path is composed from (project_id, job_id), NOT read from `state`:
-    see _kali_log_path.
+    The log is named by (project_id, job_id), NOT read from `state`: see
+    _kali_read_log.
     """
     view = {
         "job_id": state.get("job_id") or job_id,
@@ -6095,7 +6095,7 @@ def _kali_job_view(state: dict, cursor: int, project_id: str, job_id: str) -> di
         "started_at": state.get("started_at"),
         "ended_at": state.get("ended_at"),
     }
-    view.update(_kali_read_log(_kali_log_path(project_id, job_id), cursor))
+    view.update(_kali_read_log(project_id, job_id, cursor))
     # WHY it failed, not just that it did. Without this a timed-out scan is
     # indistinguishable from a scan that ran clean and found nothing.
     if state.get("error"):
@@ -6236,7 +6236,9 @@ async def kali_exec(body: KaliExecRequest):
             label=safe_command.split()[0][:40] if safe_command.split() else "kali_shell",
         )
     if isinstance(spawned, dict) and spawned.get("error"):
-        return JSONResponse(status_code=429, content={"error": spawned["error"]})
+        # Only a job cap is worth retrying; a refused jobs/ folder or project id is not.
+        return JSONResponse(status_code=_KALI_SPAWN_ERROR_STATUS.get(spawned.get("code"), 429),
+                            content={"error": spawned["error"], "code": spawned.get("code")})
 
     job_id = spawned["job_id"]
     if cold:
@@ -6263,7 +6265,7 @@ async def kali_exec_status(
     user_id: Annotated[Optional[str], Query()] = None,
 ):
     """Poll a running command and read its output forward from `cursor`."""
-    if not _KALI_JOB_ID_RE.match(job_id or "") or _kali_job_of_another(job_id, user_id):
+    if not _KALI_JOB_ID_RE.fullmatch(job_id or "") or _kali_job_of_another(job_id, user_id):
         return JSONResponse(status_code=404, content={"error": "no such command"})
     reg = job_runner.get_registry()
     # status() keys on (project_id, job_id) and reads a per-project directory,
@@ -6278,7 +6280,7 @@ async def kali_exec_status(
 async def kali_exec_cancel(job_id: str, project_id: str = Query(...),
                            user_id: Annotated[Optional[str], Query()] = None):
     """Stop a running command. An agent that can start one must be able to."""
-    if not _KALI_JOB_ID_RE.match(job_id or "") or _kali_job_of_another(job_id, user_id):
+    if not _KALI_JOB_ID_RE.fullmatch(job_id or "") or _kali_job_of_another(job_id, user_id):
         return JSONResponse(status_code=404, content={"error": "no such command"})
     reg = job_runner.get_registry()
     state = reg.status(project_id, job_id)

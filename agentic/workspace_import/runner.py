@@ -18,7 +18,7 @@ from typing import Optional
 import job_runner
 from workspace_import import busy, github, jobs_common, place, provenance, staging
 from workspace_import.detect import FORGE_KINDS, MIRROR_KINDS, is_html
-from workspace_import.errors import ImportFailure, map_os_error
+from workspace_import.errors import ImportFailure, map_os_error, spawn_refusal
 from workspace_import.extract import safe_extract, single_top_dir
 from workspace_import.fetch import GuardedFetcher
 from workspace_import.limits import max_bytes
@@ -339,7 +339,7 @@ async def start(spec: ImportSpec, insp, *, project_id: str, github_token: str) -
         raise
     if not isinstance(started, dict) or "job_id" not in started:
         _running.pop(key, None)
-        raise ImportFailure("too_many_jobs")
+        raise spawn_refusal(started)
     if not entry["done"] and entry["job_id"] is None:
         entry["job_id"] = started["job_id"]
     return {"jobId": started["job_id"], "kind": insp.kind, "destDir": spec.dest_dir, "name": spec.name}

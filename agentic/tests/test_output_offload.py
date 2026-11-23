@@ -259,7 +259,7 @@ class TestWriteFailureFallback(OffloadTestBase):
     @unittest.skipIf(
         os.geteuid() == 0,
         "chmod-based write denial is a no-op for root (the container runs as "
-        "root); the monkeypatched-write_text sibling test covers this path "
+        "root); the sibling test, which makes workspace_fs._write_file fail, covers this path "
         "root-safely",
     )
     def test_disk_write_failure_falls_back_to_inline(self):
@@ -277,26 +277,21 @@ class TestWriteFailureFallback(OffloadTestBase):
             os.chmod(self.tmp, 0o700)  # restore so tearDown can rmtree
 
     def test_dir_writable_but_file_write_fails(self):
-        # Different failure mode: dir is fine but the target file is somehow
-        # un-writable. Pre-create the target as a read-only file with a
-        # specific name we can predict.
-        # We monkeypatch Path.write_text to raise once, then restore.
-        from pathlib import Path as _P
-        orig = _P.write_text
+        # Different failure mode: dir is fine but writing the file fails. The
+        # file is written through workspace_fs._write_file (the pinned-folder
+        # writer), so that is where the failure is simulated.
+        from unittest import mock
         calls = {"n": 0}
 
-        def boom(self, *a, **kw):
+        def boom(*a, **kw):
             calls["n"] += 1
             raise PermissionError("simulated disk full")
 
-        _P.write_text = boom
-        try:
+        with mock.patch.object(output_offload.workspace_fs, "_write_file", boom):
             text = "x" * 100_000
             out = output_offload.maybe_offload("p1", "execute_nuclei", text)
-            self.assertEqual(calls["n"], 1)
-            self.assertEqual(out, text)  # fell back to inline
-        finally:
-            _P.write_text = orig
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(out, text)  # fell back to inline
 
 
 if __name__ == "__main__":

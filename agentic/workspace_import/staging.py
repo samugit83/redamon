@@ -233,6 +233,24 @@ def _read_swap_record(rec: Path) -> Optional[str]:
     return b"".join(chunks).decode("utf-8")
 
 
+def _restore_into(entry: Path, target: Path, project_root: Path) -> bool:
+    """Rename `entry` back to `target` unless something is there. The target's
+    folder is opened by descriptor and checked inside the project (the path was
+    checked only as text): a link a sandbox planted above the target must not
+    carry the old copy into another project. False when there is nothing to do."""
+    try:
+        with workspace_fs._pinned_parent(target, project_root) as (dir_fd, name):
+            try:
+                os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                return False
+            except FileNotFoundError:
+                pass
+            os.rename(entry, name, dst_dir_fd=dir_fd)
+            return True
+    except FileNotFoundError:
+        return False
+
+
 def recover_swaps() -> int:
     """Put back every folder a crash left in a replace's trash. Returns how many
     were restored. Runs at boot, before sweep_all()."""
@@ -264,9 +282,8 @@ def recover_swaps() -> int:
                 target_rel = json.loads(text)["target_rel"]
                 target = workspace_fs.resolve_for_project(pdir.name, target_rel, follow_symlinks=False)
                 entry = trash / SWAP_ENTRY
-                if (entry.exists() or entry.is_symlink()) and not (target.exists() or target.is_symlink()):
-                    if target.parent.is_dir():
-                        os.rename(entry, target)
+                if entry.exists() or entry.is_symlink():
+                    if _restore_into(entry, target, (workspace_fs.WORKSPACE_ROOT / pdir.name).resolve()):
                         restored += 1
                         logger.warning(f"[workspace-import] restored {pdir.name}/{target_rel} after an interrupted replace")
             except Exception as e:
