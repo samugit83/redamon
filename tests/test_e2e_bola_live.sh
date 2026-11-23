@@ -20,13 +20,13 @@
 #   - shell sessions (F-01): a new member's list holds nothing of anyone else's and a
 #     session or job outside it is 404 before the console; L sees what an admin sees
 #   - tunnel read (F-04): the credentials answer the internal key only, L included
-#   - tunnel write (F-05): a new member's change is 403 tunnels_admin_only; L's passes the
-#     tunnel check (the request then fails the GitHub Enterprise host check, so nothing is
-#     written or pushed to the sandbox). With RBAC_IDENTITY_ENABLED on (read from the webapp
-#     container) the tunnel is an instance setting (step 2.4): the user-settings route answers
-#     both 409 moved_to_instance_settings, and the writer is /api/admin/instance-settings, which
-#     refuses B (403) and lets L through to its field check (400 invalid_field: nothing written,
-#     so the live instance's tunnel is never changed)
+#   - tunnel write (F-05): a tunnel is its person's own user settings row, run in their own Kali
+#     sandbox, whatever RBAC_IDENTITY_ENABLED says (read from the webapp container). A new
+#     member's change is 403 tunnels_admin_only; L's passes the tunnel check (the request then
+#     fails the GitHub Enterprise host check, so nothing is written or pushed to L's sandbox).
+#     With the identity switch on, /api/admin/instance-settings still gates the unused, read-only
+#     instance tunnel: it refuses B (403) and lets L through to its field check (400
+#     invalid_field: nothing written, so the instance row is never changed)
 #   - template overwrite (F-07): A's template cannot be replaced or deleted by B, nor by L
 #     (no grant opens every template)
 #   - emergency stop scope (F-06): a press by a new member or by L stops only their own
@@ -297,16 +297,20 @@ if [ "$same" = 1 ]; then ok "legacy holder L's session list is the admin's (ever
 else bad "legacy holder L's session list (got $lc ${lcounts:-unparsed}, the admin's $ac ${acounts:-unparsed})"; fi
 check_body "legacy holder L kills a session the console does not hold -> 404" 404 "$(req "$TMP/l.jar" POST /api/agent/sessions/999999/kill)"
 
-echo "== F-04 / F-05 the tunnel is the admins' (HD-05, HD-06) =="
+echo "== F-04 / F-05 a tunnel is its person's own, opened only with platform:tunnels (HD-05, HD-06) =="
 TUNNEL_CHANGE='{"chiselServerUrl":"http://127.0.0.1:9","githubEnterpriseHost":"127.0.0.1"}'
 check_body "new member A reads the tunnel credentials -> 404"                  404 "$(req "$TMP/a.jar" GET /api/global/tunnel-config)"
 check_body "legacy holder L reads the tunnel credentials -> 404 (internal key only)" 404 "$(req "$TMP/l.jar" GET /api/global/tunnel-config)"
+# A person's own tunnel, whatever the identity switch: never moved to the instance settings.
+check_body "new member B changes its own tunnel -> 403 tunnels_admin_only"     403 \
+  "$(req "$TMP/b.jar" PUT "/api/users/$B_ID/settings" "$TUNNEL_CHANGE")" has:tunnels_admin_only lacks:moved_to_instance_settings
+check_body "legacy holder L passes the tunnel check (then refused by the GitHub Enterprise host check)" 400 \
+  "$(req "$TMP/l.jar" PUT "/api/users/$L_ID/settings" "$TUNNEL_CHANGE")" "has:GitHub Enterprise Host" lacks:tunnels_admin_only \
+  lacks:moved_to_instance_settings
+check_body "B's settings: tunnel controls not offered, nothing written"        200 "$(req "$TMP/b.jar" GET "/api/users/$B_ID/settings")" \
+  'has:"canManageTunnels":false' 'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
 if [ "$IDENTITY" = on ]; then
-  check_body "new member B changes the tunnel in its own settings -> 409 moved_to_instance_settings" 409 \
-    "$(req "$TMP/b.jar" PUT "/api/users/$B_ID/settings" "$TUNNEL_CHANGE")" has:moved_to_instance_settings has:chiselServerUrl
-  check_body "legacy holder L changes the tunnel in its own settings -> 409 moved_to_instance_settings" 409 \
-    "$(req "$TMP/l.jar" PUT "/api/users/$L_ID/settings" "$TUNNEL_CHANGE")" has:moved_to_instance_settings has:chiselServerUrl
-  # The live instance's tunnel is never really changed: a tunnel field that is not text is
+  # The instance's own tunnel is never really changed: a tunnel field that is not text is
   # refused after the access check, so B's 403 and L's 400 tell the two apart.
   INSTANCE_TUNNEL_PROBE='{"tunnelsEnabled":true,"chiselServerUrl":42}'
   lc="$(req "$TMP/l.jar" GET /api/admin/instance-settings)"; tunnel_before="$(json "(b['tunnelsEnabled'], b['chiselServerUrl'])")"
@@ -322,19 +326,12 @@ if [ "$IDENTITY" = on ]; then
   else
     bad "the instance tunnel after the refused changes (first read $lc; switch or chisel URL changed, or unreadable)"
   fi
-  check_body "B's settings: tunnel controls not offered, nothing written"        200 "$(req "$TMP/b.jar" GET "/api/users/$B_ID/settings")" \
-    'has:"canManageTunnels":false' 'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
-  check_body "L's settings: the tunnel controls live in the instance settings, nothing written" 200 \
-    "$(req "$TMP/l.jar" GET "/api/users/$L_ID/settings")" 'has:"canManageTunnels":false' 'has:"sharedSettingsAt":"instance"' \
-    'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
+  check_body "L's settings: its own tunnel's controls offered, the capture ones in the instance settings, nothing written" 200 \
+    "$(req "$TMP/l.jar" GET "/api/users/$L_ID/settings")" 'has:"canManageTunnels":true' 'has:"tunnelScope":"own_sandbox"' \
+    'has:"sharedSettingsAt":"instance"' 'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
 else
-  check_body "new member B changes the tunnel -> 403 tunnels_admin_only"         403 "$(req "$TMP/b.jar" PUT "/api/users/$B_ID/settings" "$TUNNEL_CHANGE")" has:tunnels_admin_only
-  check_body "legacy holder L passes the tunnel check (then refused by the GitHub Enterprise host check)" 400 \
-    "$(req "$TMP/l.jar" PUT "/api/users/$L_ID/settings" "$TUNNEL_CHANGE")" "has:GitHub Enterprise Host" lacks:tunnels_admin_only
-  check_body "B's settings: tunnel controls not offered, nothing written"        200 "$(req "$TMP/b.jar" GET "/api/users/$B_ID/settings")" \
-    'has:"canManageTunnels":false' 'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
-  check_body "L's settings: tunnel controls offered, nothing written"            200 "$(req "$TMP/l.jar" GET "/api/users/$L_ID/settings")" \
-    'has:"canManageTunnels":true' 'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
+  check_body "L's settings: its own tunnel's controls offered, nothing written"  200 "$(req "$TMP/l.jar" GET "/api/users/$L_ID/settings")" \
+    'has:"canManageTunnels":true' 'has:"tunnelScope":"own_sandbox"' 'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
 fi
 
 echo "== F-07 a Nuclei template is its owner's (HD-08) =="

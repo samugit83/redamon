@@ -3,17 +3,20 @@
 # No per-user Kali sandbox variable is ever required (group 1, master plan §7).
 # Run:  bash tests/kali_sandbox_no_required_env_test.sh
 #
-# The four KALI_SANDBOX_* variables are optional knobs of the recon orchestrator,
+# The three KALI_SANDBOX_* variables are optional knobs of the recon orchestrator,
 # with their defaults in recon_orchestrator/sandbox_contract.py:
 #   - in the compose files each appears once, in the recon-orchestrator
 #     `environment:` block, as an empty pass-through `${VAR:-}` (the orchestrator
 #     has no env_file, so that line is the only way a value reaches it), and in
 #     no other service or overlay;
-#   - redamon.sh and the single-host deploy never write or seed one (no line of
-#     theirs that is not a comment names one);
+#   - redamon.sh never writes one (no line of it that is not a comment names one,
+#     but the list of retired keys it removes from .env, the switch's among them);
+#   - the single-host deploy forwards each and seeds it only when the operator set
+#     it: one empty default each, `seed VAR "\${VAR}"` (seed skips an empty value),
+#     and no line that assigns one a value;
 #   - .env.example names each, on commented lines only;
-#   - the contract names exactly these four, so a fifth variable joins this list
-#     on purpose.
+#   - the contract names exactly these three, so a fourth variable joins this list
+#     on purpose, and the temporary switch KALI_SANDBOX_MODE is named nowhere.
 # It also checks the three host folders the orchestrator binds into sandboxes are
 # mounted into the orchestrator (it reads their host paths from Docker's mount table).
 #
@@ -40,7 +43,7 @@ pass() { PASS=$((PASS+1)); printf '  \033[0;32mPASS\033[0m %s\n' "$1"; }
 fail() { FAIL=$((FAIL+1)); printf '  \033[0;31mFAIL\033[0m %s\n' "$1"; }
 section() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
 
-VARS="KALI_SANDBOX_IDLE_MINUTES KALI_SANDBOX_MAX_CONCURRENT KALI_SANDBOX_PORT_POOL KALI_SANDBOX_MODE"
+VARS="KALI_SANDBOX_IDLE_MINUTES KALI_SANDBOX_MAX_CONCURRENT KALI_SANDBOX_PORT_POOL"
 
 # Every compose file but the base: the root overlays, the single-host deploy
 # overlay and the orchestrator's standalone file.
@@ -100,6 +103,24 @@ env_example_violations() {
     done
     grep -nE '^[[:space:]]*(export[[:space:]]+)?KALI_SANDBOX_[A-Z0-9_]*[[:space:]]*=' "$1" \
         | sed 's/^/uncommented: /'
+    grep -n 'KALI_SANDBOX_MODE' "$1" | sed 's/^/the removed switch: /'
+}
+
+# deploy.sh: one empty default per variable, a seed of its own value in init and in
+# update, a seed() that skips an empty value, and nothing that gives one a value.
+deploy_violations() {
+    local v n
+    for v in $VARS; do
+        n="$(grep -oF ": \"\${$v:=}\"" "$1" | wc -l | tr -d ' ')"
+        [[ "$n" == "1" ]] || echo "$v has $n empty default declarations, not 1"
+        n="$(grep -cxF "seed $v \"\\\${$v}\"" "$1")"
+        [[ "$n" == "2" ]] || echo "$v is seeded from its own value $n times, not 2 (init and update)"
+    done
+    awk '/^[[:space:]]*#/ { next }
+         /KALI_SANDBOX_[A-Z0-9_]*=|KALI_SANDBOX_[A-Z0-9_]*:=[^}]|KALI_SANDBOX_MODE/ { print FILENAME ":" FNR ": " $0 }
+         /^seed KALI_SANDBOX_/ && $0 !~ /^seed (KALI_SANDBOX_[A-Z_]+) "\\\$\{KALI_SANDBOX_[A-Z_]+\}"$/ { print FILENAME ":" FNR ": " $0 }' "$1"
+    grep -E '^seed\(\) \{' "$1" | grep -vF '[ -z "\$v" ] && return 0;' | sed 's/^/a seed() that does not skip an empty value: /'
+    [[ -n "$(grep -E '^seed\(\) \{' "$1")" ]] || echo "no seed() found"
 }
 
 # The orchestrator mounts each host folder a sandbox binds a part of.
@@ -128,9 +149,7 @@ expect_caught() {  # <label> <violations>
 
 section "the contract names exactly these variables"
 contract_vars="$(grep -oE '"KALI_SANDBOX_[A-Z0-9_]+"' "$CONTRACT" | tr -d '"' | sort -u | tr '\n' ' ')"
-# KALI_SANDBOX_MODE left the contract with the switch; compose and .env.example still pass
-# it through until the shared service goes.
-want_vars="$(tr ' ' '\n' <<< "$VARS" | grep -vx KALI_SANDBOX_MODE | sort -u | tr '\n' ' ')"
+want_vars="$(tr ' ' '\n' <<< "$VARS" | sort -u | tr '\n' ' ')"
 if [[ "$contract_vars" == "$want_vars" ]]; then pass "contract variables: $contract_vars"
 else fail "contract variables differ: contract=[$contract_vars] test=[$want_vars]"; fi
 
@@ -142,8 +161,16 @@ done
 report "the orchestrator mounts the three sandbox host folders" "$(mount_violations "$COMPOSE")"
 
 section "nothing writes or seeds one"
-report "redamon.sh" "$(script_violations "$REDAMON_SH")"
-report "tooling/deploy/single-host/deploy.sh" "$(script_violations "$DEPLOY_SH")"
+# The one line of redamon.sh that may name one: the list of retired keys it removes
+# from .env (KALI_SANDBOX_MODE, the switch).
+report "redamon.sh" "$(script_violations "$REDAMON_SH" | grep -vE ':[0-9]+: _RETIRED_KALI_KEYS=\(')"
+retired="$(grep -E '^_RETIRED_KALI_KEYS=\(' "$REDAMON_SH")"
+if [[ "$retired" == *" KALI_SANDBOX_MODE "* || "$retired" == *"(KALI_SANDBOX_MODE "* ]]; then
+    pass "redamon.sh removes the retired switch from .env"
+else
+    fail "redamon.sh does not list KALI_SANDBOX_MODE among the keys it removes from .env"
+fi
+report "tooling/deploy/single-host/deploy.sh seeds each only when set" "$(deploy_violations "$DEPLOY_SH")"
 DEPLOY_ENV="$REPO_ROOT/tooling/deploy/single-host/.env.example"
 if [[ -f "$DEPLOY_ENV" ]]; then
     report "tooling/deploy/single-host/.env.example sets none" \
@@ -153,20 +180,31 @@ report ".env.example documents each, commented" "$(env_example_violations "$ENV_
 
 section "planted violations are caught"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-sed 's|^      KALI_SANDBOX_MODE: \${KALI_SANDBOX_MODE:-}$|      KALI_SANDBOX_MODE: ${KALI_SANDBOX_MODE:?set it}|' "$COMPOSE" > "$TMP/required.yml"
+sed 's|^      KALI_SANDBOX_MAX_CONCURRENT: \${KALI_SANDBOX_MAX_CONCURRENT:-}$|      KALI_SANDBOX_MAX_CONCURRENT: ${KALI_SANDBOX_MAX_CONCURRENT:?set it}|' "$COMPOSE" > "$TMP/required.yml"
 expect_caught "a required orchestrator value" "$(compose_violations "$TMP/required.yml")"
 sed 's|^      KALI_SANDBOX_IDLE_MINUTES: \${KALI_SANDBOX_IDLE_MINUTES:-}$|      KALI_SANDBOX_IDLE_MINUTES: 20|' "$COMPOSE" > "$TMP/pinned.yml"
 expect_caught "a value pinned in compose" "$(compose_violations "$TMP/pinned.yml")"
-awk '{ print } /^  agent:$/ { a = 1 } a && /^    environment:$/ { print "      KALI_SANDBOX_MODE: ${KALI_SANDBOX_MODE:-}"; a = 0 }' \
+awk '{ print } /^  agent:$/ { a = 1 } a && /^    environment:$/ { print "      KALI_SANDBOX_PORT_POOL: ${KALI_SANDBOX_PORT_POOL:-}"; a = 0 }' \
     "$COMPOSE" > "$TMP/agent.yml"
 expect_caught "a variable handed to another service" "$(compose_violations "$TMP/agent.yml")"
 grep -vF '      KALI_SANDBOX_PORT_POOL: ${KALI_SANDBOX_PORT_POOL:-}' "$COMPOSE" > "$TMP/dropped.yml"
 expect_caught "a variable dropped from the orchestrator" "$(compose_violations "$TMP/dropped.yml")"
-printf 'services:\n  webapp:\n    environment:\n      KALI_SANDBOX_MODE: per_user\n' > "$TMP/overlay.yml"
+printf 'services:\n  webapp:\n    environment:\n      KALI_SANDBOX_IDLE_MINUTES: 5\n' > "$TMP/overlay.yml"
 expect_caught "an overlay that sets one" "$(overlay_violations "$TMP/overlay.yml")"
-printf 'cmd_up() {\n    echo "KALI_SANDBOX_MODE=per_user" >> .env\n}\n' > "$TMP/script.sh"
+printf 'cmd_up() {\n    echo "KALI_SANDBOX_IDLE_MINUTES=5" >> .env\n}\n' > "$TMP/script.sh"
 expect_caught "a script that writes one" "$(script_violations "$TMP/script.sh")"
-sed 's|^# KALI_SANDBOX_MODE=|KALI_SANDBOX_MODE=per_user|' "$ENV_EXAMPLE" > "$TMP/env.example"
+expect_caught "deploy.sh writing one" "$(deploy_violations "$TMP/script.sh")"
+sed 's|^seed KALI_SANDBOX_IDLE_MINUTES .*|seed KALI_SANDBOX_IDLE_MINUTES 20|' "$DEPLOY_SH" > "$TMP/deploy-pinned.sh"
+expect_caught "deploy.sh seeding a fixed value" "$(deploy_violations "$TMP/deploy-pinned.sh")"
+sed 's|: "\${KALI_SANDBOX_PORT_POOL:=}"|: "${KALI_SANDBOX_PORT_POOL:=4500-4509}"|' "$DEPLOY_SH" > "$TMP/deploy-default.sh"
+expect_caught "deploy.sh defaulting one to a value" "$(deploy_violations "$TMP/deploy-default.sh")"
+grep -vE '^seed KALI_SANDBOX_MAX_CONCURRENT ' "$DEPLOY_SH" > "$TMP/deploy-unseeded.sh"
+expect_caught "deploy.sh no longer seeding one" "$(deploy_violations "$TMP/deploy-unseeded.sh")"
+sed 's|\[ -z "\\\$v" \] && return 0; ||' "$DEPLOY_SH" > "$TMP/deploy-seedall.sh"
+expect_caught "a seed() that writes an empty value" "$(deploy_violations "$TMP/deploy-seedall.sh")"
+printf '# KALI_SANDBOX_MODE=\n' >> "$TMP/env.example.mode"; cat "$ENV_EXAMPLE" >> "$TMP/env.example.mode"
+expect_caught "the removed switch documented again" "$(env_example_violations "$TMP/env.example.mode")"
+sed 's|^# KALI_SANDBOX_IDLE_MINUTES=|KALI_SANDBOX_IDLE_MINUTES=|' "$ENV_EXAMPLE" > "$TMP/env.example"
 expect_caught "an uncommented .env.example line" "$(env_example_violations "$TMP/env.example")"
 grep -vF -- '- ./mcp/output:/app/mcp-output' "$COMPOSE" > "$TMP/nomount.yml"
 expect_caught "a missing orchestrator mount" "$(mount_violations "$TMP/nomount.yml")"

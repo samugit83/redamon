@@ -3,10 +3,11 @@
 Fed on stdin to `python3 -` inside the agent container (cwd /app, so the agent's
 machine_credential imports), after four assignments the shell prepends: T_TERM (a
 legacy holder's terminal ticket, minted right before), HOLDER_ID and HOLDER_PID
-(that holder and its project), and CRED_FILE (a path in the sandbox where the
-terminal's shell copies its credential, which the shell script presents again once
-the terminal has closed). Prints PASS/FAIL lines and `RESULT_WS <pass> <fail>`;
-never a ticket, a key, a credential or terminal output.
+(that holder and its project), and CRED_FILE (a path in the holder's own Kali
+sandbox, which serves the holder's terminal, where its shell copies its credential;
+the shell script presents it again from there once the terminal has closed). Prints
+PASS/FAIL lines and `RESULT_WS <pass> <fail>`; never a ticket, a key, a credential or
+terminal output.
 """
 import asyncio
 import json

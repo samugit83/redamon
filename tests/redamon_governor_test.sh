@@ -75,7 +75,7 @@ echo "== allocate_memory: the proportional allocator =="
 # pin and the allocator correctly declines to overwrite it - which looks like an
 # allocator bug but is a leaky harness.
 MEM_VARS=(NEO4J_HEAP NEO4J_PAGECACHE NEO4J_MEM AGENT_MEM KB_REFRESH_MEM
-          RECON_ORCHESTRATOR_MEM WEBAPP_MEM POSTGRES_MEM KALI_MEM CAPTURE_PROXY_MEM
+          RECON_ORCHESTRATOR_MEM WEBAPP_MEM POSTGRES_MEM CAPTURE_PROXY_MEM
           DOCKER_BROKER_MEM TRAFFIC_INGEST_MEM OS_HEADROOM_MEM SERVICE_BASELINE_MEM
           GVMD_MEM GVM_OSPD_MEM GVM_REDIS_MEM GVM_POSTGRES_MEM GVM_DATA_MEM)
 
@@ -203,12 +203,12 @@ BURST_FACTOR=1.75 alloc_at 16384; first="$(sum_alloc)"
 BURST_FACTOR=1.75 alloc_at 16384; eq "allocation is idempotent" "$(sum_alloc)" "$first"
 
 # --- per-service weight override changes only that service's SHARE.
-BURST_FACTOR=1.75 alloc_at 16384; base_web="$(mb "$WEBAPP_MEM")"; base_kali="$(mb "$KALI_MEM")"
+BURST_FACTOR=1.75 alloc_at 16384; base_web="$(mb "$WEBAPP_MEM")"; base_agent="$(mb "$AGENT_MEM")"
 REDAMON_WEIGHT_WEBAPP=400 BURST_FACTOR=1.75 alloc_at 16384
-if [[ "$(mb "$WEBAPP_MEM")" -gt "$base_web" && "$(mb "$KALI_MEM")" -lt "$base_kali" ]]; then
+if [[ "$(mb "$WEBAPP_MEM")" -gt "$base_web" && "$(mb "$AGENT_MEM")" -lt "$base_agent" ]]; then
     ok "REDAMON_WEIGHT_WEBAPP raises webapp and renormalises the rest down"
 else
-    bad "REDAMON_WEIGHT_WEBAPP renormalises" "web $base_web->$(mb "$WEBAPP_MEM") kali $base_kali->$(mb "$KALI_MEM")" "web up, kali down"
+    bad "REDAMON_WEIGHT_WEBAPP renormalises" "web $base_web->$(mb "$WEBAPP_MEM") agent $base_agent->$(mb "$AGENT_MEM")" "web up, agent down"
 fi
 unset REDAMON_WEIGHT_WEBAPP
 
@@ -233,6 +233,60 @@ else
     bad "orchestrator's scan_pool formula reproduces ours" \
         "$(( 16384 - _ALLOC_OS_MB - _ALLOC_SERVICES_MB ))" "$_ALLOC_SCAN_MB"
 fi
+
+echo "== the Kali share moves to the scan pool (tier p) =="
+# The per-user Kali sandboxes are admitted from the scan pool like scans (one
+# envelope each), so KALI's fair share leaves the services budget for the pool:
+# every other service keeps its share, nothing exports KALI_MEM, and a host whose
+# pool cannot hold one sandbox is refused like one whose services do not fit.
+# full_split <MB>: "<services before the move> <scan pool before> <KALI's share> <sum of weights>"
+full_split() {
+    local t="$1" os usable svc wsum=0 kali=0 spec name weight
+    os=$(( t * 8 / 100 )); usable=$(( t - os )); svc=$(( usable * 65 / 100 ))
+    for spec in $(_mem_specs); do
+        IFS=':' read -r name weight _ _ <<< "$spec"
+        wsum=$(( wsum + weight )); [[ "$name" == KALI ]] && kali="$weight"
+    done
+    printf '%s %s %s %s' "$svc" "$(( usable - svc ))" "$(( svc * kali / wsum ))" "$wsum"
+}
+for t in 8192 16384 65536; do
+    BURST_FACTOR=1.0 alloc_at "$t"
+    read -r svc_full scan_full share wsum <<< "$(full_split "$t")"
+    eq "${t}MB: the services budget loses KALI's share" "$_ALLOC_SERVICES_MB" "$(( svc_full - share ))"
+    eq "${t}MB: the scan pool gains it" "$_ALLOC_SCAN_MB" "$(( scan_full + share ))"
+    eq "${t}MB: SERVICE_BASELINE_MEM is the reduced figure" "$SERVICE_BASELINE_MEM" "$(( svc_full - share ))m"
+    # Every other service keeps exactly the fair share it had (no burst; from 16GB,
+    # where no floor binds and moves a deficit around).
+    if [[ "$t" -ge 16384 ]]; then
+        for i in "${!_ALLOC_NAMES[@]}"; do
+            [[ "${_ALLOC_NAMES[$i]}" == WEBAPP ]] && \
+                eq "${t}MB: WEBAPP keeps its share" "${_ALLOC_MB[$i]}" "$(( svc_full * 180 / wsum ))"
+        done
+    fi
+    eq "${t}MB: KALI_MEM is not exported" "${KALI_MEM:-<unset>}" "<unset>"
+    if [[ " ${_ALLOC_NAMES[*]} " != *" KALI "* ]]; then ok "${t}MB: KALI is no service"; else bad "${t}MB: KALI is no service" "listed" "absent"; fi
+done
+if [[ " $(_mem_managed_vars | tr '\n' ' ') " != *" KALI_MEM "* ]]; then ok "the managed block never holds KALI_MEM"
+else bad "the managed block never holds KALI_MEM" "listed" "absent"; fi
+# The pool floor (one 1 GiB sandbox envelope) is checked after the move.
+alloc_at 8192; eq "8GB base: the pool holds one sandbox (rc)" "$?" "0"
+SERVICES_PCT=95 REDAMON_WEIGHT_KALI=20 alloc_at 8192; rc=$?
+eq "a pool below one sandbox is infeasible (rc)" "$rc" "1"
+eq "and flagged infeasible" "$_ALLOC_FEASIBLE" "0"
+if [[ "$_ALLOC_SHORTFALL_MB" -gt 0 && $(( _ALLOC_SCAN_MB + _ALLOC_SHORTFALL_MB )) -eq 1024 ]]; then
+    ok "with the pool's own shortfall (${_ALLOC_SHORTFALL_MB}MB)"
+else
+    bad "with the pool's own shortfall" "scan ${_ALLOC_SCAN_MB} short ${_ALLOC_SHORTFALL_MB}" "scan + short = 1024"
+fi
+unset "${MEM_VARS[@]}"
+STUB_MEM=8192 SERVICES_PCT=95 REDAMON_WEIGHT_KALI=20 BURST_FACTOR=1.75 preflight_ram_gate
+eq "preflight_ram_gate refuses that host by the same path" "$?" "1"
+# A KALI_MEM an operator pinned changes nothing (and is said to be ignored).
+BURST_FACTOR=1.75 alloc_at 16384; ref_sum="$(sum_alloc)"; ref_scan="$_ALLOC_SCAN_MB"
+_MEM_SELF_EXPORTED=" "; unset "${MEM_VARS[@]}"; KALI_MEM=6g STUB_MEM=16384 BURST_FACTOR=1.75 allocate_memory
+eq "a pinned KALI_MEM leaves the services as they were" "$(sum_alloc)" "$ref_sum"
+eq "and the scan pool" "$_ALLOC_SCAN_MB" "$ref_scan"
+if [[ " ${_ALLOC_OWNED[*]-} " != *" KALI_MEM "* ]]; then ok "and is not owned"; else bad "a pinned KALI_MEM is not owned" "owned" "absent"; fi
 
 echo "== operator pins are never overwritten =="
 # The bug this suite exists to prevent: redamon.sh does not source .env, so
@@ -362,12 +416,15 @@ _swap_total_mb() { printf '8191'; }
 WANT_GVM=0; WANT_KB=0; fresh_process; unset BURST_FACTOR
 STUB_MEM=31736; allocate_memory
 eq "base profile keeps the full 250% (it fits)" "$_ALLOC_BURST_PCT" "250"
-WANT_GVM=1; fresh_process; unset BURST_FACTOR
-STUB_MEM=31736; allocate_memory
-if [[ "$_ALLOC_BURST_PCT" -lt 250 && "$_ALLOC_BURST_PCT" -ge 100 ]]; then
+# Since the Kali share left the burst set for the scan pool (tier p), GVM's five
+# services fit this host at 250%, so the clamp is shown with a 3.0 request.
+WANT_GVM=0; fresh_process; BURST_FACTOR=3.0 STUB_MEM=31736 allocate_memory
+eq "base profile keeps a 300% request (it fits)" "$_ALLOC_BURST_PCT" "300"
+WANT_GVM=1; fresh_process; BURST_FACTOR=3.0 STUB_MEM=31736 allocate_memory
+if [[ "$_ALLOC_BURST_PCT" -lt 300 && "$_ALLOC_BURST_PCT" -ge 100 ]]; then
     ok "adding GVM clamps the burst down to what fits (${_ALLOC_BURST_PCT}%)"
 else
-    bad "adding GVM clamps the burst" "$_ALLOC_BURST_PCT" "100..249"
+    bad "adding GVM clamps the burst" "$_ALLOC_BURST_PCT" "100..299"
 fi
 # An operator asking for something absurd is bounded by physics, not trusted.
 WANT_GVM=0; fresh_process; BURST_FACTOR=50 STUB_MEM=31736 allocate_memory
@@ -506,18 +563,18 @@ detect_build_resources() { BUILD_MEM_MB="$STUB_MEM"; BUILD_RES_SOURCE="stub"; BU
 # rejects `up` with "range of CPUs is from 0.01 to 4.00".
 reset_cpu_stub 4; export_cpu_caps
 eq "4 cores: NEO4J_CPUS 8 -> 4"  "$NEO4J_CPUS" "4"
-eq "4 cores: KALI_CPUS 10 -> 4"  "$KALI_CPUS"  "4"
+eq "4 cores: KALI_CPUS is never exported (a sandbox's CPUs are fixed)" "${KALI_CPUS:-<unset>}" "<unset>"
 eq "4 cores: AGENT_CPUS 8 -> 4"  "$AGENT_CPUS" "4"
 eq "4 cores: POSTGRES_CPUS kept" "$POSTGRES_CPUS" "4"
 eq "4 cores: BROKER_CPUS kept"   "$DOCKER_BROKER_CPUS" "2"
 over=""
-for v in "${CPU_VARS[@]}"; do [[ "${!v}" -gt 4 ]] && over="$over $v=${!v}"; done
+for v in "${CPU_VARS[@]}"; do [[ "${!v:-0}" -gt 4 ]] && over="$over $v=${!v}"; done
 if [[ -z "$over" ]]; then ok "no cap exceeds host cores"; else bad "no cap exceeds host cores" "$over" "<=4"; fi
 
 # Roomy host: the generous compose defaults must survive untouched.
 reset_cpu_stub 16; export_cpu_caps
 eq "16 cores: NEO4J_CPUS stays 8" "$NEO4J_CPUS" "8"
-eq "16 cores: KALI_CPUS stays 10" "$KALI_CPUS"  "10"
+eq "16 cores: AGENT_CPUS stays 8" "$AGENT_CPUS"  "8"
 
 # Single-core host: everything collapses to 1, never to 0 (0 would mean unlimited).
 reset_cpu_stub 1; export_cpu_caps
@@ -536,13 +593,13 @@ eq "shell override kept" "$NEO4J_CPUS" "2"
 # exporting a clamp here would silently override the operator's pinned value.
 reset_cpu_stub 4; printf 'NEO4J_CPUS=3\n' > "$CPU_TMP/.env"; export_cpu_caps
 eq ".env pin left to compose" "${NEO4J_CPUS:-unset}" "unset"
-eq ".env pin does not block others" "$KALI_CPUS" "4"
+eq ".env pin does not block others" "$AGENT_CPUS" "4"
 rm -f "$CPU_TMP/.env"
 
 # export_resource_caps must apply the CPU clamp even when RAM is undetectable
 # (the memory branch bails out early; the CPU branch must not ride along).
 reset_cpu_stub 4; STUB_MEM=0; export_resource_caps
-eq "CPU clamp survives undetectable RAM" "$KALI_CPUS" "4"
+eq "CPU clamp survives undetectable RAM" "$AGENT_CPUS" "4"
 unset "${CPU_VARS[@]}"; STUB_MEM=32000
 
 echo "== setup_zram guards =="

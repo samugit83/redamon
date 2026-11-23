@@ -43,13 +43,17 @@ if ! command -v python3 >/dev/null 2>&1 || ! python3 -c 'import yaml' 2>/dev/nul
     exit 77
 fi
 
-# Images whose sources the ORCHESTRATOR mounts into each scan container it spawns
-# (recon_orchestrator/container_manager.py), so a source change reaches the next
-# scan without a rebuild; only the Dockerfile and requirements are baked for real.
-# "<service> <repo path prefix> <container path container_manager.py binds it at>"
+# Images whose sources the ORCHESTRATOR mounts into each container it spawns, so a
+# source change reaches the next scan or sandbox without a rebuild; only the
+# Dockerfile and requirements are baked for real. A scan's binds are in
+# recon_orchestrator/container_manager.py; a Kali sandbox's in the contract's mount
+# plan (recon_orchestrator/sandbox_contract.py), and a sandbox started on older
+# mcp/servers code drains onto a new one by itself (TD-28).
+# "<service> <repo path prefix> <container path it is bound at>"
 SPAWN_MOUNTED=(
     "ai-attack-surface scanners/ai_attack_surface_scan/ /app/ai_attack_surface_scan"
     "supply-chain scanners/supply_chain_scan/ /app/supply_chain_scan"
+    "kali-sandbox mcp/servers/ /opt/mcp_servers"
 )
 
 # everything one changed file makes `update` do: "<built services> | <restarted>"
@@ -182,7 +186,15 @@ for entry in "${copies[@]}"; do
 done
 
 for m in "${SPAWN_MOUNTED[@]}"; do
-    read -r _svc prefix bind <<< "$m"
+    read -r svc prefix bind <<< "$m"
+    if [[ "$svc" == kali-sandbox ]]; then
+        # The servers base is the orchestrator's own read-only mount of mcp/servers,
+        # bound into every sandbox at SERVERS_TARGET by the mount plan.
+        contract="$REPO_ROOT/recon_orchestrator/sandbox_contract.py"
+        bound="$(grep -cxF "SERVERS_TARGET = \"$bind\"" "$contract")/$(grep -cF 'MountTarget(MOUNT_SERVERS, "", SERVERS_TARGET, True)' "$contract")/$(grep -cE "^      - \./${prefix%/}:/app/mcp-servers:ro$" "$REPO_ROOT/docker-compose.yml")"
+        assert_eq "the sandbox mount plan binds ${prefix%/} at $bind (contract/mount/compose)" "$bound" "1/1/1"
+        continue
+    fi
     assert_eq "container_manager.py binds ${prefix%/} at $bind" \
         "$(grep -cF "{\"bind\": \"$bind\", \"mode\"" "$REPO_ROOT/recon_orchestrator/container_manager.py" | awk '{print ($1 > 0) ? "yes" : "no"}')" "yes"
 done

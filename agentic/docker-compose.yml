@@ -19,13 +19,9 @@ services:
       WS_HEARTBEAT_INTERVAL: "30"
       WS_TIMEOUT: "300"
       WS_MAX_MESSAGE_SIZE: "10485760"
-      # MCP tool servers (via host network)
-      MCP_NETWORK_RECON_URL: http://host.docker.internal:8000/sse
-      MCP_NMAP_URL: http://host.docker.internal:8004/sse
-      MCP_METASPLOIT_URL: http://host.docker.internal:8003/sse
-      MCP_PLAYWRIGHT_URL: http://host.docker.internal:8005/sse
-      MCP_METASPLOIT_PROGRESS_URL: http://host.docker.internal:${MSF_PROGRESS_HOST_PORT:-8013}/progress
-      MCP_HYDRA_PROGRESS_URL: http://host.docker.internal:${HYDRA_PROGRESS_HOST_PORT:-8014}/progress
+      # No Kali tool addresses: the recon orchestrator starts each person's Kali
+      # sandbox and the agent reaches it through the webapp's sandbox gateway, so a
+      # standalone agent has no Kali tools.
       # Webapp API (via host network)
       WEBAPP_API_URL: http://host.docker.internal:3000
     extra_hosts:

@@ -17,8 +17,9 @@ Pinned three ways:
   - every listener the sandbox starts passes an auth gate. The root cause was
     one listener outside the authenticated set, and the guard flags the 7.7.2
     shape of the terminal server;
-  - compose publishes 8016 on no host interface, and the agent still reaches it
-    over the bridge.
+  - compose publishes 8016 on no host interface and runs no Kali container; a
+    person's sandbox publishes nothing but its pool port, which is never 8016,
+    and the agent reaches it only on that person's sandbox network.
 
 Runs in the agent image (root-agent section): a real websockets server on
 loopback, and a real fork + /bin/bash for the control.
@@ -400,18 +401,49 @@ class TerminalIsNotPublishedOnTheHost(unittest.TestCase):
 
     def test_no_compose_file_publishes_8016(self):
         for path in self.COMPOSE_FILES:
-            with self.subTest(file=path.name):
-                kali = self._load(path)["services"]["kali-sandbox"]
-                ports = [_container_port(p) for p in kali.get("ports", [])]
-                self.assertTrue(ports, "the kali-sandbox ports list was not read")
-                self.assertNotIn("8016", ports)
+            services = self._load(path)["services"]
+            self.assertTrue(services, f"no service was read from {path.name}")
+            for name, svc in services.items():
+                with self.subTest(file=path.name, service=name):
+                    ports = [_container_port(p) for p in (svc or {}).get("ports", [])]
+                    self.assertNotIn("8016", ports)
 
-    def test_the_agent_still_reaches_it_over_the_bridge(self):
+    def test_compose_runs_no_kali_container(self):
+        kali = self._load(self.COMPOSE_FILES[0])["services"]["kali-sandbox"]
+        self.assertEqual(kali.get("profiles"), ["tools"])
+        self.assertNotIn("ports", kali)
+        self.assertNotIn("networks", kali)
+
+    def test_a_sandbox_publishes_nothing_but_its_pool_port(self):
+        contract = _load_contract()
+        self.assertEqual(contract.published_ports(None), {})
+        self.assertEqual(contract.published_ports(4500), {"4500/tcp": ("127.0.0.1", 4500)})
+        self.assertEqual(contract.PORTS["terminal"], 8016)
+        # The pool can never hand out a port the sandbox serves itself, 8016 included.
+        manager = (REPO / "recon_orchestrator" / "sandbox_manager.py").read_text(encoding="utf-8")
+        allocate = manager[manager.index("async def _allocate_port"):]
+        allocate = allocate[:allocate.index("\n    def ")]
+        self.assertIn("taken |= set(sc.PORTS.values()) | set(sc.HEALTH_PROBE_PORTS)", allocate)
+        self.assertIn(8016, contract.HEALTH_PROBE_PORTS)
+
+    def test_the_agent_reaches_it_on_the_persons_sandbox_network(self):
+        contract = _load_contract()
         services = self._load(self.COMPOSE_FILES[0])["services"]
-        self.assertEqual(services["agent"]["environment"]["KALI_TERMINAL_WS_URL"], "ws://kali-sandbox:8016")
+        # Only through the person's own network, where the agent is a guest under
+        # its alias; no fixed address of a shared container is left to dial.
+        self.assertNotIn("KALI_TERMINAL_WS_URL", services["agent"].get("environment") or {})
+        self.assertEqual(contract.AGENT_ALIAS, "agent")
         self.assertIn("redamon", services["agent"]["networks"])
-        self.assertIn("redamon", services["kali-sandbox"]["networks"])
 
+
+def _load_contract():
+    import importlib.util
+    path = REPO / "recon_orchestrator" / "sandbox_contract.py"
+    spec = importlib.util.spec_from_file_location("ghsa_3cjg_sandbox_contract", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

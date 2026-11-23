@@ -244,10 +244,10 @@ awk '/MCP_SERVER_ENABLED=true is refused in/{print}' "$DEPLOY" | grep -q 'die ' 
 #      instead of a usable message
 #
 # Scope: the INBOUND server's keys, which compose hands to `webapp` and
-# `recon-orchestrator`. The MCP_* keys on `agent` and `kali-sandbox` belong to
-# the internal Kali MCP servers -- a different feature, whose values are
-# container-to-container URLs rather than operator knobs, and which the deploy
-# .env has no business carrying.
+# `recon-orchestrator`. The internal Kali MCP servers take no key from compose
+# any more: the orchestrator gives each person's sandbox its own token, and the
+# agent reaches it at an address the orchestrator answers, so the deploy .env has
+# nothing of theirs to carry.
 #
 # Also out of scope for (a): MCP_CLIENT_CIDRS and MCP_EDGE_ALLOW_BEARER, which
 # nginx.sh and firewall.sh consume on the host and the app never sees. Seeding

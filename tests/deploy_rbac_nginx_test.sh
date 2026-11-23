@@ -5,13 +5,15 @@
 # Run:  bash tests/deploy_rbac_nginx_test.sh
 #
 # WHY THIS MATTERS: the deploy proxies all of /api/ to the webapp. Every
-# /api/internal/ route answers only the internal or scanner key, the tunnel
-# credentials (/api/global/tunnel-config) only the internal key, and the tunnel
-# sync only the kali-sandbox's bearer. Their callers (the recon orchestrator, the
-# agent, the kali-sandbox, the capture ingest worker) use the container network
-# names, never the edge; nginx forwards the headers those routes authenticate
-# with, so without a deny the internet could probe those checks. The plugin
-# platform's three denies (tests/deploy_plugins_nginx_test.sh) stay as they are.
+# /api/internal/ route answers only the internal or scanner key, and the tunnel
+# credentials (/api/global/tunnel-config) only the internal key. Their callers (the
+# recon orchestrator, the agent, the capture ingest worker) use the container
+# network names, never the edge; nginx forwards the headers those routes
+# authenticate with, so without a deny the internet could probe those checks. The
+# deny of everything under /api/global/tunnel-config/ stays although its one route,
+# the shared Kali container's boot sync, is gone with that container: a sub-route
+# added there later is kept off the edge too. The plugin platform's three denies
+# (tests/deploy_plugins_nginx_test.sh) stay as they are.
 #
 # Static checks on both templates, then the rendered configs under a real nginx
 # (Docker): `nginx -t`, and requests for every path, URL-encoded, double-slash

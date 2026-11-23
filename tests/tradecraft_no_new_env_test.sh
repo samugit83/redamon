@@ -108,7 +108,10 @@ WORKSPACE_URL_IMPORT_ENABLED"
 # variables of the orchestrator, absent from .env by default, documented commented out;
 # tests/kali_sandbox_no_required_env_test.sh checks none becomes required).
 ENV_EXAMPLE_BASE="$ENV_EXAMPLE_BASE KALI_SANDBOX_IDLE_MINUTES KALI_SANDBOX_MAX_CONCURRENT
-KALI_SANDBOX_PORT_POOL KALI_SANDBOX_MODE"
+KALI_SANDBOX_PORT_POOL"
+# Not a new variable (group 1, S21): the agent's environment blanks the shared Kali
+# container's old tunnel token, which its env_file (.env) would otherwise hand it.
+AGENT_BASE="$AGENT_BASE TUNNEL_AUTH_TOKEN"
 
 check() {  # <name> <base list> <current list>
     local added

@@ -157,10 +157,12 @@ if docker compose version >/dev/null 2>&1; then
     run_alloc "$D" 16384
     {
       printf 'services:\n'
-      for svc in webapp neo4j agent postgres kali; do
+      # No Kali service: each person's sandbox is admitted from the scan pool and
+      # the block holds no KALI_MEM (redamon.sh, tier p).
+      for svc in webapp neo4j agent postgres orchestrator; do
         case "$svc" in
           webapp) v=WEBAPP_MEM ;; neo4j) v=NEO4J_MEM ;; agent) v=AGENT_MEM ;;
-          postgres) v=POSTGRES_MEM ;; kali) v=KALI_MEM ;;
+          postgres) v=POSTGRES_MEM ;; orchestrator) v=RECON_ORCHESTRATOR_MEM ;;
         esac
         printf '  %s:\n    image: busybox\n    mem_limit: ${%s:-1g}\n' "$svc" "$v"
       done
@@ -177,6 +179,7 @@ if docker compose version >/dev/null 2>&1; then
     eq "no service falls back to the 1g compose default" "$n_default" "0"
     n_empty="$(printf '%s' "$cfg" | grep -cE 'mem_limit: *("")?$')"
     eq "no service resolves to an empty mem_limit" "$n_empty" "0"
+    eq "the block written from .env.example holds no KALI_MEM" "$(grep -c '^KALI_MEM=' "$D/.env")" "0"
     rm -rf "$D"
 else
     echo "  SKIP  docker compose unavailable"

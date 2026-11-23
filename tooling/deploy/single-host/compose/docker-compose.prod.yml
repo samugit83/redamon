@@ -7,7 +7,10 @@
 # inherit it (redamon.sh is never edited).
 #
 # The `!override` tag REPLACES the base service's `ports:` list instead of merging it,
-# which is how we move 0.0.0.0 publishes onto 127.0.0.1 and close 4444 by default.
+# which is how we move 0.0.0.0 publishes onto 127.0.0.1. The base publishes no Kali
+# port: the per-user sandboxes the orchestrator starts publish nothing (only an
+# optional KALI_SANDBOX_PORT_POOL range, on 127.0.0.1; deploy.sh refuses any other
+# bind address), and `deploy.sh revshell-open` forwards that range per engagement.
 #
 # Interpolated vars are exported by deploy.sh (computed from ACCESS_MODE):
 #   NEXT_PUBLIC_AGENT_WS_URL  wss://<domain>/ws/agent | wss://<ip>/ws/agent | ws://.../ws/agent
@@ -17,7 +20,7 @@
 #
 # WARNING (footgun): these loopback re-binds hold ONLY while this overlay is active.
 # A hand-run bare `docker compose up -d` reloads the base file and republishes
-# 3000/8090/4444 on 0.0.0.0 (and starts the profile-less GVM stack). Never run raw
+# 3000/8090 on 0.0.0.0 (and starts the profile-less GVM stack). Never run raw
 # `docker compose up` on the host -- always go through redamon.sh (COMPOSE_FILE sticky).
 
 services:
@@ -53,20 +56,3 @@ services:
       - "127.0.0.1:${AGENT_PORT:-8090}:8080"          # off 0.0.0.0; nginx proxies /ws/* only
     environment:
       AGENT_CORS_ORIGINS: "${AGENT_CORS_ORIGINS:-}"   # never '*'
-
-  kali-sandbox:
-    # Re-list ALL kali publishes as loopback. The base file hardcodes 4444 on 0.0.0.0,
-    # so the whole list must be overridden to close it. Everything here is loopback;
-    # 4444 is opened per-engagement via ufw to REVSHELL_TARGET_CIDRS only (see §11).
-    ports: !override
-      - "127.0.0.1:${MCP_NETWORK_RECON_PORT:-8000}:8000"
-      - "127.0.0.1:${MCP_NUCLEI_PORT:-8002}:8002"
-      - "127.0.0.1:${MCP_METASPLOIT_PORT:-8003}:8003"
-      - "127.0.0.1:${MCP_NMAP_PORT:-8004}:8004"
-      - "127.0.0.1:${MCP_PLAYWRIGHT_PORT:-8005}:8005"
-      - "127.0.0.1:${MSF_PROGRESS_HOST_PORT:-8013}:8013"
-      - "127.0.0.1:${HYDRA_PROGRESS_HOST_PORT:-8014}:8014"
-      - "127.0.0.1:4444:4444"                          # loopback by default; ufw-open per engagement
-      - "127.0.0.1:${NGROK_API_HOST_PORT:-4040}:4040"
-      - "127.0.0.1:8015:8015"
-      # 8016 (terminal PTY) stays unpublished, as in the base file (GHSA-3cjg-8cp8-j269).

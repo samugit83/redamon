@@ -411,6 +411,11 @@ services:
     mem_limit: ${DOCKER_BROKER_MEM:-512m}   # sized from host RAM by redamon.sh
     pids_limit: ${DOCKER_BROKER_PIDS:-256}  # D1: fork-bomb ceiling
     cpus: ${DOCKER_BROKER_CPUS:-2}          # D1: CPU cap (generous)
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock          # real socket (forward target)
       - redamon_broker_socket:/var/run/broker              # named volume; lives in the Linux VM so the unix socket is shareable on macOS + Linux
@@ -440,9 +445,12 @@ services:
       # D1: fork-bomb ceiling injected into every sibling tool container
       # (katana/nuclei/httpx/...). Was 0 (unlimited); 512 is generous per tool.
       BROKER_TOOL_PIDS: ${BROKER_TOOL_PIDS:-512}
-      # Phase 7: cap the NUMBER of concurrently-running broker-owned containers the
-      # memory governor cannot see. Generous backstop; 0 disables. Raise if legit
-      # parallel scans (each spawns a dozen tools) hit it.
+      # Phase 7: cap the NUMBER of broker-owned tool containers that have not
+      # exited (created, running, restarting or PAUSED: a paused run's tools keep
+      # their places until it is resumed or stopped), which the memory governor
+      # cannot see. A create, or a start of an exited one, is refused at the cap.
+      # Generous backstop; 0 disables. Raise if legit parallel scans (each spawns
+      # a dozen tools) or several paused runs hit it.
       BROKER_MAX_CONTAINERS: ${BROKER_MAX_CONTAINERS:-48}
       # T1/T2: extra host prefixes a tool bind may mount READ-WRITE. Empty passes
       # through so broker.py keeps its restrictive default (["/tmp/redamon"] only);
@@ -549,7 +557,6 @@ services:
       KALI_SANDBOX_IDLE_MINUTES: ${KALI_SANDBOX_IDLE_MINUTES:-}
       KALI_SANDBOX_MAX_CONCURRENT: ${KALI_SANDBOX_MAX_CONCURRENT:-}
       KALI_SANDBOX_PORT_POOL: ${KALI_SANDBOX_PORT_POOL:-}
-      KALI_SANDBOX_MODE: ${KALI_SANDBOX_MODE:-}
       # Existing knob, now applied to each person's sandbox terminal.
       TERMINAL_MAX_SESSIONS: ${TERMINAL_MAX_SESSIONS:-}
       # Inbound API auth: the orchestrator validates this on every request (except
@@ -754,151 +761,21 @@ services:
     networks:
       - orchestrator-net
 
+  # ===========================================================================
+  # Kali sandbox image (build only — not a running service)
+  # The orchestrator starts one container per person from it
+  # (recon_orchestrator/sandbox_manager.py). Build with:
+  #   docker compose --profile tools build kali-sandbox
+  # ===========================================================================
+
   kali-sandbox:
     build:
       context: ./mcp
       dockerfile: kali-sandbox/Dockerfile
       args:
         MSF_REFRESH_STAMP: "${MSF_REFRESH_STAMP:-}"
-    # Fixed tag: the orchestrator starts each person's sandbox from this image
-    # (recon_orchestrator/sandbox_contract.py, IMAGE).
     image: redamon-kali-sandbox:latest
-    container_name: redamon-kali
-    mem_limit: ${KALI_MEM:-1g}              # sized from host RAM by redamon.sh
-    # D1 owns the Kali sandbox's pids/cpu ceiling (E1 was removed). Very
-    # generous because the interactive terminal runs arbitrary tools that may
-    # spawn many procs; still finite, so a fork bomb via kali_shell is bounded.
-    pids_limit: ${KALI_PIDS:-4096}          # D1: generous fork-bomb ceiling
-    cpus: ${KALI_CPUS:-10}                   # D1: CPU cap (generous)
-    dns:
-      - 8.8.8.8
-      - 8.8.4.4
-    hostname: kali-sandbox
-    cap_add:
-      # NET_RAW: raw sockets for the scanning tools (masscan/nmap SYN, ping).
-      # NET_ADMIN: interface/routing/iptables setup used during exploitation
-      # (tunnels, redirects). SYS_PTRACE is intentionally NOT granted: no tool in
-      # the worker attaches to other processes' memory, and it is a process-snoop
-      # primitive an attacker could abuse.
-      - NET_ADMIN
-      - NET_RAW
-    security_opt:
-      - seccomp:unconfined
-    ports:
-      # SECURITY (STRIDE S10/E1/I9): the MCP tool servers, progress streams,
-      # tunnel-manager and ngrok API are consumed ONLY by the agent/webapp over
-      # the internal `redamon` bridge (http://kali-sandbox:PORT) — never from the
-      # host. They are published on 127.0.0.1 for local debugging only, so a
-      # LAN/remote client can no longer reach the unauthenticated tool surface.
-      # The container still binds 0.0.0.0 INSIDE the netns (MCP_HOST below), so
-      # cross-container bridge traffic is unaffected.
-      - "127.0.0.1:${MCP_NETWORK_RECON_PORT:-8000}:8000"
-      - "127.0.0.1:${MCP_NUCLEI_PORT:-8002}:8002"
-      - "127.0.0.1:${MCP_METASPLOIT_PORT:-8003}:8003"
-      - "127.0.0.1:${MCP_NMAP_PORT:-8004}:8004"
-      - "127.0.0.1:${MCP_PLAYWRIGHT_PORT:-8005}:8005"
-      - "127.0.0.1:${MSF_PROGRESS_HOST_PORT:-8013}:8013"   # MSF progress stream (agent-internal)
-      - "127.0.0.1:${HYDRA_PROGRESS_HOST_PORT:-8014}:8014" # Hydra progress stream (agent-internal)
-      # 4444 stays routable on purpose: a compromised target connects BACK to the
-      # operator host:4444 in direct (no-tunnel) reverse-shell mode. Loopback here
-      # would break direct reverse shells. When a tunnel is active it binds
-      # 127.0.0.1:4444 internally and is reached via the tunnel instead.
-      #
-      # Deliberately NOT relocatable via an env var. msfconsole binds the
-      # agent's LPORT setting INSIDE the container and the payload hands the
-      # target that same number, so moving only the host side of this mapping
-      # leaves the target dialling a port nothing listens on -- a reverse shell
-      # that never lands, with no error. Relocating 4444 means moving LPORT too.
-      - "4444:4444"
-      - "127.0.0.1:${NGROK_API_HOST_PORT:-4040}:4040"   # ngrok local API (agent-internal)
-      - "127.0.0.1:8015:8015"   # tunnel-manager config (webapp-internal)
-      # 8016 (the terminal PTY) is deliberately NOT published: it hands out a root
-      # shell, and only the agent's /ws/kali-terminal proxy reaches it, over the
-      # bridge (GHSA-3cjg-8cp8-j269; tests/test_ghsa_3cjg_terminal_unauth_pty.py).
-    volumes:
-      # V7: read-only so a compromised worker cannot trojanize its own MCP server
-      # source for restart-surviving persistence. The worker only READS these
-      # files; user MCP plugins live in the DB, not here. Companion changes:
-      # PYTHONDONTWRITEBYTECODE (no __pycache__ writes) + entrypoint cd /tmp (so
-      # relative tool/agent output lands in a writable scratch, not this mount).
-      - ./mcp/servers:/opt/mcp_servers:ro
-      - ./mcp/output:/opt/output
-      - ./mcp/nuclei-templates:/opt/nuclei-templates:ro
-      # Shared tenant_filter.py used by the redagraph CLI
-      - ./graph_db:/opt/graph_db:ro
-      # Shared agent workspace — agent writes tool-outputs / jobs here; kali tools can read
-      - ./agentic/agent-workspace:/workspace
-      # Offline OSV database (supply-chain L3 execute_osv_scanner). Read-only:
-      # populate it with `./redamon.sh supply-chain-sync`, never from here.
-      - osv_db:/osv-db:ro
-    environment:
-      PYTHONUNBUFFERED: "1"
-      PYTHONPATH: /opt:/opt/mcp_servers
-      # execute_osv_scanner reads the offline OSV DB from this path (plan Phase 1).
-      OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY: /osv-db
-      # V7: suppress .pyc writes so the read-only /opt/mcp_servers mount does not
-      # break module imports (Python silently skips bytecode caching).
-      PYTHONDONTWRITEBYTECODE: "1"
-      MCP_TRANSPORT: sse
-      MCP_HOST: 0.0.0.0
-      NETWORK_RECON_PORT: "8000"
-      NUCLEI_PORT: "8002"
-      METASPLOIT_PORT: "8003"
-      NMAP_PORT: "8004"
-      PLAYWRIGHT_PORT: "8005"
-      MSF_PROGRESS_PORT: "8013"
-      HYDRA_PROGRESS_PORT: "8014"
-      MSF_AUTO_UPDATE: "${MSF_AUTO_UPDATE:-true}"
-      # Seconds an idle project keeps the shared msfconsole before another project
-      # may take it (GHSA-w454-6hwp-fm58; mcp/servers/metasploit_server.py).
-      MSF_PROJECT_LEASE_IDLE_S: "${MSF_PROJECT_LEASE_IDLE_S:-600}"
-      NUCLEI_AUTO_UPDATE: "${NUCLEI_AUTO_UPDATE:-true}"
-      TERMINAL_WS_PORT: "8016"
-      TERMINAL_MAX_SESSIONS: ${TERMINAL_MAX_SESSIONS:-}
-      # INBOUND auth token every Kali server validates (STRIDE S10): the MCP SSE
-      # ports, the Metasploit session manager (:8013), the Hydra progress stream
-      # (:8014) and the terminal (:8016). This is NOT an outbound secret — it is
-      # the credential the worker CHECKS, so holding it does not violate the
-      # "worker holds no secrets" rule. When empty the servers refuse every
-      # request (fail-closed, with a warning); redamon.sh generates it.
-      MCP_AUTH_TOKEN: "${MCP_AUTH_TOKEN:-}"
-      # INBOUND token the tunnel-manager (:8015) validates on config pushes
-      # (STRIDE I19/S14). Same inbound-validation category as MCP_AUTH_TOKEN, so
-      # it does not violate the "worker holds no secrets" rule. When empty the
-      # tunnel manager refuses every config push (fail-closed, with a warning).
-      # The boot sync presents it to the webapp too (F-23): it grants nothing the
-      # sandbox could not already do, since the sync only turns tunnels off.
-      TUNNEL_AUTH_TOKEN: "${TUNNEL_AUTH_TOKEN:-}"
-      # Webapp API for fetching tunnel config from Global Settings on boot
-      WEBAPP_API_URL: http://webapp:3000
-      # NOTE: INTERNAL_API_KEY is intentionally NOT passed to the worker. The
-      # worker is the least-trusted, target-facing component and must hold no
-      # secrets (least privilege). No worker process reads this key. Tunnel
-      # config is delivered by the webapp PUSHING to the worker's tunnel-manager
-      # (kali-sandbox:8015): on boot the worker calls the
-      # /api/global/tunnel-config/sync trigger with the tunnel bearer above, which
-      # makes the webapp push the stop config. The worker never pulls secrets
-      # itself. Do not re-add.
-      # redagraph CLI queries the graph THROUGH THE AGENT (/graph/exec), so the
-      # worker holds NO Neo4j credentials. The agent enforces read-only + tenant
-      # scoping server-side. Do not re-add NEO4J_PASSWORD here: a compromised
-      # worker would otherwise get master read/write access to the whole graph.
-      REDAMON_AGENT_URL: http://agent:8080
-      # NOTE: SCANNER_API_KEY is intentionally NOT passed to the worker either. Its
-      # root shells share the servers' uid and read their environment, so any key
-      # here is every shell's. redagraph and the proxy_brain SDK present the run
-      # credential the agent mints per terminal connection / per call
-      # (X-Redamon-Run), bound to one user and project and short-lived. Do not re-add.
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(); s.connect(('localhost', 8000)); s.close()"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 180s
-    networks:
-      redamon:
-      pentest-net:
+    profiles: ["tools"]
 
   agent:
     build:
@@ -957,24 +834,15 @@ services:
       LOOP_NO_DRIVER_GRACE_S: ${LOOP_NO_DRIVER_GRACE_S:-1800}
       LOOP_DRIVER_SEEN_S: ${LOOP_DRIVER_SEEN_S:-60}
       LOOP_STATE_TTL_S: ${LOOP_STATE_TTL_S:-3600}
-      # MCP tool servers (internal docker network)
-      MCP_NETWORK_RECON_URL: http://kali-sandbox:8000/sse
-      MCP_NUCLEI_URL: http://kali-sandbox:8002/sse
-      MCP_NMAP_URL: http://kali-sandbox:8004/sse
-      MCP_METASPLOIT_URL: http://kali-sandbox:8003/sse
-      MCP_PLAYWRIGHT_URL: http://kali-sandbox:8005/sse
-      MCP_METASPLOIT_PROGRESS_URL: http://kali-sandbox:8013/progress
-      MCP_HYDRA_PROGRESS_URL: http://kali-sandbox:8014/progress
-      KALI_TERMINAL_WS_URL: ws://kali-sandbox:8016
-      # Bearer token sent as `Authorization: Bearer` on every request to the Kali
-      # servers (MCP SSE, :8013 sessions, :8014 progress, :8016 terminal) so they
-      # can authenticate the agent (STRIDE S10). Must match the kali-sandbox
-      # MCP_AUTH_TOKEN. Empty → no header, and the servers refuse the agent.
-      MCP_AUTH_TOKEN: "${MCP_AUTH_TOKEN:-}"
       # Secret used to verify short-lived agent-WebSocket tickets on the /ws/agent
       # init frame (STRIDE S6). Must match the webapp's AGENT_WS_TICKET_SECRET.
       # Empty → the agent refuses every WebSocket (close 1008, fail-closed).
       AGENT_WS_TICKET_SECRET: "${AGENT_WS_TICKET_SECRET:-}"
+      # The shared Kali container's two tokens. redamon.sh still writes them to .env
+      # only for the single-host deploy's secrets gate; the env_file above would hand
+      # them to the agent, so they are blanked here (each sandbox has its own).
+      MCP_AUTH_TOKEN: ""
+      TUNNEL_AUTH_TOKEN: ""
       # Webapp API (internal docker network)
       WEBAPP_API_URL: http://webapp:3000
       # Docker host's LAN IP, detected by redamon.sh (export_host_lan_ip). The
@@ -1025,8 +893,6 @@ services:
       - ./agentic/agent-workspace:/workspace
     depends_on:
       neo4j:
-        condition: service_healthy
-      kali-sandbox:
         condition: service_healthy
       postgres:
         condition: service_healthy
@@ -1297,10 +1163,6 @@ services:
       # Dedicated secret (NOT AUTH_SECRET) so agent-side exposure can't forge
       # login cookies. Empty → no ticket minted, and the agent refuses the socket.
       AGENT_WS_TICKET_SECRET: "${AGENT_WS_TICKET_SECRET:-}"
-      # Bearer token the webapp presents when pushing tunnel config to the
-      # worker's tunnel-manager :8015 (STRIDE I19/S14), and checks on the worker's
-      # boot sync (F-23). Empty: the manager refuses the pushes, the webapp the sync.
-      TUNNEL_AUTH_TOKEN: "${TUNNEL_AUTH_TOKEN:-}"
       # Backend services (server-side API routes → internal docker network)
       RECON_ORCHESTRATOR_URL: http://recon-orchestrator:8010
       # Sent as X-Orchestrator-Key on every orchestrator call (server-side only).
@@ -1596,7 +1458,7 @@ networks:
     driver: bridge
   # V1 isolation: dedicated network for the privileged orchestrator. Explicit
   # name so LOCAL_LLM_NETWORK (orchestrator env) matches the spawned Ollama's net.
-  # The worker (kali-sandbox) is NOT on this network and so cannot reach :8010.
+  # No Kali sandbox is on this network, so none can reach :8010.
   orchestrator-net:
     name: redamon-orchestrator-net
     driver: bridge

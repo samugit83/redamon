@@ -346,7 +346,7 @@ flowchart LR
 ```
 
 1. **Always-on services** (`docker-compose.yml`): `mem_limit` (plus `pids_limit` + `cpus`, D1)
-   on neo4j, postgres, agent, orchestrator, webapp, kali, gvmd, docker-broker. Neo4j also gets explicit JVM `heap` + `pagecache` env,
+   on neo4j, postgres, agent, orchestrator, webapp, gvmd, docker-broker. Neo4j also gets explicit JVM `heap` + `pagecache` env,
    because a `mem_limit` alone OOM-kills the JVM, the container limit must exceed
    heap + pagecache + overhead. Values default to safe constants and are overridden by
    host-adaptive values exported from `redamon.sh` (§9).
@@ -392,7 +392,7 @@ only capped resource. Each of the 6 scan spawns also gets a **CPU cap**
 cores`, clamped to `PER_CONTAINER_CPUS`; the one machine-proportional knob) and a **PID cap**
 (`_container_pids_limit()` -> fixed `CONTAINER_PIDS_MAX`, default 512), both fail-open when the
 governor is disabled. `docker-compose.yml` sets `pids_limit` + `cpus` (env-overridable) on the
-always-on services and the Kali sandbox too. The memory rationale still holds (CPU
+always-on services, and the orchestrator sets fixed ones on each person's Kali sandbox. The memory rationale still holds (CPU
 oversubscription only time-slices, never OOMs), but a fixed PID ceiling stops a fork bomb and a
 generous CPU cap stops one container from monopolising the host.
 
@@ -473,8 +473,8 @@ full value survives at reasonable RAM and only throttles hard when memory is gen
 - **MCP terminal sessions** (`mcp/servers/terminal_server.py`): the existing
   `TERMINAL_MAX_SESSIONS` (default 5) is further reduced under pressure by the byte-budget.
 
-These agent caps are graceful-degradation, not the host-OOM guarantee, the agent and kali
-containers already have hard `mem_limit`s (§6), so an unbounded number of sessions could at
+These agent caps are graceful-degradation, not the host-OOM guarantee, the agent container
+and each Kali sandbox already have hard `mem_limit`s (§6), so an unbounded number of sessions could at
 worst OOM-restart the agent container in isolation; the caps prevent even that.
 
 ---
@@ -526,7 +526,7 @@ renormalises, so everyone else shrinks proportionally instead of over-committing
 | `NEO4J` | 320 | 1024 MB | reserved |
 | `AGENT` | 180 | 768 MB | burst |
 | `WEBAPP` | 180 | 512 MB | burst |
-| `KALI` | 100 | 512 MB | burst |
+| `KALI` (per-user Kali sandboxes) | 100 | 1024 MB, on the scan pool | pool |
 | `POSTGRES` | 80 | 256 MB | reserved |
 | `RECON_ORCHESTRATOR` | 60 | 256 MB | burst |
 | `CAPTURE_PROXY` | 40 | 128 MB | burst |
@@ -565,6 +565,22 @@ stack failed to start ([#176](https://github.com/samugit83/redamon/issues/176)).
 The exported slice is now floored at `_GVM_DATA_MIN_MB` (**512 MB**), which is
 the only floor in the table that binds at realistic host sizes -- because this
 requirement is set by the size of the Greenbone feed, not by the host.
+
+**Pool tier.** `KALI` is not a container any more: each person's Kali sandbox is
+started on demand by the orchestrator and admitted from the scan pool like a scan,
+with its own envelope (`kali_sandbox_envelope_bytes`, 1 GiB; see
+[README.KALI_SANDBOX.md](README.KALI_SANDBOX.md)). Its share is computed exactly as
+before (`services x 100 / SUM(weights)`), then subtracted from `services` and added to
+`scan_pool`, so every other service keeps its share and the pool grows by the former
+Kali share. It exports no `KALI_MEM` (the managed block is written without it, and a
+`KALI_MEM` an operator pinned is ignored with one `info` line), takes no part in the
+burst clamp or in the services floors, and its floor, one sandbox envelope, is checked
+against the scan pool after the move: a host whose pool cannot hold one sandbox is
+refused by `preflight_ram_gate` like one whose services do not fit. `SERVICE_BASELINE_MEM`
+is the reduced services figure, so the orchestrator's `scan_pool = total - os_headroom -
+service_baseline` still equals the allocator's. `KALI_PIDS` and `KALI_CPUS` are ignored
+too: a sandbox's limits are fixed by the contract (4096 pids, `max(1, min(4, cores / 2))`
+CPUs).
 
 **Transient tier.** Those loaders are also the reason for a third tier. They are
 one-shot containers that exit before the stack is in use, and their ceiling
@@ -757,7 +773,7 @@ All are optional; defaults live in code (empty/unset → default). Documented in
 |---|---|---|
 | `MAX_AGENT_SESSIONS` | `20` | ceiling on concurrent agent chat sessions, counting open connections and live runs together (a headless run, such as an Agent in the Loop run with its tab closed, holds a slot until it ends); byte-budgeted down under pressure. |
 | `MAX_BACKGROUND_JOBS` | `16` | ceiling on concurrent background agent jobs (byte-budgeted). |
-| `TERMINAL_MAX_SESSIONS` | `5` | max concurrent kali-sandbox PTY sessions; further reduced under pressure. |
+| `TERMINAL_MAX_SESSIONS` | `5` | max concurrent Kali PTY sessions per person's sandbox; further reduced under pressure. |
 
 ### On-demand scan-container caps (spawn-time)
 
@@ -792,8 +808,8 @@ Each is computed at spawn from the RAM-scaled envelope × headroom, clamped to
 | `NEO4J_HEAP` | neo4j JVM max/initial heap. Must accompany the neo4j `mem_limit` or the JVM OOM-kills. |
 | `NEO4J_PAGECACHE` | neo4j page-cache size. |
 | `NEO4J_MEM` | neo4j container `mem_limit`; derived as heap + pagecache + overhead (never below the heap). |
-| `GVMD_MEM`, `AGENT_MEM`, `RECON_ORCHESTRATOR_MEM`, `WEBAPP_MEM`, `POSTGRES_MEM`, `KALI_MEM` | container `mem_limit` for each always-on service. |
-| `<SVC>_PIDS`, `<SVC>_CPUS` | D1: per-service `pids_limit` / `cpus` overrides (POSTGRES/NEO4J/AGENT/WEBAPP/RECON_ORCHESTRATOR/DOCKER_BROKER/KALI), generous env defaults. |
+| `GVMD_MEM`, `AGENT_MEM`, `RECON_ORCHESTRATOR_MEM`, `WEBAPP_MEM`, `POSTGRES_MEM` | container `mem_limit` for each always-on service. A `KALI_MEM` is ignored (pool tier, §9.1). |
+| `<SVC>_PIDS`, `<SVC>_CPUS` | D1: per-service `pids_limit` / `cpus` overrides (POSTGRES/NEO4J/AGENT/WEBAPP/RECON_ORCHESTRATOR/DOCKER_BROKER), generous env defaults; `KALI_PIDS` / `KALI_CPUS` are ignored. |
 | `WEBAPP_DEV_MEM` | `4g`, dev-mode override (`up dev`); `next dev` compilation needs far more than prod, so the 1 GB prod cap is relaxed here. |
 
 ### Sibling tool containers (broker)
