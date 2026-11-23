@@ -26,7 +26,7 @@ export const POST = withRouteErrors(FAILED, async (
   if (target instanceof NextResponse) return target
   const audit = await beginDriveAudit('agent.session_interact', 'session', id, sandbox, viewer, target)
   // The agent waits up to 40s on the session manager; ours must outlast it.
-  return forwardAuditedDrive(audit, drivePath('session', id, 'interact', sandbox), {
+  return forwardAuditedDrive(audit, drivePath('session', id, 'interact', sandbox, target), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

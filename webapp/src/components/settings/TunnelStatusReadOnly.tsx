@@ -3,8 +3,29 @@
 import { useEffect, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import styles from '@/components/settings/Settings.module.css'
+import { tunnelDisplay, type TunnelDisplay } from '@/lib/tunnelDisplay'
 
-type TunnelView = { kind: 'loading' } | { kind: 'error' } | { kind: 'loaded'; providers: string[] }
+const PROVIDERS = ['ngrok', 'chisel'] as const
+type Provider = (typeof PROVIDERS)[number]
+
+/**
+ * `running`: a tunnel process runs (`active`), what the off control follows. `shown`: each tunnel
+ * that is not off, as its `status` says (tunnelDisplay), what the line shows.
+ */
+type TunnelView =
+  | { kind: 'loading' }
+  | { kind: 'error' }
+  | { kind: 'loaded'; running: boolean; shown: { provider: Provider; display: TunnelDisplay }[] }
+
+/** "On (ngrok)", "Connecting (chisel)", "Failed (chisel): reason", joined; "Off" when none shows. */
+export function tunnelStatusLine(shown: { provider: Provider; display: TunnelDisplay }[]): string {
+  const named = (state: TunnelDisplay['state']) => shown.filter(s => s.display.state === state).map(s => s.provider)
+  const parts: string[] = []
+  if (named('on').length) parts.push(`On (${named('on').join(' and ')})`)
+  if (named('connecting').length) parts.push(`Connecting (${named('connecting').join(' and ')})`)
+  for (const s of shown) if (s.display.state === 'error') parts.push(`Failed (${s.provider}): ${s.display.reason}`)
+  return parts.length ? parts.join('; ') : 'Off'
+}
 
 interface Props {
   /** Per-user Kali sandboxes: the state is the person's own tunnel. */
@@ -31,15 +52,17 @@ export function TunnelStatusReadOnly({ perPerson = false, canManage = false, fla
     fetch('/api/agent/tunnel-status', { cache: 'no-store' })
       .then(async res => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const body = await res.json() as Partial<Record<'ngrok' | 'chisel', { active?: boolean }>>
-        const providers = (['ngrok', 'chisel'] as const).filter(p => body?.[p]?.active === true)
-        if (live) setView({ kind: 'loaded', providers })
+        const body = await res.json() as Partial<Record<Provider, { active?: unknown; status?: unknown }>> | null
+        const running = PROVIDERS.some(p => body?.[p]?.active === true)
+        const shown = PROVIDERS.map(provider => ({ provider, display: tunnelDisplay(body?.[provider]) }))
+          .filter(s => s.display.state !== 'off')
+        if (live) setView({ kind: 'loaded', running, shown })
       })
       .catch(() => { if (live) setView({ kind: 'error' }) })
     return () => { live = false }
   }, [])
 
-  const running = view.kind === 'loaded' && view.providers.length > 0
+  const running = view.kind === 'loaded' && view.running
   const offerOff = perPerson && !!onTurnOff && (running || flagOn)
   const hint = !perPerson
     ? 'The tunnel is managed by an administrator.'
@@ -54,7 +77,7 @@ export function TunnelStatusReadOnly({ perPerson = false, canManage = false, fla
         <span role="status">
           {view.kind === 'loading' && <><Loader2 size={14} className={styles.spin} /> Checking...</>}
           {view.kind === 'error' && 'Status unavailable'}
-          {view.kind === 'loaded' && (view.providers.length ? `On (${view.providers.join(' and ')})` : 'Off')}
+          {view.kind === 'loaded' && tunnelStatusLine(view.shown)}
         </span>
         <span className="formHint">{hint}</span>
         {offerOff && (

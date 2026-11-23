@@ -108,7 +108,7 @@ describe('every forwarded drive is audited before it reaches the agent', () => {
     signedIn(principal('member-a'))
     const res = await interact(post({ command: 'cat /etc/shadow' }), params('1'))
     expect(res.status).toBe(200)
-    expect(events).toEqual(['attempt row', 'agent /sessions/1/interact?sandbox=aaaaa1', 'outcome row'])
+    expect(events).toEqual(['attempt row', 'agent /sessions/1/interact?sandbox=aaaaa1&sandbox_user=member-a&sandbox_view=own', 'outcome row'])
     const [tx, attempt] = mockWriteAuditTx.mock.calls[0]
     expect(tx).toEqual({ tx: true })
     expect(attempt).toMatchObject({
@@ -162,12 +162,12 @@ describe('every forwarded drive is audited before it reaches the agent', () => {
   test('a session kill and a job kill are audited the same way', async () => {
     signedIn(principal('member-a'))
     expect((await killSession(post(), params('1'))).status).toBe(200)
-    expect(events).toEqual(['attempt row', 'agent /sessions/1/kill?sandbox=aaaaa1', 'outcome row'])
+    expect(events).toEqual(['attempt row', 'agent /sessions/1/kill?sandbox=aaaaa1&sandbox_user=member-a&sandbox_view=own', 'outcome row'])
     expect(attempts()[0]).toMatchObject({ action: 'agent.session_kill', targetId: 'aaaaa1:1', after: { outcome: 'attempted' } })
     events.length = 0
     signedIn(principal('admin-a', 'admin'))
     expect((await killJob(post(), params('0'))).status).toBe(200)
-    expect(events).toEqual(['attempt row', 'agent /jobs/0/kill?sandbox=aaaaa1', 'outcome row'])
+    expect(events).toEqual(['attempt row', 'agent /jobs/0/kill?sandbox=aaaaa1&sandbox_user=member-a&sandbox_view=own', 'outcome row'])
     expect(attempts()[1]).toMatchObject({ action: 'agent.job_kill', targetType: 'msf_job', targetId: 'aaaaa1:0', after: { outcome: 'attempted' } })
     expect(outcomes()[1].after).toMatchObject({ outcome: 'ran' })
   })

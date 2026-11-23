@@ -68,7 +68,8 @@ function opsView(over: Partial<OperationsView> = {}): OperationsView {
 function sandbox(over: Partial<OpsSandbox> = {}): OpsSandbox {
   return {
     key: 'mem-b:bbbbb1', instance: 'bbbbb1', person: { id: 'mem-b', name: 'Member B' }, view: 'own', state: 'running',
-    createdAt: '2026-11-13T09:00:00.000Z', lastUsed: '2026-11-13T11:30:00.000Z', stopAt: '2026-11-13T11:50:00.000Z', ...over,
+    createdAt: '2026-11-13T09:00:00.000Z', lastUsed: '2026-11-13T11:30:00.000Z', stopAt: '2026-11-13T11:50:00.000Z',
+    reversePort: { port: 31001, state: 'assigned' }, ...over,
   }
 }
 
@@ -367,6 +368,28 @@ describe('Kali sandboxes (group 1, WI-S16-6)', () => {
     expect(second.getByText('Draining')).toBeInTheDocument()
     expect(second.getByText('An admin acting as them')).toBeInTheDocument()
     expect(screen.getByRole('heading', { level: 2, name: /^Kali sandboxes/ })).toBeInTheDocument()
+  })
+
+  test("a Reverse port column (FU-24): the pool port, none and why, or a dash when the orchestrator did not say", async () => {
+    viewAnswer = () => json(opsView({
+      sandboxes: {
+        state: { ok: true },
+        list: [
+          sandbox(),
+          sandbox({ key: 'mem-c:ccccc1', instance: 'ccccc1', person: { id: 'mem-c', name: 'Member C' }, reversePort: { port: null, state: 'pool_full' } }),
+          sandbox({ key: 'mem-d:ddddd1', instance: 'ddddd1', person: { id: 'mem-d', name: 'Member D' }, reversePort: { port: null, state: 'no_pool' } }),
+          sandbox({ key: 'mem-e:eeeee1', instance: 'eeeee1', person: { id: 'mem-e', name: 'Member E' }, reversePort: null }),
+        ],
+      },
+    }))
+    renderPage()
+    const table = await screen.findByRole('table', { name: 'Kali sandboxes' })
+    expect(within(table).getByRole('columnheader', { name: 'Reverse port' })).toBeInTheDocument()
+    const portOf = (name: string) => within(within(table).getByText(name).closest('tr')!).getByTestId('ops-sandbox-port').textContent
+    expect(portOf('Member B')).toBe('31001')
+    expect(portOf('Member C')).toBe('none (pool full)')
+    expect(portOf('Member D')).toBe('none')
+    expect(portOf('Member E')).toBe('-')
   })
 
   test('Stop, confirmed in the app dialog, stops that person\'s sandboxes; a notice, then the view reads again', async () => {

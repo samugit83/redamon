@@ -39,6 +39,7 @@ import { actingAsUserId } from '@/lib/userAudit'
 import { listSandboxes, sandboxFailureResponse, stopSandbox, type OperationsSandbox } from '@/lib/sandbox/gateway'
 import { OrchestratorUnreachable, SandboxError, validUserId } from '@/lib/sandbox/orchestratorClient'
 import type { SandboxState, SandboxView } from '@/lib/sandbox/contract'
+import type { ReversePort } from '@/lib/sandbox/reversePort'
 import { chatAttribution, isSandboxInstance, payloadParts, sandboxPersonOf, unavailableInstances, type ChatProject } from './agentSessionsAccess'
 import { now } from './clock'
 import { forbiddenResponse } from './guards'
@@ -126,7 +127,7 @@ export interface OpsShell {
   person: OpsPerson | null
 }
 
-/** A running per-user Kali sandbox: whose, which view, its state and times (ISO). No token, host or projects. */
+/** A running per-user Kali sandbox: whose, which view, its state, times (ISO) and reverse port. No token, host or projects. */
 export interface OpsSandbox {
   key: string
   instance: string
@@ -137,6 +138,8 @@ export interface OpsSandbox {
   createdAt: string | null
   lastUsed: string | null
   stopAt: string | null
+  /** Its reverse-shell port (FU-24): the pool port, or none and why; null when the orchestrator did not say. */
+  reversePort: ReversePort | null
 }
 
 export interface OperationsView {
@@ -554,6 +557,7 @@ export async function readOperations(session: Session): Promise<OperationsView> 
       list: sandboxes.map((s): OpsSandbox => ({
         key: `${s.user_id}:${s.instance}`, instance: s.instance, person: person(s.user_id), view: s.view, state: s.state,
         createdAt: epochIso(s.created_at), lastUsed: epochIso(s.last_used), stopAt: epochIso(s.stop_at),
+        reversePort: s.reverse_port,
       })),
     },
   }

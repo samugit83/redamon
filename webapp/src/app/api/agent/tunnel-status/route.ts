@@ -3,7 +3,8 @@ import { agentFetch } from '@/lib/agentFetch'
 import { requireSession } from '@/lib/session'
 import { tunnelStatusPath } from '@/lib/sharedSettingsEffects'
 
-const INACTIVE = { ngrok: { active: false }, chisel: { active: false } }
+// `status` as the tunnel manager answers it, so an indicator reads the fallback like any answer.
+const INACTIVE = { ngrok: { active: false, status: 'off' }, chisel: { active: false, status: 'off' } }
 
 // Read-only indicator: an unreachable agent reads as "no tunnel", never an error. It shows the
 // signed-in person's own tunnel, and none under act-as (tunnelStatusPath), asked of the agent with

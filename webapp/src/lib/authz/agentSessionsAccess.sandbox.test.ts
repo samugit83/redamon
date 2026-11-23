@@ -94,6 +94,7 @@ import { visibleProjects } from './visibleProjects'
 import { POST as interact } from '@/app/api/agent/sessions/[id]/interact/route'
 import { POST as killSession } from '@/app/api/agent/sessions/[id]/kill/route'
 import { POST as killJob } from '@/app/api/agent/jobs/[id]/kill/route'
+import { GET as listSessionsRoute } from '@/app/api/agent/sessions/route'
 
 const NOW = new Date('2026-09-01T00:00:00Z')
 
@@ -166,6 +167,18 @@ const PROJECTS = [
   { id: 'p-shared', userId: 'bob' }, { id: 'p-carol', userId: 'carol' },
 ]
 
+
+/** Alice's job in her own sandbox and one in her act_as sandbox (an admin acting as her). */
+function jobsOnlyAlice(): Record<string, unknown> {
+  return {
+    sessions: [],
+    jobs: [
+      { id: 0, name: 'own', payload: 'p', port: 31001, sandbox: 'aaaaa1', ...ALICE },
+      { id: 0, name: 'act_as', payload: 'p', port: 31002, sandbox: 'eeeee1', sandbox_user: 'alice', sandbox_view: 'act_as' },
+    ],
+    non_msf_sessions: [],
+  }
+}
 
 /** Rows without a sandbox instance (an agent that predates the per-user sandboxes): no target, no project. */
 function untaggedList(): Record<string, unknown> {
@@ -242,7 +255,8 @@ describe('the list across sandboxes (WI-S16-1)', () => {
     expect(pairs(out.sessions)).toEqual(['aaaaa1:1', 'bbbbb1:1'])
     expect(out.sessions.find(s => s.sandbox === 'bbbbb1')).toMatchObject({ id: 1, project_id: 'p-shared' })
     expect(pairs(out.non_msf_sessions)).toEqual(['bbbbb1:raw-1'])
-    expect(out.jobs).toEqual([])
+    // D-D: her own sandbox's job, never Bob's (the share reaches his project, not his sandbox).
+    expect(pairs(out.jobs)).toEqual(['aaaaa1:0'])
     expect(out.unavailable_count).toBe(1)
   })
 
@@ -389,7 +403,7 @@ describe('the naming is cheap while a sandbox stays silent (S16b review round 3)
 describe('a target is the pair (instance, number) (WI-S16-2)', () => {
   test("Alice drives Bob's session on the project he shares with her", async () => {
     const v = await viewerFor(principal('alice'))
-    expect(await authorizeSessionTarget(perUserList(), v, 'session', '1', 'bbbbb1')).toEqual({ projectId: 'p-shared', via: 'share', sandboxUser: 'bob' })
+    expect(await authorizeSessionTarget(perUserList(), v, 'session', '1', 'bbbbb1')).toEqual({ projectId: 'p-shared', via: 'share', sandboxUser: 'bob', sandboxView: 'own' })
   })
 
   test("Alice cannot drive Bob's session on his own project", async () => {
@@ -417,10 +431,12 @@ describe('a target is the pair (instance, number) (WI-S16-2)', () => {
 
   test('a job is a pair too: an admin kills exactly the job of the instance named', async () => {
     const admin = await viewerFor(principal('admin-a', 'admin'))
-    expect(await authorizeSessionTarget(perUserList(), admin, 'job', '0', 'bbbbb1')).toEqual({ projectId: null, via: 'admin', sandboxUser: 'bob' })
+    expect(await authorizeSessionTarget(perUserList(), admin, 'job', '0', 'bbbbb1')).toEqual({ projectId: null, via: 'admin', sandboxUser: 'bob', sandboxView: 'own' })
     expect(await authorizeSessionTarget(perUserList(), admin, 'job', '0', 'ddddd1')).toBeNull()
     const alice = await viewerFor(principal('alice'))
-    expect(await authorizeSessionTarget(perUserList(), alice, 'job', '0', 'aaaaa1')).toBeNull()
+    // D-D: the job of her own sandbox is hers to stop; the same number in Bob's sandbox is not.
+    expect(await authorizeSessionTarget(perUserList(), alice, 'job', '0', 'aaaaa1')).toEqual({ projectId: null, via: 'own_sandbox', sandboxUser: 'alice', sandboxView: 'own' })
+    expect(await authorizeSessionTarget(perUserList(), alice, 'job', '0', 'bbbbb1')).toBeNull()
   })
 
   test('a row without an instance is never a target, whatever instance is named and for anyone', async () => {
@@ -430,6 +446,77 @@ describe('a target is the pair (instance, number) (WI-S16-2)', () => {
         expect(await authorizeSessionTarget(untaggedList(), v, 'session', '1', sandbox)).toBeNull()
       }
     }
+  })
+})
+
+// D-D: a job belongs to the sandbox it runs in. A person sees and stops the jobs of their own sandbox
+// in the view they work in: `own`, or, for an admin acting as a member, that member's `act_as`
+// sandbox (TD-26), never the member's own. The viewer below acts as Alice WITHOUT the every-session
+// right, so only the rule decides (an admin's own grant would show every job anyway).
+describe("the jobs of one's own sandbox, in the view one works in (D-D)", () => {
+  /** Alice's own sandbox, her act_as sandbox (an admin acting as her), Bob's; a row with no instance. */
+  const jobsList = () => ({
+    sessions: [],
+    jobs: [
+      { id: 0, name: 'handler own', payload: 'p', port: 31001, sandbox: 'aaaaa1', ...ALICE },
+      { id: 0, name: 'handler act_as', payload: 'p', port: 31002, sandbox: 'eeeee1', sandbox_user: 'alice', sandbox_view: 'act_as' },
+      { id: 1, name: 'handler bob', payload: 'p', port: 31003, sandbox: 'bbbbb1', ...BOB },
+      { id: 2, name: 'handler untagged', payload: 'p', port: 4444, ...ALICE },
+      { id: 3, name: 'handler no tags', payload: 'p', port: 4444, sandbox: 'aaaaa1' },
+    ],
+    non_msf_sessions: [],
+  })
+  const actingAsAlice = (): SessionsViewer => ({
+    principal: principal('admin-x', 'admin') as unknown as SessionsViewer['principal'],
+    effectiveUserId: 'alice',
+    all: { allowed: false, via: null },
+  })
+
+  test('Alice herself: her own sandbox\'s job only; not her act_as sandbox\'s, not Bob\'s, not an untagged row', async () => {
+    const out = await visibleSessions(jobsList(), await viewerFor(principal('alice')))
+    expect(out.jobs).toEqual([{ id: 0, name: 'handler own', payload: 'p', port: 31001, sandbox: 'aaaaa1' }])
+    const alice = await viewerFor(principal('alice'))
+    expect(await authorizeSessionTarget(jobsList(), alice, 'job', '0', 'eeeee1')).toBeNull()
+    expect(await authorizeSessionTarget(jobsList(), alice, 'job', '1', 'bbbbb1')).toBeNull()
+    expect(await authorizeSessionTarget(jobsList(), alice, 'job', '3', 'aaaaa1')).toBeNull()
+  })
+
+  test("acting as Alice: the act_as sandbox's job only, never Alice's own", async () => {
+    const out = await visibleSessions(jobsList(), actingAsAlice())
+    expect(pairs(out.jobs)).toEqual(['eeeee1:0'])
+    expect(await authorizeSessionTarget(jobsList(), actingAsAlice(), 'job', '0', 'eeeee1')).toEqual({ projectId: null, via: 'own_sandbox', sandboxUser: 'alice', sandboxView: 'act_as' })
+    expect(await authorizeSessionTarget(jobsList(), actingAsAlice(), 'job', '0', 'aaaaa1')).toBeNull()
+    expect(await authorizeSessionTarget(jobsList(), actingAsAlice(), 'job', '1', 'bbbbb1')).toBeNull()
+  })
+
+  test('Bob: his own job; a holder of every session: every tagged job', async () => {
+    expect(pairs((await visibleSessions(jobsList(), await viewerFor(principal('bob')))).jobs)).toEqual(['bbbbb1:1'])
+    const admin = await visibleSessions(jobsList(), await viewerFor(principal('admin-a', 'admin')))
+    expect(admin.jobs.map(j => j.name)).toEqual(['handler own', 'handler act_as', 'handler bob', 'handler untagged', 'handler no tags'])
+    expect(JSON.stringify(admin.jobs)).not.toContain('sandbox_user')
+  })
+
+  test('the route: Alice stops her own job, and Bob\'s is the same 404 as a job that does not exist', async () => {
+    list = jobsList
+    signedIn(principal('alice'))
+    agent({ busy: false, output: 'Stopping job 0' })
+    expect((await killJob(post('?sandbox=bbbbb1'), params('1'))).status).toBe(404)
+    expect((await killJob(post('?sandbox=eeeee1'), params('0'))).status).toBe(404)
+    expect(drives()).toEqual([])
+    expect(auditRows()).toEqual([])
+    expect((await killJob(post('?sandbox=aaaaa1'), params('0'))).status).toBe(200)
+    expect(drives()).toEqual(['/jobs/0/kill?sandbox=aaaaa1&sandbox_user=alice&sandbox_view=own'])
+    expect(auditRows()[0]).toMatchObject({ actorId: 'alice', action: 'agent.job_kill', targetId: 'aaaaa1:0', after: { via: 'own_sandbox', sandboxUser: 'alice' } })
+  })
+
+  test('the list route: a member gets her own job and no person tag', async () => {
+    list = jobsList
+    signedIn(principal('alice'))
+    agent()
+    const res = await listSessionsRoute(new NextRequest('http://x/api/agent/sessions'))
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.jobs).toEqual([{ id: 0, name: 'handler own', payload: 'p', port: 31001, sandbox: 'aaaaa1' }])
   })
 })
 
@@ -455,7 +542,7 @@ describe('the drive routes take ?sandbox=', () => {
     agent()
     const res = await interact(post('?sandbox=bbbbb1', { command: 'whoami' }), params('1'))
     expect(res.status).toBe(200)
-    expect(drives()).toEqual(['/sessions/1/interact?sandbox=bbbbb1'])
+    expect(drives()).toEqual(['/sessions/1/interact?sandbox=bbbbb1&sandbox_user=bob&sandbox_view=own'])
     expect(auditRows()).toHaveLength(1)
     expect(auditRows()[0]).toMatchObject({
       actorId: 'alice', action: 'agent.session_interact', targetType: 'msf_session', targetId: 'bbbbb1:1',
@@ -479,18 +566,31 @@ describe('the drive routes take ?sandbox=', () => {
     agent({ busy: false, output: 'Killed' })
     expect((await killSession(post('?sandbox=bbbbb1'), params('1'))).status).toBe(200)
     expect((await killSession(post('?sandbox=bbbbb2'), params('1'))).status).toBe(200)
-    expect(drives()).toEqual(['/sessions/1/kill?sandbox=bbbbb1', '/sessions/1/kill?sandbox=bbbbb2'])
+    expect(drives()).toEqual(['/sessions/1/kill?sandbox=bbbbb1&sandbox_user=bob&sandbox_view=own', '/sessions/1/kill?sandbox=bbbbb2&sandbox_user=bob&sandbox_view=own'])
     expect(auditRows().map(r => [r.targetId, r.after.sandbox, r.after.projectId])).toEqual([
       ['bbbbb1:1', 'bbbbb1', 'p-shared'],
       ['bbbbb2:1', 'bbbbb2', 'p-bob'],
     ])
   })
 
+  test("round 2: the agent is sent the person and view of the authorized row, never the request's", async () => {
+    signedIn(principal('alice'))
+    agent({ busy: false, output: 'ok' })
+    // The request names another person and the act_as view; the webapp forwards the row's own tags.
+    const res = await interact(post('?sandbox=bbbbb1&sandbox_user=carol&sandbox_view=act_as', { command: 'id' }), params('1'))
+    expect(res.status).toBe(200)
+    expect(drives()).toEqual(['/sessions/1/interact?sandbox=bbbbb1&sandbox_user=bob&sandbox_view=own'])
+    list = jobsOnlyAlice
+    expect((await killJob(post('?sandbox=eeeee1'), params('0'))).status).toBe(404)
+    expect((await killJob(post('?sandbox=aaaaa1'), params('0'))).status).toBe(200)
+    expect(drives().at(-1)).toBe('/jobs/0/kill?sandbox=aaaaa1&sandbox_user=alice&sandbox_view=own')
+  })
+
   test('an admin kills one job of one instance', async () => {
     signedIn(principal('admin-a', 'admin'))
     agent({ busy: false, output: 'Stopping job 0' })
     expect((await killJob(post('?sandbox=bbbbb1'), params('0'))).status).toBe(200)
-    expect(drives()).toEqual(['/jobs/0/kill?sandbox=bbbbb1'])
+    expect(drives()).toEqual(['/jobs/0/kill?sandbox=bbbbb1&sandbox_user=bob&sandbox_view=own'])
     expect(auditRows()[0]).toMatchObject({ action: 'agent.job_kill', targetType: 'msf_job', targetId: 'bbbbb1:0', after: { via: 'admin', sandbox: 'bbbbb1' } })
   })
 
@@ -649,6 +749,6 @@ describe("rows whose id is not the session manager's shape are dropped (review F
     const admin = await viewerFor(principal('admin-a', 'admin'))
     expect(await authorizeSessionTarget(planted(), admin, 'job', '../emergency-stop-all?', 'aaaaa1')).toBeNull()
     expect(await authorizeSessionTarget(planted(), admin, 'session', '-1', 'aaaaa1')).toBeNull()
-    expect(await authorizeSessionTarget(planted(), admin, 'session', '5', 'aaaaa1')).toEqual({ projectId: 'p-alice', via: 'admin', sandboxUser: 'alice' })
+    expect(await authorizeSessionTarget(planted(), admin, 'session', '5', 'aaaaa1')).toEqual({ projectId: 'p-alice', via: 'admin', sandboxUser: 'alice', sandboxView: 'own' })
   })
 })

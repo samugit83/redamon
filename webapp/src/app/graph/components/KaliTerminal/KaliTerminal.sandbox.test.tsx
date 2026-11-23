@@ -4,7 +4,10 @@
  * of it. `starting` shows a banner; `unavailable` shows the modal (Retry
  * reconnects); close 1013 says the sandbox could not start; after a `refused`
  * frame the 1008 close never reconnects by itself. PTY output is binary, so
- * nothing a shell prints can raise the modal.
+ * nothing a shell prints can raise the modal. Once the PTY speaks, the person's own
+ * reverse-shell port is read from GET /api/agent/sandbox/status and shown above the
+ * terminal (FU-24); every text names the person's own sandbox, never the removed
+ * `kali-sandbox` service (FU-28).
  *
  * Run: npx vitest run --no-file-parallelism src/app/graph/components/KaliTerminal/KaliTerminal.sandbox.test.tsx
  */
@@ -195,7 +198,7 @@ describe('what stays as it was', () => {
   test('a 1013 with no frame before it keeps the usual line and reconnects as before', async () => {
     const ws = await openTerminal()
     close(ws, 1013, 'Max terminal sessions reached')
-    expect(lines()).toContain('\n✗ Disconnected from kali-sandbox (close 1013: Max terminal sessions reached)')
+    expect(lines()).toContain('\n✗ Disconnected from your Kali sandbox (close 1013: Max terminal sessions reached)')
     expect(lines().some(l => l.includes('could not start'))).toBe(false)
     expect(reconnecting()).toBe(true)
   })
@@ -204,14 +207,14 @@ describe('what stays as it was', () => {
     const ws = await openTerminal()
     frame(ws, RAM_FRAME)
     close(ws, 1011, 'Kali sandbox terminal unavailable (ConnectionRefusedError)')
-    expect(lines()).toContain('\n✗ Disconnected from kali-sandbox (close 1011: Kali sandbox terminal unavailable (ConnectionRefusedError))')
+    expect(lines()).toContain('\n✗ Disconnected from your Kali sandbox (close 1011: Kali sandbox terminal unavailable (ConnectionRefusedError))')
     expect(reconnecting()).toBe(false)
   })
 
   test('a 1008 with no refused frame (a refused ticket) reconnects as before', async () => {
     const ws = await openTerminal()
     close(ws, 1008, 'Invalid or missing ticket')
-    expect(lines()).toContain('\n✗ Disconnected from kali-sandbox (close 1008: Invalid or missing ticket)')
+    expect(lines()).toContain('\n✗ Disconnected from your Kali sandbox (close 1008: Invalid or missing ticket)')
     expect(reconnecting()).toBe(true)
   })
 
@@ -269,5 +272,80 @@ describe('the close codes are the contract', () => {
     const py = readFileSync(CONTRACT_PY, 'utf8')
     expect(py).toMatch(new RegExp(`^TERMINAL_CLOSE_UNAVAILABLE = ${TERMINAL_CLOSE_UNAVAILABLE}$`, 'm'))
     expect(py).toMatch(new RegExp(`^TERMINAL_CLOSE_REFUSED = ${TERMINAL_CLOSE_REFUSED}$`, 'm'))
+  })
+})
+
+describe("the person's own reverse-shell port (FU-24)", () => {
+  let statusAnswer: () => Response
+  const statusReads = () => vi.mocked(fetch).mock.calls.filter(([u]) => String(u) === '/api/agent/sandbox/status')
+  const respond = (body: unknown, status = 200) => () => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+  const one = (port: Record<string, unknown>) => respond({ instances: [{ state: 'running', stop_at: null, stop_reason: null, warn: false, ...port }] })
+
+  async function openWithStatus() {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => (String(url) === '/api/agent/sandbox/status'
+      ? statusAnswer()
+      : new Response(JSON.stringify({ ticket: 'tkt' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))))
+    render(<AlertProvider><KaliTerminal userId="u1" projectId="p1" /></AlertProvider>)
+    await waitFor(() => expect(FakeSocket.instances).toHaveLength(1))
+    const ws = FakeSocket.instances[0]
+    act(() => { ws.readyState = 1; ws.onopen?.() })
+    return ws
+  }
+
+  test('nothing is read before the shell speaks; then the pool port is shown as LPORT', async () => {
+    statusAnswer = one({ reverse_port: 31001, reverse_port_state: 'assigned' })
+    const ws = await openWithStatus()
+    frame(ws, STARTING_FRAME)
+    expect(statusReads()).toHaveLength(0)
+    expect(screen.queryByTestId('kali-reverse-port')).toBeNull()
+    frame(ws, bytes('root@kali:~# '))
+    expect(await screen.findByTestId('kali-reverse-port')).toHaveTextContent('Your reverse-shell port (LPORT): 31001')
+    expect(statusReads()).toHaveLength(1)
+  })
+
+  test('a full pool and no pool: no port, and the way out', async () => {
+    statusAnswer = one({ reverse_port: 4444, reverse_port_state: 'pool_full' })
+    let ws = await openWithStatus()
+    frame(ws, bytes('$ '))
+    expect(await screen.findByTestId('kali-reverse-port')).toHaveTextContent('No reverse-shell port: the port pool is full. Use your tunnel or a bind payload')
+    cleanup()
+    FakeSocket.instances = []
+    statusAnswer = one({ reverse_port: 4444, reverse_port_state: 'no_pool' })
+    ws = await openWithStatus()
+    frame(ws, bytes('$ '))
+    expect(await screen.findByTestId('kali-reverse-port')).toHaveTextContent('No reverse-shell port: use your tunnel or a bind payload')
+  })
+
+  test('a refused or failed status read shows no line, and the terminal goes on', async () => {
+    statusAnswer = respond({ error: 'x', code: 'forbidden', permission: 'agent:sessions' }, 403)
+    const ws = await openWithStatus()
+    frame(ws, bytes('$ '))
+    await waitFor(() => expect(statusReads()).toHaveLength(1))
+    await new Promise(r => setTimeout(r, 10))
+    expect(screen.queryByTestId('kali-reverse-port')).toBeNull()
+    expect(output.join('')).toContain('$ ')
+  })
+
+  test('a close takes the line away: the next connection reads it again', async () => {
+    statusAnswer = one({ reverse_port: 31001, reverse_port_state: 'assigned' })
+    const ws = await openWithStatus()
+    frame(ws, bytes('$ '))
+    await screen.findByTestId('kali-reverse-port')
+    close(ws, 1011, 'gone')
+    expect(screen.queryByTestId('kali-reverse-port')).toBeNull()
+  })
+})
+
+describe('every text names the person\'s own sandbox, never the removed kali-sandbox service (FU-28)', () => {
+  test('the connecting line, the toolbar and a failed socket', async () => {
+    const ws = await openTerminal()
+    expect(lines()).toContain('  Connecting to your Kali sandbox...')
+    expect(screen.getByText('your Kali sandbox')).toBeInTheDocument()
+    act(() => { ws.onerror?.() })
+    // A refused ticket or origin is an error event too, so the line never claims the agent is unreachable.
+    expect(lines()).toContain('\nWebSocket connection to ws://agent.test/ws/kali-terminal failed: the agent did not accept the connection (down, restarting, or the handshake was refused).')
+    expect(lines().join('\n')).not.toMatch(/could not be reached/)
+    expect(lines().join('\n')).not.toMatch(/kali-sandbox(?!\/)|Is the .* running/)
+    expect(document.body.textContent).not.toContain('kali-sandbox')
   })
 })

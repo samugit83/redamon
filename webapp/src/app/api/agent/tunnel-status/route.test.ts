@@ -42,7 +42,8 @@ vi.mock('@/lib/prisma', () => ({ default: { instanceSettings: { updateMany: vi.f
 import { GET } from './route'
 import { resetTunnelEffectsForTests } from '@/lib/sharedSettingsEffects'
 
-const INACTIVE = { ngrok: { active: false }, chisel: { active: false } }
+// Round 2: the fallback carries `status: 'off'`, as the tunnel manager's own answer does.
+const INACTIVE = { ngrok: { active: false, status: 'off' }, chisel: { active: false, status: 'off' } }
 
 beforeEach(() => {
   for (const fn of Object.values(h)) fn.mockReset()

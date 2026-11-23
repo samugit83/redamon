@@ -201,6 +201,35 @@ describe('the tunnel is the person\'s own row, pushed to their own sandbox', () 
   })
 })
 
+// The agent's /tunnel-status answer: `active` says the tunnel process runs, `status` whether it
+// forwards; host and port come only with "on". The lost-reset check reads `active`, so a tunnel that
+// is still connecting or has failed is not mistaken for a sandbox that restarted (round 3).
+describe('a tunnel that is connecting or failing is still running', () => {
+  test.each([
+    ['connecting', { ngrok: { active: true, status: 'connecting' }, chisel: { active: false, status: 'off' } }],
+    ['error: <reason>', { ngrok: { active: false, status: 'off' }, chisel: { active: true, status: 'error: server rejected the remote port' } }],
+  ])('a stored "on" whose tunnel is %s: an edit is pushed, never stored off, no restart warning', async (_state, answer) => {
+    storeRow('u1', { tunnelsEnabled: true, ngrokAuthtoken: 'old' })
+    h.agentFetch.mockResolvedValue(new Response(JSON.stringify(answer)))
+    const res = await PUT(put('u1', { tunnelsEnabled: true, ngrokAuthtoken: 'new-token' }), params('u1'))
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.tunnelsEnabled).toBe(true)
+    expect(JSON.stringify(body.warnings ?? [])).not.toContain('tunnel_off_sandbox_restarted')
+    expect(rows.get('u1')!.tunnelsEnabled).toBe(true)
+    expect(h.pushSandboxTunnel.mock.calls.at(-1)).toEqual(['u1', { ngrokAuthtoken: 'new-token', chiselServerUrl: '', chiselAuth: '' }])
+  })
+
+  test('the no-sandbox answer ({active: false, status: "off"}) is still a lost reset: stored off, with the warning', async () => {
+    storeRow('u1', { tunnelsEnabled: true, ngrokAuthtoken: 'old' })
+    h.agentFetch.mockResolvedValue(new Response(JSON.stringify({ ngrok: { active: false, status: 'off' }, chisel: { active: false, status: 'off' } })))
+    const body = await (await PUT(put('u1', { tunnelsEnabled: true, ngrokAuthtoken: 'new-token' }), params('u1'))).json()
+    expect(body.tunnelsEnabled).toBe(false)
+    expect(body.warnings).toEqual([expect.objectContaining({ code: 'tunnel_off_sandbox_restarted' })])
+    expect(rows.get('u1')!.tunnelsEnabled).toBe(false)
+  })
+})
+
 describe('who may change their own tunnel', () => {
   test('a member without platform:tunnels cannot turn one on or change its fields: the existing refusal, naming their own sandbox', async () => {
     signInMember('m1')

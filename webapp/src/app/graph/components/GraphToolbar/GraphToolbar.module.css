@@ -624,6 +624,27 @@
   border: 1px solid rgba(34, 197, 94, 0.2);
 }
 
+.tunnelBadgeConnecting {
+  background: rgba(245, 158, 11, 0.1);
+  color: #f59e0b;
+  border-color: rgba(245, 158, 11, 0.2);
+}
+
+.tunnelBadgeFailed {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
+.tunnelBadgeConnecting .tunnelDot,
+.tunnelBadgeFailed .tunnelDot {
+  background: currentColor;
+}
+
+.tunnelBadgeFailed .tunnelDot {
+  animation: none;
+}
+
 .tunnelDot {
   width: 6px;
   height: 6px;

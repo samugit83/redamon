@@ -184,7 +184,8 @@ p1-skillcontent-actas	1.9	admin_a_as_member_a	GET	/api/projects/${PA_ID}?include
 # run_artifacts/step113/drive.mjs proves the per-project view with a tagged listener), so
 # these rows prove the gate on ids outside the caller's view: such an id is 404 before any
 # command reaches the console (the baseline's 422 was the agent refusing a non-numeric id).
-# member_c owns nothing and holds no grant, so its list never carries a job. A 502
+# member_c owns nothing and holds no grant, so its list carries only its own sandbox's jobs (D-D), and
+# the matrix starts no handler in it: none. A 502
 # session_manager_unauthorized means the agent's MCP_AUTH_TOKEN differs from kali-sandbox's.
 # Group 1 (TD-11): a drive names its sandbox instance; with per-user sandboxes a drive without
 # ?sandbox= is 400, so the drive rows name 000000, an instance nobody has, and stay 404 in both modes.

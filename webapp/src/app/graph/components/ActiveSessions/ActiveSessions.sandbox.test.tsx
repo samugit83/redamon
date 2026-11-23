@@ -8,6 +8,8 @@
  * - From 7 hours without use, the person's own sandbox warns when it will stop, read from
  *   GET /api/agent/sandbox/status (the person and the view are the server's); nothing is asked for
  *   someone without agent:sessions.
+ * - The same answer gives the person's own reverse-shell port (FU-24): the port as LPORT, or why
+ *   there is none (a full pool, no pool), above the list and the empty state.
  *
  * Run: npx vitest run src/app/graph/components/ActiveSessions/ActiveSessions.sandbox.test.tsx
  */
@@ -187,5 +189,53 @@ describe("the stop warning of the person's own sandbox (OQ-G1-9 A)", () => {
     expect(screen.getByRole('alert')).toHaveTextContent('agent:sessions')
     await new Promise(r => setTimeout(r, 20))
     expect(statusCalls()).toEqual([])
+  })
+})
+
+describe("the person's own reverse-shell port (FU-24)", () => {
+  const withPort = (port: Record<string, unknown>) => () =>
+    json({ instances: [{ state: 'running', stop_at: null, stop_reason: null, warn: false, ...port }] })
+  const portLine = () => screen.queryByTestId('sessions-reverse-port')
+
+  test('a pool port: "Your reverse-shell port (LPORT): N", above the list', async () => {
+    status = withPort({ reverse_port: 31001, reverse_port_state: 'assigned' })
+    render(panel())
+    expect(await screen.findByText('Your reverse-shell port (LPORT): 31001')).toBeInTheDocument()
+  })
+
+  test('a full pool: no port, and why, with the way out; above the empty state too', async () => {
+    status = withPort({ reverse_port: 4444, reverse_port_state: 'pool_full' })
+    render(panel({ sessions: [], jobs: [] }))
+    expect(await screen.findByText('No reverse-shell port: the port pool is full. Use your tunnel or a bind payload')).toBeInTheDocument()
+    expect(screen.getByText('No Reverse Shells')).toBeInTheDocument()
+    expect(portLine()?.textContent).not.toContain('4444')
+  })
+
+  test('no pool: no port, use your tunnel or a bind payload', async () => {
+    status = withPort({ reverse_port: 4444, reverse_port_state: 'no_pool' })
+    render(panel())
+    expect(await screen.findByText('No reverse-shell port: use your tunnel or a bind payload')).toBeInTheDocument()
+  })
+
+  test('an orchestrator that sends no state: its pool port is the port, its 4444 is none', async () => {
+    status = withPort({ reverse_port: 31002, reverse_port_state: null })
+    const { unmount } = render(panel())
+    expect(await screen.findByText('Your reverse-shell port (LPORT): 31002')).toBeInTheDocument()
+    unmount()
+    status = withPort({ reverse_port: 4444 })
+    render(panel())
+    expect(await screen.findByText('No reverse-shell port: use your tunnel or a bind payload')).toBeInTheDocument()
+  })
+
+  test('no sandbox running, or a failed read: no port line', async () => {
+    for (const answer of [() => json({ instances: [] }), () => json({ error: 'x', code: 'forbidden' }, 403)]) {
+      status = answer
+      const { unmount } = render(panel())
+      await waitFor(() => expect(statusCalls().length).toBeGreaterThan(0))
+      await new Promise(r => setTimeout(r, 10))
+      expect(portLine()).toBeNull()
+      unmount()
+      fetchMock.mockClear()
+    }
   })
 })

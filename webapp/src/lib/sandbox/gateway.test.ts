@@ -17,7 +17,8 @@
  * @vitest-environment node
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 type Row = Record<string, unknown>
@@ -99,6 +100,9 @@ const WRITE_SHARING: Partial<RbacFlags> = { identity: true, permissions: true, s
 const HOUR = 3_600_000
 
 let state: ProjectListState
+/** The custom nuclei templates folder (NUCLEI_TEMPLATES_PATH) and its rows, for FU-6. */
+let templatesDir: string
+let templateRows: Array<{ path: string; ownerUserId: string | null }>
 
 function account(id: string, over: Row = {}): Row {
   return {
@@ -142,6 +146,10 @@ function buildDb() {
       },
     },
     projectBreakGlass: { findFirst: async () => null },
+    nucleiTemplate: {
+      findMany: async ({ where }: { where?: { path?: { in: string[] } } } = {}) =>
+        (where?.path ? templateRows.filter((r) => where.path!.in.includes(r.path)) : templateRows),
+    },
     projectAccessPolicy: {
       ...list.projectAccessPolicy,
       findUnique: async ({ where }: { where: { projectId: string } }) =>
@@ -209,6 +217,9 @@ beforeEach(() => {
   ]
   state.consents = [consent('PC'), consent('PD'), consent('PG'), consent('PH')]
   state.policy = { enabled: true, maxLevel: 'write' }
+  templatesDir = mkdtempSync(path.join(tmpdir(), 'p4-gateway-templates-'))
+  vi.stubEnv('NUCLEI_TEMPLATES_PATH', templatesDir)
+  templateRows = []
   h.db = buildDb()
   h.calls.length = 0
   h.script.clear()
@@ -232,6 +243,8 @@ beforeEach(() => {
 afterEach(() => {
   setFlagsForTests(null)
   vi.restoreAllMocks()
+  vi.unstubAllEnvs()
+  rmSync(templatesDir, { recursive: true, force: true })
 })
 
 describe('the mount list (sandboxProjectsFor): from the authorization library only', () => {
@@ -332,7 +345,7 @@ describe('ensureSandbox', () => {
     on('POST /sandboxes/ensure', (b) => [200, { ...running(b as Row), extra: 'never forwarded' }])
     const answer = await ensureSandbox('bob', { needProject: 'PC' })
     const [call] = callsTo('POST', '/sandboxes/ensure')
-    expect(call.body).toEqual({ user_id: 'bob', view: 'own', projects: ['PB', 'PC', 'PD'], need_project: 'PC', wait: true, touch: false })
+    expect(call.body).toEqual({ user_id: 'bob', view: 'own', projects: ['PB', 'PC', 'PD'], need_project: 'PC', wait: true, touch: false, custom_templates: [] })
     expect(call.opts).toEqual({ timeoutMs: ORCHESTRATOR_ENSURE_TIMEOUT_S * 1000 })
     expect(answer).toEqual(running({ user_id: 'bob', view: 'own', projects: ['PB', 'PC', 'PD'] }))
     expect(ensureStatus(answer)).toBe(200)
@@ -641,7 +654,7 @@ describe('touchSandbox (the warm-up): never throws, never waits', () => {
     on('POST /sandboxes/ensure', () => [202, { state: 'starting', instance: INSTANCE, fresh: true }])
     await touchSandbox('bob', { actingAs: true })
     const [call] = callsTo('POST', '/sandboxes/ensure')
-    expect(call.body).toEqual({ user_id: 'bob', view: 'act_as', projects: ['PB'], need_project: null, wait: false, touch: true })
+    expect(call.body).toEqual({ user_id: 'bob', view: 'act_as', projects: ['PB'], need_project: null, wait: false, touch: true, custom_templates: [] })
     expect(call.opts).toBeUndefined()
     expect(h.calls).toHaveLength(1)
   })
@@ -728,6 +741,47 @@ describe('stops: orchestrator, then the agent\'s client, then one audit row', ()
   })
 })
 
+describe('the custom nuclei templates of each ensure (FU-6)', () => {
+  const put = (rel: string) => {
+    mkdirSync(path.dirname(path.join(templatesDir, rel)), { recursive: true })
+    writeFileSync(path.join(templatesDir, rel), 'id: t\n')
+  }
+  beforeEach(() => {
+    put('bob/mine.yaml')
+    put('carol/theirs.yaml')
+    put('admin/acting.yaml')
+    put('instance/row-null.yaml')
+    put('no-row.yml')
+    templateRows = [
+      { path: 'bob/mine.yaml', ownerUserId: 'bob' },
+      { path: 'carol/theirs.yaml', ownerUserId: 'carol' },
+      { path: 'admin/acting.yaml', ownerUserId: 'alice' },
+      { path: 'instance/row-null.yaml', ownerUserId: null },
+    ]
+  })
+
+  test("own and instance templates go with the ensure; another person's never", async () => {
+    await ensureSandbox('bob')
+    expect(ensures()[0].custom_templates).toEqual(['bob/mine.yaml', 'instance/row-null.yaml', 'no-row.yml'])
+  })
+
+  test("the act_as view (an admin acting as bob): bob's templates, never the acting admin's", async () => {
+    await ensureSandbox('bob', { actingAs: true, actor: { actorId: 'alice', onBehalfOfUserId: 'bob', actorEmail: null } })
+    const [body] = ensures()
+    expect(body.view).toBe('act_as')
+    expect(body.custom_templates).toEqual(['bob/mine.yaml', 'instance/row-null.yaml', 'no-row.yml'])
+    expect(body.custom_templates).not.toContain('admin/acting.yaml')
+  })
+
+  test('a warm-up carries them too; no folder at all sends an empty list, never no field', async () => {
+    await touchSandbox('bob')
+    expect(ensures()[0].custom_templates).toEqual(['bob/mine.yaml', 'instance/row-null.yaml', 'no-row.yml'])
+    rmSync(templatesDir, { recursive: true, force: true })
+    await ensureSandbox('carol')
+    expect(ensures()[1]).toHaveProperty('custom_templates', [])
+  })
+})
+
 describe('reconcileSandbox: both lists, best effort, for each person', () => {
   test('sends the own and act-as lists, audits what stopped, goes on past a failure', async () => {
     on('POST /sandboxes/bob/reconcile', () => [200, { stopped: 1 }])
@@ -770,7 +824,7 @@ describe('reads: status, lists, leases', () => {
     const list = await listSandboxes()
     expect(list).toEqual({ sandboxes: [{
       user_id: 'bob', view: 'own', instance: INSTANCE, state: 'running', projects_hash: 'f3ed1ec8bb40f7b4',
-      created_at: 1, last_used: 2, stop_at: 3,
+      created_at: 1, last_used: 2, stop_at: 3, reverse_port: { port: null, state: null },
     }] })
     expect(JSON.stringify(list)).not.toContain(TOKEN)
     expect(JSON.stringify(list)).not.toContain('redamon-kali-x')

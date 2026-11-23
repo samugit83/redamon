@@ -379,7 +379,10 @@ describe('the report', () => {
     const tunnel = r.sections.find((s: { id: string }) => s.id === 'tunnel_rows')!
     const rows = tunnel.lines.filter((l: string) => /@e2e\.local/.test(l))
     expect(rows).toHaveLength(3)
-    expect(rows[0]).toMatch(/new@e2e\.local \(member\)\s+chisel\s+enabled\s+saved 2026-03-20\s+<- the agent's tunnel/)
+    // FU-28: tunnels are per person, so no row is "the agent's tunnel".
+    expect(rows[0]).toMatch(/new@e2e\.local \(member\)\s+chisel\s+enabled\s+saved 2026-03-20$/)
+    expect(tunnel.lines.join('\n')).not.toMatch(/the agent's tunnel|only admins and members keeping the tunnel grant change it/)
+    expect(tunnel.lines.join('\n')).toMatch(/each account's tunnel runs in its own Kali sandbox, with its own credentials;\n\s+turning one on needs the tunnel grant/)
     expect(rows[1]).toMatch(/old@e2e\.local \(member\)\s+ngrok\s+enabled\s+saved 2026-03-10$/)
     expect(rows[2]).toMatch(/off@e2e\.local \(member\)\s+ngrok\s+disabled\s+saved 2026-04-01$/)
     expect(r.text).not.toContain(SECRET_NGROK)
@@ -568,6 +571,7 @@ describe('who will be Root, and where the instance settings come from (HD-31 Roo
     expect(text).toMatch(/tunnel\s+alice@e2e\.local \(member\), saved 2026-02-01; 2 accounts hold one/)
     expect(text).toMatch(/TrafficMind, egress, SCA\s+admin@e2e\.local, saved 2026-04-01, the latest of 2 admin rows/)
     expect(text).toMatch(/While RBAC_IDENTITY_ENABLED is off the accounts' settings stay in force/)
+    expect(text).toContain("The tunnel in this copy is not used: each account's own tunnel runs in its own Kali sandbox.")
     expect(r.text).not.toContain(SECRET_NGROK)
     expect(r.text).not.toContain('fake-pass')
   })
@@ -593,6 +597,9 @@ describe('who will be Root, and where the instance settings come from (HD-31 Roo
     db.seed('auditLog', [{ action: INSTANCE_MARKER_ACTION, targetType: 'system', source: 'system', after: { identity: true } }])
     const inForce = lines(await report({ env: SWITCH_ON }), 'instance_settings').join('\n')
     expect(inForce).toMatch(/Instance settings .* in force; admins change them in Global Settings/s)
+    // FU-28: the instance copy's tunnel is not one in force: tunnels are per person.
+    expect(inForce).not.toMatch(/Instance settings \(tunnel/)
+    expect(inForce).toContain('The tunnel in this copy is not used')
     expect(inForce).not.toMatch(/copied at the next start/)
     // Switch off again: the accounts' rows are the truth again, so each start copies them.
     expect(lines(await report(), 'instance_settings').join('\n')).toMatch(/copied at the next start/)

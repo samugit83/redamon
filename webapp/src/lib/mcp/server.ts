@@ -1754,6 +1754,11 @@ export function buildMcpServer(ctx: McpContext, instructions?: string): McpServe
         'One command is capped at 300 seconds by the sandbox: split long scans (fewer nuclei ' +
         '-tags, a smaller nmap port range, testssl --fast) rather than having them killed ' +
         'mid-run.\n\n' +
+        'Your reverse-shell port is $MSF_REVERSE_PORT inside the sandbox (4444 means it has no ' +
+        'pool port: a callback then needs your own tunnel, or use a bind payload). kali_exec ' +
+        'stops waiting at the 300-second cap, so start a listener in the background (`nohup nc ' +
+        '-lvnp $MSF_REVERSE_PORT >/tmp/l.log 2>&1 &`): it keeps running until your sandbox ' +
+        'stops, and you read what it caught from its file.\n\n' +
         'It waits briefly and returns the output if the command finished. If it is still ' +
         'running you get a jobId: poll kali_output with it, and kali_cancel stops it.\n\n' +
         `${KALI_SANDBOX_STATES}\n\n` +

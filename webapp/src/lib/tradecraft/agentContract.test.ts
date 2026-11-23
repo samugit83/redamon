@@ -39,6 +39,16 @@ describe('the shared fixtures', () => {
 })
 
 describe('the rules', () => {
+  test('FU-18: Check URL and Read now carry the administrator acting as the account, null by default', () => {
+    for (const [schema, file] of [[c.CheckUrlRequest, 'CheckUrlRequest.valid.json'], [c.ReadNowRequest, 'ReadNowRequest.valid.json']] as const) {
+      const body = read(file)
+      expect(schema.parse(body).real_actor_user_id, file).toBeNull()
+      expect(schema.parse({ ...body, real_actor_user_id: 'user_admin_fake' }).real_actor_user_id).toBe('user_admin_fake')
+      expect(schema.parse({ ...body, real_actor_user_id: null }).real_actor_user_id).toBeNull()
+      for (const bad of ['', 7, 'x'.repeat(201)]) expect(schema.safeParse({ ...body, real_actor_user_id: bad }).success, String(bad)).toBe(false)
+    }
+  })
+
   const batch = (n: number) => {
     const job = read('JobStartBatch.valid.json').jobs[0]
     return { jobs: Array.from({ length: n }, (_, i) => ({ ...job, job_id: `job_fake_${i}` })) }

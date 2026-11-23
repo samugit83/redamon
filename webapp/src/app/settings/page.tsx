@@ -38,6 +38,9 @@ import { actionFailedText, failureText, saveWarningLines } from '@/components/se
 import { readApiError } from '@/lib/apiError'
 import { StepUpModal } from '@/components/auth/StepUpModal'
 import { TunnelStatusReadOnly } from '@/components/settings/TunnelStatusReadOnly'
+import {
+  CHISEL_FORWARDS, NGROK_TOKEN_HINT, TUNNEL_ENABLE_HINT, TUNNEL_SECTION_HINT_MANAGE, TUNNEL_SECTION_HINT_READ,
+} from '@/components/settings/tunnelTexts'
 
 /** A Secret Multiscanner credential column (TRUFFLEHOG_KEY_FIELDS). */
 type TrufflehogField = `trufflehog${string}`
@@ -1638,9 +1641,7 @@ export default function SettingsPage() {
           </h2>
         </div>
         <p className={styles.sectionHint}>
-          {canManageTunnels
-            ? 'Configure reverse shell tunneling with your own ngrok or chisel credentials. Your tunnel runs in your own Kali sandbox, and it is turned off whenever your sandbox restarts (a sandbox stops after a while unused) - turn it on again each time. It exposes an internet-reachable listener, breaking the LAN-only posture.'
-            : 'Reverse shell tunneling runs in each person\'s own Kali sandbox, with their own credentials.'}
+          {canManageTunnels ? TUNNEL_SECTION_HINT_MANAGE : TUNNEL_SECTION_HINT_READ}
         </p>
         {settingsLoading ? (
           <div className={styles.emptyState}><Loader2 size={16} className={styles.spin} /> Loading...</div>
@@ -1664,13 +1665,11 @@ export default function SettingsPage() {
                 />
                 <span>Enable tunnels</span>
               </label>
-              <span className="formHint">
-                When off, saved credentials are stored but no tunnel is started. Enabling starts your Kali sandbox if needed and exposes its reverse-shell listener to the internet via ngrok/chisel.
-              </span>
+              <span className="formHint">{TUNNEL_ENABLE_HINT}</span>
             </div>
             <SecretField
               label="ngrok Auth Token"
-              hint="Enables ngrok TCP tunnel for reverse shells on port 4444. Stageless payloads only."
+              hint={NGROK_TOKEN_HINT}
               signupUrl="https://dashboard.ngrok.com/get-started/your-authtoken"
               value={settings.ngrokAuthtoken}
               visible={!!visibleFields.ngrokAuthtoken}
@@ -1687,7 +1686,7 @@ export default function SettingsPage() {
                 placeholder="e.g. http://your-vps.com:9090"
               />
               <span className="formHint">
-                Your VPS chisel server URL. Run on VPS: <code>chisel server -p 9090 --reverse</code>. Tunnels port 4444 (reverse-shell handler).
+                Your VPS chisel server URL. Run on VPS: <code>chisel server -p 9090 --reverse</code>. {CHISEL_FORWARDS}
               </span>
             </div>
             <SecretField

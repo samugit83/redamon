@@ -7,8 +7,11 @@ import { beginDriveAudit, drivePath, driveSandbox, findDriveTarget, forwardAudit
 const FAILED = 'Failed to kill job'
 
 /**
- * A background job (a handler) belongs to no project: only holders of every session see and kill it.
- * It is the pair (`?sandbox=` instance, number), as a session is (sessionDrive.ts).
+ * A background job (a handler) belongs to no project, but to the sandbox it runs in (D-D): the person
+ * stops the jobs of their own sandbox in the view they work in (an admin acting as a member: that
+ * member's act_as sandbox), and holders of every session stop any. It is the pair (`?sandbox=`
+ * instance, number), as a session is (sessionDrive.ts), forwarded with the person and view its row
+ * names; anything outside the caller's view is 404.
  */
 export const POST = withRouteErrors(FAILED, async (
   request: NextRequest,
@@ -25,5 +28,5 @@ export const POST = withRouteErrors(FAILED, async (
   const target = await findDriveTarget(viewer, 'job', id, sandbox, FAILED)
   if (target instanceof NextResponse) return target
   const audit = await beginDriveAudit('agent.job_kill', 'job', id, sandbox, viewer, target)
-  return forwardAuditedDrive(audit, drivePath('job', id, 'kill', sandbox), { method: 'POST' }, FAILED)
+  return forwardAuditedDrive(audit, drivePath('job', id, 'kill', sandbox, target), { method: 'POST' }, FAILED)
 })

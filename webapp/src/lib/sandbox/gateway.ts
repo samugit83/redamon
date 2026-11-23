@@ -54,6 +54,8 @@ import {
 /** An ensure (or the agent's list) the orchestrator gave no answer to: the agent fails closed on it. */
 export const ORCHESTRATOR_UNAVAILABLE = 'orchestrator_unavailable'
 import { dropSandboxClient } from './agentCalls'
+import { readReversePort, type ReversePort } from './reversePort'
+import { sandboxCustomTemplates } from './customTemplates'
 
 /** Who an audit row names: the person whose work caused it, or the admin who pressed the stop; null = the system. */
 export type SandboxActor = AuditActor | null
@@ -196,8 +198,11 @@ async function ensureAttempt(userId: string, opts: EnsureOptions, attempt: numbe
   const projects = await sandboxProjectsFor(userId, { actingAs })
   if (needProject !== null && !projects.includes(needProject)) throw new SandboxError(403, ERR_PROJECT_REFUSED)
 
+  // The person's own and the instance's custom templates (FU-6); the act_as view is the member's too.
+  const customTemplates = await sandboxCustomTemplates(userId)
   const answer = await orchestratorEnsure({
     user_id: userId, view, projects, need_project: needProject, wait: touch ? false : opts.wait !== false, touch,
+    custom_templates: customTemplates,
   })
   if (!answer.fresh) return answer
 
@@ -363,6 +368,8 @@ export interface OperationsSandbox {
   created_at?: number
   last_used?: number
   stop_at?: number | null
+  /** Its reverse-shell port (FU-24), from the list entry or else the person's status; null when unknown. */
+  reverse_port: ReversePort | null
 }
 
 /**
@@ -381,6 +388,7 @@ export async function listSandboxes(): Promise<{ sandboxes: OperationsSandbox[] 
     return {
       user_id: s.user_id, view: s.view, instance: s.instance, state: s.state,
       ...(detail ? { projects_hash: detail.projects_hash, created_at: detail.created_at, last_used: detail.last_used, stop_at: detail.stop_at } : {}),
+      reverse_port: readReversePort(s) ?? readReversePort(detail),
     }
   })
   return { sandboxes }

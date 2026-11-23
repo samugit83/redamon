@@ -5,7 +5,11 @@
  * speaks the protocol.
  *
  * Answers are cut to the contract's keys, so nothing the orchestrator adds later reaches the agent or
- * a browser unreviewed. An error keeps its code only when it is one of the contract's (a FastAPI
+ * a browser unreviewed. The optional keys (`ENSURE_RUNNING_OPTIONAL_KEYS`, `STATUS_OPTIONAL_KEYS`,
+ * `LIST_OPTIONAL_KEYS`: the reverse port and its state, D-B) are carried when present and never
+ * required, so an orchestrator older than them still answers within the contract.
+ *
+ * An error keeps its code only when it is one of the contract's (a FastAPI
  * `{detail: {code}}` or a bare `{code}`); anything else is a 502 `orchestrator_error`, never the
  * body's text, which can quote a traceback. A 404 without a code (a route this orchestrator does not
  * have) is `orchestrator_error` for `ensure` and `sandbox_routes_missing` for the statuses and the
@@ -20,11 +24,11 @@
  */
 import { orchestratorFetch } from '@/lib/orchestrator'
 import {
-  ENSURE_RUNNING_KEYS, ENSURE_STARTING_KEYS, ERR_DRAINING, ERR_HARD, ERR_IMAGE_MISSING, ERR_INVALID_PROJECT_ID,
-  ERR_INVALID_USER_ID, ERR_INVALID_VIEW, ERR_NOT_RUNNING, ERR_PROJECT_REFUSED, ERR_RAM, ERR_START_FAILED,
-  ERR_START_TIMEOUT, ERR_UNKNOWN_INSTANCE, ERR_USER_REFUSED, LEASE_KINDS, ORCHESTRATOR_ENSURE_TIMEOUT_S,
+  ENSURE_RUNNING_KEYS, ENSURE_RUNNING_OPTIONAL_KEYS, ENSURE_STARTING_KEYS, ERR_DRAINING, ERR_HARD, ERR_IMAGE_MISSING,
+  ERR_INVALID_PROJECT_ID, ERR_INVALID_USER_ID, ERR_INVALID_VIEW, ERR_NOT_RUNNING, ERR_PROJECT_REFUSED, ERR_RAM, ERR_START_FAILED,
+  ERR_START_TIMEOUT, ERR_UNKNOWN_INSTANCE, ERR_USER_REFUSED, LEASE_KINDS, LIST_OPTIONAL_KEYS, ORCHESTRATOR_ENSURE_TIMEOUT_S,
   ROUTE_ENSURE, ROUTE_LEASE, ROUTE_LEASES, ROUTE_LIST, ROUTE_RECONCILE, ROUTE_STATUS, ROUTE_STOP_ALL,
-  ROUTE_STOP_PROJECT, ROUTE_STOP_USER, STATES, STOP_REASONS, VIEWS,
+  ROUTE_STOP_PROJECT, ROUTE_STOP_USER, STATES, STATUS_OPTIONAL_KEYS, STOP_REASONS, VIEWS,
   type EnsureAnswer, type EnsureRequest, type LeaseAnswer, type LeaseKind, type LeaseRequest, type SandboxInstanceStatus,
   type SandboxLimit, type SandboxListAnswer, type SandboxListEntry, type SandboxStatusAnswer, type StopReason,
 } from './contract'
@@ -145,7 +149,7 @@ function ensureAnswer(res: Response, body: unknown): EnsureAnswer {
   if (!isObject(body) || !validInstance(body.instance) || typeof body.fresh !== 'boolean') throw badAnswer()
   if (res.status === 202 && body.state === 'starting') return pick(body, ENSURE_STARTING_KEYS) as unknown as EnsureAnswer
   if (res.status !== 200 || body.state !== 'running') throw badAnswer()
-  const answer = pick(body, ENSURE_RUNNING_KEYS)
+  const answer = pick(body, [...ENSURE_RUNNING_KEYS, ...ENSURE_RUNNING_OPTIONAL_KEYS])
   const complete = ENSURE_RUNNING_KEYS.every((k) => k in answer)
   if (!complete || typeof answer.token !== 'string' || typeof answer.tunnel_token !== 'string' || typeof answer.host !== 'string'
     || !(VIEWS as readonly unknown[]).includes(answer.view) || !Array.isArray(answer.projects) || !isObject(answer.ports)) {
@@ -215,8 +219,9 @@ export async function orchestratorStopAll(reason: StopReason): Promise<number> {
 
 const STATUS_KEYS = [
   'instance', 'view', 'state', 'projects_hash', 'created_at', 'last_used', 'lease_kinds', 'stop_at', 'stop_reason', 'warn', 'reverse_port',
+  ...STATUS_OPTIONAL_KEYS,
 ] as const
-const LIST_KEYS = ['user_id', 'view', 'instance', 'host', 'token', 'state'] as const
+const LIST_KEYS = ['user_id', 'view', 'instance', 'host', 'token', 'state', ...LIST_OPTIONAL_KEYS] as const
 
 /** GET /sandboxes/{user_id}: the person's instances, never a token. */
 export async function orchestratorStatus(userId: string): Promise<SandboxStatusAnswer> {

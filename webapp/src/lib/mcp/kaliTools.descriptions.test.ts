@@ -56,6 +56,19 @@ describe.each(['kali_exec', 'kali_output'])('%s describes a per-user sandbox', n
   })
 })
 
+describe("kali_exec tells a client the person's reverse-shell port (FU-24)", () => {
+  test('where to read it, what 4444 means, and how a listener outlives the 300 s cap', () => {
+    const text = describedAs('kali_exec')
+    expect(text).toMatch(/reverse-shell port is \$MSF_REVERSE_PORT inside the sandbox/)
+    expect(text).toMatch(/4444 means it has no pool port: a callback then needs your own tunnel, or use a bind payload/)
+    // A backgrounded command returns at once and keeps running (network_recon_server.py runs
+    // `bash -c`); at the cap only bash is killed, so nothing is promised of a foreground listener.
+    expect(text).toMatch(/kali_exec stops waiting at the 300-second cap, so start a listener in the background/)
+    expect(text).toMatch(/\(`nohup nc -lvnp \$MSF_REVERSE_PORT >\/tmp\/l\.log 2>&1 &`\): it keeps running until your sandbox stops/)
+    expect(text).not.toMatch(/cannot keep a listener open|A listener in the foreground ends/)
+  })
+})
+
 describe('what group 1 leaves as it is', () => {
   test('annotations: kali_exec and kali_cancel stay destructive, kali_output read-only', () => {
     expect(tools.get('kali_exec')!.annotations).toEqual({

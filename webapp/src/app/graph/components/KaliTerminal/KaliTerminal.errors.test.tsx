@@ -2,7 +2,7 @@
  * What the Kali terminal prints when it cannot connect (G-16).
  *
  * It printed "Terminal authentication failed (could not obtain a ticket)" for
- * every refused mint and "Disconnected from kali-sandbox" for every close. It
+ * every refused mint and "Disconnected from your Kali sandbox" for every close. It
  * now prints the mint's own refusal with its HTTP status, the update hint only
  * when no ticket secret exists, and the close code and reason the agent wrote.
  *
@@ -96,7 +96,7 @@ describe('KaliTerminal connection failures', () => {
     act(() => {
       FakeSocket.instances[0].onclose?.({ code: 1011, reason: 'Kali sandbox terminal unavailable (ConnectionRefusedError)' } as CloseEvent)
     })
-    expect(lines()).toContain('\n✗ Disconnected from kali-sandbox (close 1011: Kali sandbox terminal unavailable (ConnectionRefusedError))')
+    expect(lines()).toContain('\n✗ Disconnected from your Kali sandbox (close 1011: Kali sandbox terminal unavailable (ConnectionRefusedError))')
   })
 
   test('a socket error names the URL without the ticket', async () => {
@@ -122,7 +122,7 @@ describe('KaliTerminal line helpers', () => {
 
   test('a bare drop explains the 1006', () => {
     expect(disconnectLine(1006, '')).toBe(
-      'Disconnected from kali-sandbox (close 1006: no answer from the agent (down, restarting, or the handshake was refused))',
+      'Disconnected from your Kali sandbox (close 1006: no answer from the agent (down, restarting, or the handshake was refused))',
     )
   })
 })

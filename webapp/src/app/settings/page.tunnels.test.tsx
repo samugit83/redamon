@@ -34,6 +34,10 @@ vi.mock('@/components/ui', async orig => ({
 }))
 
 const SettingsPage = (await import('./page')).default
+const {
+  CHISEL_FORWARDS, NGROK_TOKEN_HINT, TUNNEL_BOTH_SWITCHES, TUNNEL_ENABLE_HINT, TUNNEL_NEVER_ACTING_AS, TUNNEL_REACHES,
+  TUNNEL_SECTION_HINT_MANAGE, TUNNEL_SECTION_HINT_READ,
+} = await import('@/components/settings/tunnelTexts')
 
 type Answer = { status: number; body: unknown } | (() => never)
 let routes: Record<string, Answer>
@@ -165,6 +169,34 @@ describe('per-person tunnels (group 1: per-user Kali sandboxes)', () => {
     expect(screen.getByText(/runs in your own Kali sandbox/)).toBeInTheDocument()
     expect(screen.getByText(/turned off whenever your sandbox restarts/)).toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalledWith('/api/admin/instance-settings', expect.anything())
+  })
+
+  test('FU-27: both switches, what the tunnel reaches (4444, never the pool port), and no tunnel under act-as', async () => {
+    routes[`GET ${BASE}/settings`] = { status: 200, body: perPerson(true) }
+    renderPage()
+    await screen.findByPlaceholderText(URL_PLACEHOLDER)
+    const text = document.body.textContent ?? ''
+    expect(screen.getByText(TUNNEL_SECTION_HINT_MANAGE)).toBeInTheDocument()
+    for (const line of [TUNNEL_BOTH_SWITCHES, TUNNEL_REACHES, TUNNEL_NEVER_ACTING_AS]) expect(TUNNEL_SECTION_HINT_MANAGE).toContain(line)
+    expect(TUNNEL_BOTH_SWITCHES).toMatch(/your own tunnel is on here AND the project's Tunnel Provider/)
+    expect(TUNNEL_REACHES).toMatch(/reaches port 4444 inside it; your sandbox's port from the operator's port pool.*is reached directly, without a tunnel/)
+    // Round 2: act-as never turns a tunnel on and its sandbox never uses one; the people's own tunnels keep running.
+    expect(TUNNEL_NEVER_ACTING_AS).toBe(
+      'While you act as another person, that work runs in a separate act-as sandbox that never uses a tunnel, and no tunnel can be turned on (turning one off still works).',
+    )
+    expect(text).not.toMatch(/act as another person, no tunnel runs/)
+    expect(screen.getByText(TUNNEL_ENABLE_HINT)).toBeInTheDocument()
+    expect(text).toContain(NGROK_TOKEN_HINT)
+    expect(text).toContain(CHISEL_FORWARDS)
+    expect(text).not.toMatch(/exposes its reverse-shell listener|The tunnel exposes your listener/)
+  })
+
+  test('FU-27: without the permission, the hint still names both switches and the act-as rule', async () => {
+    routes[`GET ${BASE}/settings`] = { status: 200, body: perPerson(false) }
+    renderPage()
+    expect(await screen.findByText(TUNNEL_SECTION_HINT_READ)).toBeInTheDocument()
+    expect(TUNNEL_SECTION_HINT_READ).toContain(TUNNEL_BOTH_SWITCHES)
+    expect(TUNNEL_SECTION_HINT_READ).toContain(TUNNEL_NEVER_ACTING_AS)
   })
 
   test('without the permission: their own tunnel\'s status, and a way to turn it off while it is on', async () => {

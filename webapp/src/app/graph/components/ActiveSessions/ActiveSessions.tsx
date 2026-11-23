@@ -1,16 +1,18 @@
 'use client'
 
 import { useState, useCallback, memo } from 'react'
-import { Terminal, AlertCircle, Clock } from 'lucide-react'
+import { Terminal, AlertCircle, Clock, Plug } from 'lucide-react'
 import type { MsfSession, MsfJob, NonMsfSession, SessionInteractResult } from '@/lib/websocket-types'
 import { useToast } from '@/components/ui'
 import { errorMessage } from '@/lib/apiError'
 import { partialAnswerLine } from '@/lib/sandbox/contract'
+import { reversePortLine } from '@/lib/sandbox/reversePort'
 import { noAnswerInTime, sessionRowKey, useSessionsAccess, type SessionRef, type ShownRow } from '@/hooks/useActiveSessions'
 import { ForbiddenNotice } from '@/components/auth/ForbiddenNotice'
 import { SessionCard, NonMsfCard, JobCard } from './SessionCard'
 import { SessionTerminal } from './SessionTerminal'
-import { stopWarningText, useSandboxStopWarning } from './useSandboxStopWarning'
+import { stopWarningText } from './useSandboxStopWarning'
+import { useSandboxStatus } from './useSandboxStatus'
 import styles from './ActiveSessions.module.css'
 
 interface ActiveSessionsProps {
@@ -51,7 +53,8 @@ export const ActiveSessions = memo(function ActiveSessions({
   const [killing, setKilling] = useState<ReadonlySet<string>>(() => new Set())
   const toast = useToast()
   const refused = useSessionsAccess() === 'refused'
-  const stopAt = useSandboxStopWarning(!refused)
+  const { stopAt, reversePort } = useSandboxStatus(!refused)
+  const portLine = reversePortLine(reversePort)
 
   const selectedKey = selected ? sessionRowKey(selected) : null
   const selectedSession = selectedKey === null ? undefined : sessions.find(s => sessionRowKey(s) === selectedKey)
@@ -113,6 +116,12 @@ export const ActiveSessions = memo(function ActiveSessions({
 
   const notices = (
     <>
+      {portLine !== null && (
+        <div className={styles.reversePort} data-testid="sessions-reverse-port">
+          <Plug size={12} />
+          <span>{portLine}</span>
+        </div>
+      )}
       {stopAt !== null && (
         <div className={styles.stopWarning} role="status">
           <Clock size={12} />

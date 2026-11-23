@@ -71,4 +71,17 @@ describe('the instance tunnel is unused: tunnels are per person (group 1, OQ-G1-
     expect(await screen.findByText('On (ngrok)')).toBeInTheDocument()
     expect(screen.queryByText(/Tunnels are per person/)).toBeNull()
   })
+
+  test('that status is their own tunnel, never one an administrator manages (FU-28)', async () => {
+    for (const status of [403, 404, 200]) {
+      canManageTunnels = false
+      vi.stubGlobal('fetch', vi.fn(async (url: string) => (url === '/api/admin/instance-settings'
+        ? new Response(JSON.stringify(status === 200 ? { canManageTunnels: false } : { error: 'x' }), { status })
+        : new Response(JSON.stringify({ ngrok: { active: true } })))))
+      const { unmount } = renderSection(FLAGS_GOV)
+      expect(await screen.findByText(/Your own tunnel, in your own Kali sandbox/)).toBeInTheDocument()
+      expect(screen.queryByText('The tunnel is managed by an administrator.')).toBeNull()
+      unmount()
+    }
+  })
 })

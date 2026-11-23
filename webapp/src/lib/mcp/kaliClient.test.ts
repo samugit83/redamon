@@ -165,3 +165,48 @@ describe('an agent 4xx reaches the caller', () => {
       .rejects.toThrow(/^No such command\.$/)
   })
 })
+
+// The agent's job store answers on its own (agentic/api.py `_KALI_SPAWN_ERROR_STATUS`): a 503 when
+// the command's log could not be created, a 409 for a jobs/ folder it will not write in, a 400 for
+// a project id it refuses. The sandbox is fine in each case, so none may read as an unusable sandbox.
+describe("the agent's job store is not the sandbox", () => {
+  const agentAnswersError = (status: number, body: Record<string, unknown>) => {
+    h.fetch.mockResolvedValue({ ok: false, status, json: async () => body })
+  }
+  const failure = async () => (await kaliExec('p1', 'id', undefined, 'person-7').catch((e: unknown) => e)) as McpToolError
+
+  test('503 job_store_error: its own code and a true line, never sandbox_unavailable', async () => {
+    for (const body of [
+      { error: "the job's log could not be created", code: 'job_store_error' },
+      { error: "the job's log could not be created" },
+    ]) {
+      agentAnswersError(503, body)
+      const err = await failure()
+      expect(err.code).toBe('job_store_error')
+      expect(err.message).toBe("The command did not run: its log could not be created in the project's jobs folder. Retry once; if it fails again, tell a person.")
+      expect(err.message).not.toMatch(/sandbox is unavailable/i)
+    }
+  })
+
+  test('another 503 still says the sandbox is unavailable', async () => {
+    agentAnswersError(503, { error: 'The Kali sandbox list could not be read' })
+    expect((await failure()).code).toBe('sandbox_unavailable')
+  })
+
+  test('409 job_store_refused: the reason verbatim, under its own code', async () => {
+    const reason = "the project's jobs folder is not a plain folder of the workspace, so no job can be started in it"
+    agentAnswersError(409, { error: reason, code: 'job_store_refused' })
+    const err = await failure()
+    expect([err.code, err.message]).toEqual(['job_store_refused', reason])
+    // Without the code (an agent before it sent one): the same reason, as agent_refused.
+    agentAnswersError(409, { error: reason })
+    const plain = await failure()
+    expect([plain.code, plain.message]).toEqual(['agent_refused', reason])
+  })
+
+  test('400 invalid_project_id: refused, with the reason', async () => {
+    agentAnswersError(400, { error: "invalid project_id 'p 1'", code: 'invalid_project_id' })
+    const err = await failure()
+    expect([err.code, err.message]).toEqual(['refused', "invalid project_id 'p 1'"])
+  })
+})

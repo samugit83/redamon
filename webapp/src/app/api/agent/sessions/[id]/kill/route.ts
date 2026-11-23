@@ -21,5 +21,5 @@ export const POST = withRouteErrors(FAILED, async (
   const target = await findDriveTarget(viewer, 'session', id, sandbox, FAILED)
   if (target instanceof NextResponse) return target
   const audit = await beginDriveAudit('agent.session_kill', 'session', id, sandbox, viewer, target)
-  return forwardAuditedDrive(audit, drivePath('session', id, 'kill', sandbox), { method: 'POST' }, FAILED)
+  return forwardAuditedDrive(audit, drivePath('session', id, 'kill', sandbox, target), { method: 'POST' }, FAILED)
 })

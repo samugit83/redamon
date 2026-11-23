@@ -10,6 +10,7 @@ import type {
   OperationsView, OpsAgentRun, OpsPerson, OpsProject, OpsSandbox, OpsScan, OpsShell, OpsTriageRun, SourceState,
 } from '@/lib/authz/adminOperations'
 import { partialAnswerLine } from '@/lib/sandbox/contract'
+import { reversePortCell } from '@/lib/sandbox/reversePort'
 import { useConsoleSections } from '../AdminConsole'
 import { whenLabel } from '../shares/shareWords'
 import { ConsoleHeader } from '../ConsoleHeader'
@@ -425,12 +426,13 @@ export default function AdminOperationsPage() {
             {data.sandboxes.state.ok && (data.sandboxes.list.length === 0 ? (
               <p className={consoleStyles.state}>No Kali sandbox is running.</p>
             ) : (
-              <Table label="Kali sandboxes" head={['Person', 'Works as', 'State', 'Started', 'Last used', 'Stops', 'Actions']}>
+              <Table label="Kali sandboxes" head={['Person', 'Works as', 'State', 'Reverse port', 'Started', 'Last used', 'Stops', 'Actions']}>
                 {data.sandboxes.list.map((box) => (
                   <tr key={box.key} className={pageStyles.tr}>
                     <td className={pageStyles.td}><Person person={box.person} linkUsers={linkUsers} /></td>
                     <td className={pageStyles.td}>{SANDBOX_VIEWS[box.view] ?? box.view}</td>
                     <td className={pageStyles.td}>{SANDBOX_STATES[box.state] ?? box.state}</td>
+                    <td className={pageStyles.td} data-testid="ops-sandbox-port">{reversePortCell(box.reversePort) ?? <span className={overviewStyles.muted}>-</span>}</td>
                     <td className={pageStyles.td}><When iso={box.createdAt} /></td>
                     <td className={pageStyles.td}><When iso={box.lastUsed} /></td>
                     <td className={pageStyles.td}><When iso={box.stopAt} /></td>

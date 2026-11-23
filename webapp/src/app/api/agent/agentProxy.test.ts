@@ -194,7 +194,7 @@ describe('read-only indicators stay quiet', () => {
     answer = async () => { throw refused() }
     const res = await tunnel.GET()
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ ngrok: { active: false }, chisel: { active: false } })
+    expect(await res.json()).toEqual({ ngrok: { active: false, status: 'off' }, chisel: { active: false, status: 'off' } })
   })
 
   test('health keeps its sentence and adds the code', async () => {

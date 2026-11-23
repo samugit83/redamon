@@ -162,7 +162,7 @@ describe('GHSA-w454-6hwp-fm58: Bob against Alice by sequential id', () => {
     signedIn('alice')
     const res = await interact(post({ command: 'id; hostname' }), params('1'))
     expect(res.status).toBe(200)
-    expect(drives()).toEqual(['/sessions/1/interact?sandbox=a11ce0'])
+    expect(drives()).toEqual(['/sessions/1/interact?sandbox=a11ce0&sandbox_user=alice&sandbox_view=own'])
     const row = mockWriteAudit.mock.calls[0][0]
     expect(row.action).toBe('agent.session_interact')
     expect(row.targetId).toBe('a11ce0:1')
@@ -232,7 +232,7 @@ describe('GHSA-w454-6hwp-fm58 replayed across per-user sandboxes', () => {
     signedIn('bob')
     const own = new NextRequest('http://x/api?sandbox=b0b000', { method: 'POST', body: '{"command":"id"}', headers: { 'content-type': 'application/json' } })
     expect((await interact(own, params('1'))).status).toBe(200)
-    expect(drives()).toEqual(['/sessions/1/interact?sandbox=b0b000'])
+    expect(drives()).toEqual(['/sessions/1/interact?sandbox=b0b000&sandbox_user=bob&sandbox_view=own'])
     expect(mockWriteAudit.mock.calls[0][0].targetId).toBe('b0b000:1')
   })
 })

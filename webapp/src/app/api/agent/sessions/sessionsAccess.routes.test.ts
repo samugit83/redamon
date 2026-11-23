@@ -80,7 +80,10 @@ const LIST = {
     // A row without its sandbox instance stands for no project and is never a drive target.
     { id: 4, type: 'shell', info: '', connection: '', target_ip: '', chat_session_id: 'chat-a' },
   ],
-  jobs: [{ id: 0, name: 'Exploit: multi/handler', payload: 'p', port: 4444, ...OWN_A }],
+  jobs: [
+    { id: 0, name: 'Exploit: multi/handler', payload: 'p', port: 4444, ...OWN_A },
+    { id: 1, name: 'Exploit: multi/handler', payload: 'p', port: 4444, ...OWN_B },
+  ],
   non_msf_sessions: [],
   cache_age_seconds: 0.5,
   agent_busy: false,
@@ -123,14 +126,15 @@ afterEach(() => {
 })
 
 describe('GET /api/agent/sessions', () => {
-  test("a member gets their own project's sessions and no job", async () => {
+  // Changed by decision D-D: a member sees the jobs of their own sandbox, as they see its sessions.
+  test("a member gets their own project's sessions and their own sandbox's jobs, never another person's", async () => {
     signedIn(principal('member-a'))
     agent()
     const res = await listSessions(new NextRequest('http://x/api/agent/sessions'))
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.sessions.map((s: { id: number }) => s.id)).toEqual([1])
-    expect(body.jobs).toEqual([])
+    expect(body.jobs).toEqual([{ id: 0, name: 'Exploit: multi/handler', payload: 'p', port: 4444, sandbox: 'aaaaa1' }])
     expect(body).not.toHaveProperty('hidden')
   })
 
@@ -140,7 +144,7 @@ describe('GET /api/agent/sessions', () => {
       agent()
       const body = await (await listSessions(new NextRequest('http://x/api/agent/sessions'))).json()
       expect(body.sessions.map((s: { id: number }) => s.id)).toEqual([1, 2, 3, 4])
-      expect(body.jobs).toHaveLength(1)
+      expect(body.jobs).toHaveLength(2)
     }
   })
 
@@ -178,7 +182,7 @@ describe('POST /api/agent/sessions/[id]/interact', () => {
     const res = await interact(post({ command: 'cat /etc/shadow' }), params('1'))
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ busy: false, output: 'uid=0(root)' })
-    expect(drives()).toEqual(['/sessions/1/interact?sandbox=aaaaa1'])
+    expect(drives()).toEqual(['/sessions/1/interact?sandbox=aaaaa1&sandbox_user=member-a&sandbox_view=own'])
     const rows = auditRows()
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({
@@ -264,7 +268,7 @@ describe('POST /api/agent/sessions/[id]/kill', () => {
     signedIn(principal('member-a'))
     agent({ busy: false, output: 'Killing 1' })
     expect((await killSession(post(), params('1'))).status).toBe(200)
-    expect(drives()).toEqual(['/sessions/1/kill?sandbox=aaaaa1'])
+    expect(drives()).toEqual(['/sessions/1/kill?sandbox=aaaaa1&sandbox_user=member-a&sandbox_view=own'])
     expect(auditRows()[0]).toMatchObject({
       action: 'agent.session_kill', targetType: 'msf_session', targetId: 'aaaaa1:1', after: { projectId: 'project-a', via: 'owner', sandbox: 'aaaaa1' },
     })
@@ -281,18 +285,32 @@ describe('POST /api/agent/sessions/[id]/kill', () => {
 })
 
 describe('POST /api/agent/jobs/[id]/kill', () => {
-  test('jobs hidden for a member: 404, nothing killed', async () => {
+  test("another person's job is hidden from a member: 404, nothing killed, no audit row", async () => {
     signedIn(principal('member-a'))
     agent()
-    expect((await killJob(post(), params('0'))).status).toBe(404)
+    expect((await killJob(post(undefined, 'bbbbb1'), params('1'))).status).toBe(404)
+    // The same number paired with the member's own instance is no job of hers either.
+    expect((await killJob(post(undefined, 'aaaaa1'), params('1'))).status).toBe(404)
     expect(drives()).toEqual([])
+    expect(auditRows()).toEqual([])
+  })
+
+  test("a member stops their own sandbox's job (D-D): forwarded with that instance, audited as their own sandbox's", async () => {
+    signedIn(principal('member-a'))
+    agent({ busy: false, output: 'Stopping job 0' })
+    expect((await killJob(post(), params('0'))).status).toBe(200)
+    expect(drives()).toEqual(['/jobs/0/kill?sandbox=aaaaa1&sandbox_user=member-a&sandbox_view=own'])
+    expect(auditRows()[0]).toMatchObject({
+      actorId: 'member-a', action: 'agent.job_kill', targetType: 'msf_job', targetId: 'aaaaa1:0',
+      after: { projectId: null, via: 'own_sandbox', sandbox: 'aaaaa1', sandboxUser: 'member-a' },
+    })
   })
 
   test('an admin kills a job', async () => {
     signedIn(principal('admin-a', 'admin'))
     agent({ busy: false, output: 'Stopping job 0' })
     expect((await killJob(post(), params('0'))).status).toBe(200)
-    expect(drives()).toEqual(['/jobs/0/kill?sandbox=aaaaa1'])
+    expect(drives()).toEqual(['/jobs/0/kill?sandbox=aaaaa1&sandbox_user=member-a&sandbox_view=own'])
     expect(auditRows()[0]).toMatchObject({ action: 'agent.job_kill', targetType: 'msf_job', targetId: 'aaaaa1:0', after: { via: 'admin', sandbox: 'aaaaa1' } })
   })
 })

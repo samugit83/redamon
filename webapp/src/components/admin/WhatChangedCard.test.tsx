@@ -66,6 +66,17 @@ describe('the card', () => {
     expect(MEMBER_CHANGE_LINES).toEqual(MEMBER_CHANGES.map((c: { text: (ctx: { templateFiles: number }) => string }) => c.text({ templateFiles: 0 })))
   })
 
+  test('FU-28: tunnels are per person, in both the card and the preview; no line says an admin owns the one tunnel', () => {
+    const tunnel = MEMBER_CHANGE_LINES.find(l => l.startsWith('Tunnel:'))
+    expect(tunnel).toBe('Tunnel: each person has their own, in their own Kali sandbox; turning it on needs the tunnel grant (admins, and members keeping it), and anyone can turn theirs off.')
+    expect(ADMIN_CHANGE_LINES[0]).toMatch(/each person's tunnel runs in their own Kali sandbox, with their own credentials/)
+    for (const line of [...ADMIN_CHANGE_LINES, ...MEMBER_CHANGE_LINES]) {
+      expect(line).not.toMatch(/the tunnel settings are now an admin's|only admins and members keeping the tunnel grant change it/)
+    }
+    // D-D: a member sees her own sandbox's jobs.
+    expect(MEMBER_CHANGE_LINES.find(l => l.startsWith('Shell sessions:'))).toContain("their own sandbox's background jobs")
+  })
+
   test('names the members whose saved stdio MCP servers no longer load', async () => {
     state = {
       dismissed: false, applies: true,

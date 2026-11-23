@@ -106,7 +106,10 @@ function agentList() {
       { id: 3, type: 'shell', info: '', connection: 'c3', target_ip: '10.0.0.3', chat_session_id: null, ...IN_A },
       { id: 4, type: 'shell', info: '', connection: 'c4', target_ip: '10.0.0.4', chat_session_id: 'chat-gone', ...IN_A },
     ],
-    jobs: [{ id: 0, name: 'Exploit: multi/handler', payload: 'linux/x64/meterpreter/reverse_tcp', port: 4444, ...IN_A }],
+    jobs: [
+      { id: 0, name: 'Exploit: multi/handler', payload: 'linux/x64/meterpreter/reverse_tcp', port: 4444, ...IN_A },
+      { id: 1, name: 'Exploit: multi/handler', payload: 'linux/x64/meterpreter/reverse_tcp', port: 4444, ...IN_B },
+    ],
     non_msf_sessions: [
       { id: 'raw-1', type: 'listener', tool: 'netcat', command: 'nc -lvnp 4445', chat_session_id: 'chat-a', ...IN_A },
       { id: 'raw-2', type: 'listener', tool: 'netcat', command: 'nc -lvnp 4446', chat_session_id: 'chat-b', ...IN_B },
@@ -170,16 +173,19 @@ describe('the sessions list', () => {
     expect(ids(out.non_msf_sessions)).toEqual(['raw-1'])
   })
 
-  test('jobs hidden for a member', async () => {
+  // Changed by decision D-D: a job belongs to the sandbox it runs in, so a member sees their own.
+  test("a member sees the jobs of their own sandbox, never another person's (D-D)", async () => {
     const out = await visibleSessions(agentList(), await viewerFor(principal('member-a')))
-    expect(out.jobs).toEqual([])
+    expect(out.jobs).toEqual([{ id: 0, name: 'Exploit: multi/handler', payload: 'linux/x64/meterpreter/reverse_tcp', port: 4444, sandbox: 'aaaaa1' }])
+    const b = await visibleSessions(agentList(), await viewerFor(principal('member-b')))
+    expect(ids(b.jobs)).toEqual([1])
   })
 
   test('every row visible to a legacy holder and an admin', async () => {
     for (const who of [principal('holder', 'standard', ['shell_sessions']), principal('admin-a', 'admin')]) {
       const out = await visibleSessions(agentList(), await viewerFor(who))
       expect(ids(out.sessions)).toEqual([1, 2, 3, 4])
-      expect(ids(out.jobs)).toEqual([0])
+      expect(ids(out.jobs)).toEqual([0, 1])
       expect(ids(out.non_msf_sessions)).toEqual(['raw-1', 'raw-2', 'raw-3'])
       // The map: each session names its project, or none.
       expect(out.sessions.map(s => s.project_id)).toEqual(['project-a', 'project-b', null, null])
@@ -270,32 +276,40 @@ describe('the viewer', () => {
 describe('a target to drive', () => {
   test("a member drives their own project's session", async () => {
     const t = await authorizeSessionTarget(agentList(), await viewerFor(principal('member-a')), 'session', '1', sandboxOf('1'))
-    expect(t).toEqual({ projectId: 'project-a', via: 'owner', sandboxUser: 'member-a' })
+    expect(t).toEqual({ projectId: 'project-a', via: 'owner', sandboxUser: 'member-a', sandboxView: 'own' })
   })
 
-  test('kill of a hidden session 404: no target for another project, an unattributed session, a job or a missing id', async () => {
+  test("kill of a hidden session 404: no target for another project, an unattributed session, another person's job or a missing id", async () => {
     const v = await viewerFor(principal('member-a'))
-    for (const [kind, id] of [['session', '2'], ['session', '3'], ['session', '4'], ['job', '0'], ['session', '99'], ['session', 'x']] as const) {
+    for (const [kind, id] of [['session', '2'], ['session', '3'], ['session', '4'], ['session', '99'], ['session', 'x']] as const) {
       expect(await authorizeSessionTarget(agentList(), v, kind, id, sandboxOf(id))).toBeNull()
     }
+    // member-b's job in member-b's sandbox, and the same number paired with member-a's own instance.
+    expect(await authorizeSessionTarget(agentList(), v, 'job', '1', 'bbbbb1')).toBeNull()
+    expect(await authorizeSessionTarget(agentList(), v, 'job', '1', 'aaaaa1')).toBeNull()
+  })
+
+  test('a member stops the job of their own sandbox (D-D)', async () => {
+    const v = await viewerFor(principal('member-a'))
+    expect(await authorizeSessionTarget(agentList(), v, 'job', '0', 'aaaaa1')).toEqual({ projectId: null, via: 'own_sandbox', sandboxUser: 'member-a', sandboxView: 'own' })
   })
 
   test('a holder or an admin drives any session and job', async () => {
     const holder = await viewerFor(principal('holder', 'standard', ['shell_sessions']))
-    expect(await authorizeSessionTarget(agentList(), holder, 'session', '2', sandboxOf('2'))).toEqual({ projectId: 'project-b', via: 'legacy', sandboxUser: 'member-b' })
-    expect(await authorizeSessionTarget(agentList(), holder, 'session', '3', sandboxOf('3'))).toEqual({ projectId: null, via: 'legacy', sandboxUser: 'member-a' })
-    expect(await authorizeSessionTarget(agentList(), holder, 'job', '0', sandboxOf('0'))).toEqual({ projectId: null, via: 'legacy', sandboxUser: 'member-a' })
+    expect(await authorizeSessionTarget(agentList(), holder, 'session', '2', sandboxOf('2'))).toEqual({ projectId: 'project-b', via: 'legacy', sandboxUser: 'member-b', sandboxView: 'own' })
+    expect(await authorizeSessionTarget(agentList(), holder, 'session', '3', sandboxOf('3'))).toEqual({ projectId: null, via: 'legacy', sandboxUser: 'member-a', sandboxView: 'own' })
+    expect(await authorizeSessionTarget(agentList(), holder, 'job', '0', sandboxOf('0'))).toEqual({ projectId: null, via: 'legacy', sandboxUser: 'member-a', sandboxView: 'own' })
     const admin = await viewerFor(principal('admin-a', 'admin'))
-    expect(await authorizeSessionTarget(agentList(), admin, 'session', '4', sandboxOf('4'))).toEqual({ projectId: null, via: 'admin', sandboxUser: 'member-a' })
+    expect(await authorizeSessionTarget(agentList(), admin, 'session', '4', sandboxOf('4'))).toEqual({ projectId: null, via: 'admin', sandboxUser: 'member-a', sandboxView: 'own' })
     expect(await authorizeSessionTarget(agentList(), admin, 'job', '7', sandboxOf('7'))).toBeNull()
   })
 
   test("driving another's session under the escape hatch is a recorded use; one's own is not", async () => {
     setFlagsForTests({ sharedToolsCompat: true })
     const v = await viewerFor(principal('member-a', 'standard', [], BEFORE_CUTOFF))
-    expect(await authorizeSessionTarget(agentList(), v, 'session', '1', sandboxOf('1'))).toEqual({ projectId: 'project-a', via: 'owner', sandboxUser: 'member-a' })
+    expect(await authorizeSessionTarget(agentList(), v, 'session', '1', sandboxOf('1'))).toEqual({ projectId: 'project-a', via: 'owner', sandboxUser: 'member-a', sandboxView: 'own' })
     expect(compatRows()).toEqual([])
-    expect(await authorizeSessionTarget(agentList(), v, 'session', '2', sandboxOf('2'))).toEqual({ projectId: 'project-b', via: 'compat', sandboxUser: 'member-b' })
+    expect(await authorizeSessionTarget(agentList(), v, 'session', '2', sandboxOf('2'))).toEqual({ projectId: 'project-b', via: 'compat', sandboxUser: 'member-b', sandboxView: 'own' })
     expect(compatRows()).toHaveLength(1)
     expect(compatRows()[0]).toMatchObject({ actorId: 'member-a', targetId: 'shell_sessions_all' })
   })
@@ -342,9 +356,10 @@ describe('a project shared with the viewer (step 5.10)', () => {
     expect(ids(out.sessions)).toEqual([1, 2])
     expect(out.sessions.find(s => s.id === 2)).toMatchObject({ project_id: 'project-b' })
     expect(ids(out.non_msf_sessions)).toEqual(['raw-1', 'raw-2'])
-    expect(out.jobs).toEqual([])
-    expect(await authorizeSessionTarget(agentList(), v, 'session', '2', sandboxOf('2'))).toEqual({ projectId: 'project-b', via: 'share', sandboxUser: 'member-b' })
-    expect(await authorizeSessionTarget(agentList(), v, 'job', '0', sandboxOf('0'))).toBeNull()
+    // A share reaches the project's sessions, never the sharer's sandbox: member-b's job stays hidden (D-D).
+    expect(ids(out.jobs)).toEqual([0])
+    expect(await authorizeSessionTarget(agentList(), v, 'session', '2', sandboxOf('2'))).toEqual({ projectId: 'project-b', via: 'share', sandboxUser: 'member-b', sandboxView: 'own' })
+    expect(await authorizeSessionTarget(agentList(), v, 'job', '1', 'bbbbb1')).toBeNull()
     expect(await authorizeSessionTarget(agentList(), v, 'session', '3', sandboxOf('3'))).toBeNull()
     expect(policy).toHaveBeenCalledWith({ userId: 'member-a' }, 'project-b')
   })
@@ -373,7 +388,7 @@ describe('a project shared with the viewer (step 5.10)', () => {
   test('an admin acting as the collaborator: the share is asked as acted (read at most), and the admin\'s own view stays', async () => {
     answering(toProjectB('read'))
     const v = await viewerFor(principal('admin-a', 'admin'), 'member-a')
-    expect(await authorizeSessionTarget(agentList(), v, 'session', '2', sandboxOf('2'))).toEqual({ projectId: 'project-b', via: 'admin', sandboxUser: 'member-b' })
+    expect(await authorizeSessionTarget(agentList(), v, 'session', '2', sandboxOf('2'))).toEqual({ projectId: 'project-b', via: 'admin', sandboxUser: 'member-b', sandboxView: 'own' })
     expect(policy).toHaveBeenCalledWith({ userId: 'member-a' }, 'project-b', { actingAs: true })
   })
 

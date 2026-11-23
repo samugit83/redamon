@@ -11,7 +11,11 @@
  *   Exploitation & shells, which counts only with the owner's consent; step 5.10),
  *   as `projectAccess()` answers it now. An admin acting as a collaborator reaches the
  *   share at read (D-22) and sees none of its sessions that way.
- * - Every other one, the unattributed ones and all jobs need `shell_sessions_all`
+ * - A background job (a handler) belongs to no project, but to the sandbox it runs in (D-D): the
+ *   person sees and stops the jobs of their own sandbox in the view they work in, as the agent
+ *   tagged the row (`own`; an admin acting as a member works in that member's `act_as` sandbox, so
+ *   that one, never the member's own). Never another person's.
+ * - Every other one, the unattributed ones and every other job need `shell_sessions_all`
  *   (admins, the `shell_sessions` legacy grant, the escape hatch for pre-upgrade
  *   accounts), judged on the signed-in account: acting as someone never borrows
  *   their grant.
@@ -115,14 +119,16 @@ export interface SessionsViewer {
   all: SharedToolAccess
 }
 
-/** `share`: a project shared with the person at W+X. */
-export type SessionAccessVia = 'owner' | 'share' | NonNullable<SharedToolAccess['via']>
+/** `share`: a project shared with the person at W+X; `own_sandbox`: a job of the caller's own sandbox (D-D). */
+export type SessionAccessVia = 'owner' | 'share' | 'own_sandbox' | NonNullable<SharedToolAccess['via']>
 
 export interface SessionTarget {
   projectId: string | null
   via: SessionAccessVia
   /** The person whose sandbox runs it, as the agent tagged the row (per-user rows only), for the audit. */
   sandboxUser?: string
+  /** That sandbox's view, as tagged: the drive names the person and view along with the instance. */
+  sandboxView?: SandboxView
 }
 
 export interface ChatProject {
@@ -143,6 +149,21 @@ export async function resolveSessionsViewer(): Promise<SessionsViewer | NextResp
   // Listing is polled every few seconds: not a use of the escape hatch (a drive is).
   const all = await sharedToolAccess(principal, 'shell_sessions_all', { record: false })
   return { principal, effectiveUserId: effective.userId, all }
+}
+
+/** The sandbox view the caller works in: an admin acting as a member works in that member's `act_as` sandbox. */
+function viewerSandboxView(viewer: SessionsViewer): SandboxView {
+  return viewer.principal.id !== viewer.effectiveUserId ? 'act_as' : 'own'
+}
+
+/**
+ * Whether a row comes from the caller's own sandbox in the view the caller works in, as the agent
+ * tagged it (the sandbox cannot set the tags), naming its instance.
+ */
+function fromViewerSandbox(row: Row, viewer: SessionsViewer): boolean {
+  if (!validInstance(row.sandbox)) return false
+  const person = sandboxPersonOf(row)
+  return !!person && person.userId === viewer.effectiveUserId && person.view === viewerSandboxView(viewer)
 }
 
 function rows(value: unknown): Row[] {
@@ -260,7 +281,7 @@ export async function visibleSessions(payload: unknown, viewer: SessionsViewer):
   }
   const out: VisibleSessions = {
     sessions: sessions.filter(seen).map(tag),
-    jobs: viewer.all.allowed ? jobs.map(withoutPerson) : [],
+    jobs: (viewer.all.allowed ? jobs : jobs.filter((row) => fromViewerSandbox(row, viewer))).map(withoutPerson),
     non_msf_sessions: listeners.filter(seen).map(tag),
   }
   if ('cache_age_seconds' in p) out.cache_age_seconds = p.cache_age_seconds
@@ -383,8 +404,9 @@ async function judgeViewerRows(viewer: SessionsViewer, { userId, view }: Running
 /**
  * Whether `viewer` may drive the session or job `id` of sandbox `sandbox` in the agent's list, and
  * through what. The pair is matched whole; a row without an instance is never a target.
- * Null when it is not in the caller's view (the route answers 404). Driving another project's
- * session under the escape hatch is a use, recorded as such.
+ * Null when it is not in the caller's view (the route answers 404). A job of the caller's own
+ * sandbox, in the view they work in, is theirs (D-D). Driving another project's session, or
+ * another sandbox's job, under the escape hatch is a use, recorded as such.
  */
 export async function authorizeSessionTarget(
   payload: unknown,
@@ -400,15 +422,16 @@ export async function authorizeSessionTarget(
   if (matches.length !== 1) return null
   const row = matches[0]
   const person = sandboxPersonOf(row)
-  const sandboxUser = person ? { sandboxUser: person.userId } : {}
+  const sandboxPerson = person ? { sandboxUser: person.userId, sandboxView: person.view } : {}
   let projectId: string | null = null
+  if (kind === 'job' && fromViewerSandbox(row, viewer)) return { projectId, via: 'own_sandbox', ...sandboxPerson }
   if (kind === 'session') {
     const project = (await attributedProjects([row])).get(row)
     projectId = project?.projectId ?? null
-    if (project && project.ownerId === viewer.effectiveUserId) return { projectId, via: 'owner', ...sandboxUser }
-    if (project && (await sharedShellProjects(viewer, [project])).has(project.projectId)) return { projectId, via: 'share', ...sandboxUser }
+    if (project && project.ownerId === viewer.effectiveUserId) return { projectId, via: 'owner', ...sandboxPerson }
+    if (project && (await sharedShellProjects(viewer, [project])).has(project.projectId)) return { projectId, via: 'share', ...sandboxPerson }
   }
   if (!viewer.all.allowed || !viewer.all.via) return null
   if (viewer.all.via === 'compat') await sharedToolAccess(viewer.principal, 'shell_sessions_all')
-  return { projectId, via: viewer.all.via, ...sandboxUser }
+  return { projectId, via: viewer.all.via, ...sandboxPerson }
 }

@@ -51,7 +51,8 @@ export function InstanceTunnelSection() {
       </div>
     )
   }
-  if (view.kind === 'readonly') return <TunnelStatusReadOnly />
+  // The status shown is the person's own tunnel: there is no other since tunnels are per person.
+  if (view.kind === 'readonly') return <TunnelStatusReadOnly perPerson />
   return (
     <div className={styles.settingsGrid}>
       <div className="formGroup">

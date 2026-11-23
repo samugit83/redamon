@@ -11,6 +11,7 @@ import { GVM_NOT_INSTALLED } from '@/components/scans/scanErrors'
 import { useRefusal } from '@/hooks/useRefusal'
 import type { ScanVersionSummary } from '../../hooks/useScanVersions'
 import { emergencyPauseTitle, type EmergencyStopScope } from './emergencyStopScope'
+import { tunnelDisplay } from '@/lib/tunnelDisplay'
 import styles from './GraphToolbar.module.css'
 
 interface GraphToolbarProps {
@@ -91,7 +92,10 @@ interface GraphToolbarProps {
   /** Whose agent runs a press stops, as the emergency-stop route answered; unknown until it does. */
   emergencyStopScope?: EmergencyStopScope
   // Tunnel status (displayed next to Pause All)
-  tunnelStatus?: { ngrok?: { active: boolean; host?: string; port?: number }; chisel?: { active: boolean; host?: string; port?: number; srvPort?: number } }
+  tunnelStatus?: {
+    ngrok?: { active: boolean; status?: string; host?: string; port?: number }
+    chisel?: { active: boolean; status?: string; host?: string; port?: number; srvPort?: number }
+  }
   // Scan Timeline (version switch)
   scanVersions?: ScanVersionSummary[]
   selectedVersionId?: string | null
@@ -190,6 +194,10 @@ export function GraphToolbar({
   agentActiveCount = 0,
   agentConversations = [],
 }: GraphToolbarProps) {
+  // The person's own tunnels as their `status` says: "Tunnel active" only once one forwards.
+  const tunnelBadges = (['ngrok', 'chisel'] as const)
+    .map(provider => ({ provider, display: tunnelDisplay(tunnelStatus?.[provider]), info: tunnelStatus?.[provider] }))
+    .filter(b => b.display.state !== 'off')
   const isReconBusy = reconStatus === 'running' || reconStatus === 'starting' || reconStatus === 'pausing'
   const isReconStopping = reconStatus === 'stopping'
   const isReconPausing = reconStatus === 'pausing'
@@ -299,20 +307,21 @@ export function GraphToolbar({
         <span>{isEmergencyPausing ? 'PAUSING...' : 'PAUSE ALL'}</span>
       </button>
 
-      {(tunnelStatus?.ngrok?.active || tunnelStatus?.chisel?.active) && (
+      {tunnelBadges.length > 0 && (
         <div className={styles.tunnelBadges}>
-          {tunnelStatus.ngrok?.active && (
-            <span className={styles.tunnelBadge} title={`Tunnel active: ${tunnelStatus.ngrok.host}:${tunnelStatus.ngrok.port}`}>
+          {tunnelBadges.map(({ provider, display, info }) => (
+            <span
+              key={provider}
+              className={`${styles.tunnelBadge} ${display.state === 'connecting' ? styles.tunnelBadgeConnecting : display.state === 'error' ? styles.tunnelBadgeFailed : ''}`}
+              title={display.state === 'on'
+                ? `Tunnel active: ${info?.host}:${info?.port}`
+                : display.state === 'connecting' ? 'Tunnel connecting' : `Tunnel failed: ${display.state === 'error' ? display.reason : ''}`}
+              data-testid={`tunnel-badge-${provider}`}
+            >
               <span className={styles.tunnelDot} />
-              ngrok
+              {provider}{display.state === 'connecting' ? ' (connecting)' : display.state === 'error' ? ' (failed)' : ''}
             </span>
-          )}
-          {tunnelStatus.chisel?.active && (
-            <span className={styles.tunnelBadge} title={`Tunnel active: ${tunnelStatus.chisel.host}:${tunnelStatus.chisel.port}`}>
-              <span className={styles.tunnelDot} />
-              chisel
-            </span>
-          )}
+          ))}
         </div>
       )}
 

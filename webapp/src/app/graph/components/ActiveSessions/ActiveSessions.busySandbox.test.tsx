@@ -23,7 +23,7 @@ vi.mock('@/components/shared/FeatureModelGate', () => ({
   useFeatureModelGate: () => ({ ensureFeatureModel: async () => true, fetchWithFeatureModel: async (_f: string, go: () => Promise<Response>) => go() }),
   FeatureModelLine: () => null,
 }))
-vi.mock('./useSandboxStopWarning', () => ({ useSandboxStopWarning: () => null, stopWarningText: () => '' }))
+vi.mock('./useSandboxStatus', () => ({ useSandboxStatus: () => ({ stopAt: null, reversePort: null }) }))
 
 import { ActiveSessions } from './ActiveSessions'
 

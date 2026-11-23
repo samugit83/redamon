@@ -46,6 +46,23 @@ const FORBIDDEN_TOOLS = field('roeForbiddenTools')?.values ?? []
  */
 export const FIRETEAM_TIMEOUT_SEC_DEFAULT = 7200
 
+// Payload Direction (FU-26). Each person's reverse shells land in their own Kali sandbox: with no
+// tunnel, only a port of the operator's pool reaches it from outside, and that port is the LPORT.
+export const OWN_TUNNEL_NEEDED =
+  'Needs your own tunnel turned on in Global Settings → Tunneling, with your own credentials, as well as this project setting.'
+export const NO_TUNNEL_HINT =
+  'No tunnel: a reverse shell reaches your Kali sandbox only through a port of the port pool your operator ' +
+  'configured (KALI_SANDBOX_PORT_POOL), and the agent then uses your sandbox\'s own port as LPORT. Without a ' +
+  'pool, use a tunnel or a bind payload.'
+export const LHOST_HINT =
+  'The address of the RedAmon host that the target can reach (its LAN or public IP). Never your Kali ' +
+  'sandbox\'s own 10.214.x address: no target reaches it. Leave empty for bind mode.'
+// The project's LPORT is never the agent's LPORT (D-F): without a pool nothing of a sandbox is
+// published, so the only use left is marking a bind-only project (a bind port, no LHOST or LPORT).
+export const LPORT_HINT =
+  'Not used as LPORT: with a port pool the agent uses your sandbox\'s own port; with a tunnel, the ' +
+  'tunnel\'s; with neither, only bind payloads work. Leave it empty.'
+
 interface AgentBehaviourSectionProps {
   data: FormData
   updateField: <K extends keyof FormData>(field: K, value: FormData[K]) => void
@@ -172,7 +189,7 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
           <div className={styles.subSection}>
             <h3 className={styles.subSectionTitle}>Payload Direction</h3>
             <p className={styles.sectionDescription}>
-              <strong>Reverse</strong>: target connects back to you (LHOST + LPORT). <strong>Bind</strong>: you connect to the target (leave LPORT empty).
+              <strong>Reverse</strong>: the target connects back to your own Kali sandbox (LHOST + LPORT). <strong>Bind</strong>: your sandbox connects to the target (leave LPORT empty).
             </p>
             <div className={styles.fieldGroup}>
               <label className={styles.fieldLabel}>Tunnel Provider</label>
@@ -185,14 +202,14 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                   updateField('agentChiselTunnelEnabled', val === 'chisel');
                 }}
               >
-                <option value="none">None (manual LHOST/LPORT)</option>
-                <option value="ngrok">ngrok (single port - free, no VPS needed)</option>
-                <option value="chisel">chisel (multi-port - requires VPS)</option>
+                <option value="none">None (port pool or bind)</option>
+                <option value="ngrok">ngrok (port 4444 - free, no VPS needed)</option>
+                <option value="chisel">chisel (port 4444 - requires a VPS)</option>
               </select>
               <span className={styles.fieldHint}>
-                {data.agentNgrokTunnelEnabled && 'Configure ngrok auth token in Global Settings → Tunneling. Tunnels port 4444 only (handler). Stageless payloads required. Web delivery / HTA not supported.'}
-                {data.agentChiselTunnelEnabled && 'Configure chisel server URL in Global Settings → Tunneling. Requires a chisel server running on your VPS. Tunnels ports 4444 (handler) + 8080 (web delivery). Stageless payloads required.'}
-                {!data.agentNgrokTunnelEnabled && !data.agentChiselTunnelEnabled && 'No tunnel - configure LHOST/LPORT manually below.'}
+                {data.agentNgrokTunnelEnabled && `${OWN_TUNNEL_NEEDED} Tunnels port 4444 of your sandbox only (the handler). Stageless payloads required. Web delivery / HTA not supported.`}
+                {data.agentChiselTunnelEnabled && `${OWN_TUNNEL_NEEDED} Requires a chisel server running on your VPS. Tunnels port 4444 of your sandbox only (the handler): no web delivery or HTA. Stageless payloads required.`}
+                {!data.agentNgrokTunnelEnabled && !data.agentChiselTunnelEnabled && NO_TUNNEL_HINT}
               </span>
             </div>
             {(data.agentNgrokTunnelEnabled || data.agentChiselTunnelEnabled) ? (
@@ -201,7 +218,7 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                 <span>
                   <strong>No manual configuration needed.</strong>{' '}
                   {data.agentNgrokTunnelEnabled && 'LHOST and LPORT are auto-detected from the ngrok tunnel.'}
-                  {data.agentChiselTunnelEnabled && 'LHOST is derived from the VPS hostname. Both handler (4444) and web delivery (8080) ports are tunneled.'}
+                  {data.agentChiselTunnelEnabled && 'LHOST is derived from the VPS hostname. Only the handler port (4444) is tunneled.'}
                 </span>
               </div>
             ) : (
@@ -215,7 +232,7 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                     onChange={(e) => updateField('agentLhost', e.target.value)}
                     placeholder="e.g. 192.168.1.50"
                   />
-                  <span className={styles.fieldHint}>Your host machine&apos;s LAN IP that the target can reach (not the container&apos;s 172.x address). Leave empty for bind mode.</span>
+                  <span className={styles.fieldHint}>{LHOST_HINT}</span>
                   {detectedHostIp && REGEX_IPV4.test(detectedHostIp) && detectedHostIp !== data.agentLhost && (
                     <span className={styles.suggestionRow}>
                       Detected (default route): {detectedHostIp}
@@ -240,7 +257,7 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                     max={65535}
                     placeholder="Empty = bind mode"
                   />
-                  <span className={styles.fieldHint}>Leave empty for bind mode</span>
+                  <span className={styles.fieldHint}>{LPORT_HINT}</span>
                 </div>
                 <div className={styles.fieldGroup}>
                   <label className={styles.fieldLabel}>Bind Port on Target</label>

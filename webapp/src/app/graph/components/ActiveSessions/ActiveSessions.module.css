@@ -154,6 +154,7 @@
   overflow-wrap: anywhere;
 }
 
+.reversePort,
 .stopWarning,
 .partialAnswer {
   display: flex;
@@ -171,6 +172,10 @@
 
 .partialAnswer {
   color: var(--text-secondary);
+}
+
+.reversePort {
+  color: var(--text-primary);
 }
 
 .nothingListed {

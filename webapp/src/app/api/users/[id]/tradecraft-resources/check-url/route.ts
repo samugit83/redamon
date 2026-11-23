@@ -12,6 +12,7 @@ import {
   AGENT_ROUTES, CheckUrlRequest, CheckUrlResult, Credentials, WEBAPP_TIMEOUTS_MS,
 } from '@/lib/tradecraft/agentContract'
 import { effectiveSettings } from '@/lib/tradecraft/effectiveSettings'
+import { jobActorOf } from '@/lib/tradecraft/jobs'
 import { loadOwnResource } from '@/lib/tradecraft/resourceAccess'
 import {
   applyCredentials, fieldErrorResponse, hasCredentials, parseResourceFields, typeOptionsOf, type StoredCredentials,
@@ -110,6 +111,7 @@ async function check(request: NextRequest, id: string): Promise<NextResponse> {
   const settings = effectiveSettings({ user, resource: overrides })
   const payload = CheckUrlRequest.parse({
     user_id: id,
+    real_actor_user_id: jobActorOf(actor)?.realActorUserId ?? null,
     url,
     forced_type: forcedType,
     type_options: typeOptionsOf(settings.values),

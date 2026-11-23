@@ -577,16 +577,39 @@ describe('Kali sandboxes and shells across sandboxes (group 1, WI-S16-6)', () =>
       {
         key: 'mem-a:aaaaa1', instance: 'aaaaa1', person: { id: 'mem-a', name: 'Name mem-a' }, view: 'own', state: 'running',
         createdAt: iso(T0), lastUsed: iso(T0 + 600), stopAt: iso(T0 + 1800),
+        // 4444 from an orchestrator that sends no state: no port, reason not reported (FU-24).
+        reversePort: { port: null, state: null },
       },
       {
         key: 'mem-b:bbbbb1', instance: 'bbbbb1', person: { id: 'mem-b', name: 'Name mem-b' }, view: 'act_as', state: 'draining',
-        createdAt: null, lastUsed: null, stopAt: null,
+        createdAt: null, lastUsed: null, stopAt: null, reversePort: null,
       },
     ])
     for (const leak of ['tok-SECRET', 'redamon-kali-', 'feedfacecafebeef', 'projects', 'lease_kinds', 'reverse_port']) {
       expect(raw).not.toContain(leak)
     }
     expect(h.db.auditCreate).not.toHaveBeenCalled()
+  })
+
+  test("each sandbox's reverse port (FU-24): from the list entry, else the person's status; the reason when there is none", async () => {
+    sandboxList = () => json({
+      sandboxes: [
+        { user_id: 'mem-a', view: 'own', instance: 'aaaaa1', host: 'h-a', token: 'tok-SECRET-a', state: 'running', reverse_port: 31001, reverse_port_state: 'assigned' },
+        { user_id: 'mem-b', view: 'own', instance: 'bbbbb1', host: 'h-b', token: 'tok-SECRET-b', state: 'running' },
+        { user_id: 'mem-c', view: 'own', instance: 'ccccc1', host: 'h-c', token: 'tok-SECRET-c', state: 'running', reverse_port: 4444, reverse_port_state: 'pool_full' },
+      ],
+    })
+    sandboxStatus = (userId) => json({
+      instances: userId === 'mem-b'
+        ? [{ instance: 'bbbbb1', view: 'own', state: 'running', projects_hash: 'feedfacecafebeef', created_at: T0, last_used: T0, lease_kinds: [], stop_at: null, stop_reason: null, warn: false, reverse_port: 4444, reverse_port_state: 'no_pool' }]
+        : [],
+    })
+    const out = await body(await view())
+    expect(out.sandboxes.list.map((s: { key: string; reversePort: unknown }) => [s.key, s.reversePort])).toEqual([
+      ['mem-a:aaaaa1', { port: 31001, state: 'assigned' }],
+      ['mem-b:bbbbb1', { port: null, state: 'no_pool' }],
+      ['mem-c:ccccc1', { port: null, state: 'pool_full' }],
+    ])
   })
 
   test('two shells numbered alike in two sandboxes stay two rows, each naming its instance; the unavailable count is carried', async () => {

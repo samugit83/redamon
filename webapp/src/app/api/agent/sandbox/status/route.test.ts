@@ -4,8 +4,9 @@
  *
  * The person is the session's effective user, never a value of the request; the answer lists only
  * the view that person works in (`own`, or `act_as` for an admin acting as a member) and only
- * `state`, `stop_at`, `stop_reason` and `warn`: no token, host, instance, project hash or lease. A
- * failure is its code, never the orchestrator's text. agent:sessions is asked first (the family test
+ * `state`, `stop_at`, `stop_reason`, `warn` and that sandbox's reverse-shell port (`reverse_port`,
+ * 4444 meaning none, and `reverse_port_state`; FU-24): no token, host, instance, project hash or
+ * lease. A failure is its code, never the orchestrator's text. agent:sessions is asked first (the family test
  * sessions.permissions.test.ts runs the real guard); the manifest names it.
  *
  * The guard and the orchestrator call (`sandboxStatus`) are doubles; the route and the failure
@@ -60,12 +61,12 @@ beforeEach(() => {
 })
 
 describe('the person and the view come from the session', () => {
-  test("the signed-in person's own view: state, stop time, reason and warning, nothing else", async () => {
+  test("the signed-in person's own view: state, stop time, reason, warning and reverse port, nothing else", async () => {
     const res = await read()
     expect(res.status).toBe(200)
     expect(res.headers.get('cache-control')).toBe('no-store')
     expect(await res.json()).toEqual({
-      instances: [{ state: 'running', stop_at: 1_790_028_900, stop_reason: null, warn: true }],
+      instances: [{ state: 'running', stop_at: 1_790_028_900, stop_reason: null, warn: true, reverse_port: 4444, reverse_port_state: null }],
     })
     expect(h.status).toHaveBeenCalledWith('alice')
     expect(h.guard.mock.calls[0].slice(1)).toEqual(['agent:sessions'])
@@ -77,10 +78,10 @@ describe('the person and the view come from the session', () => {
     expect(h.status).toHaveBeenCalledWith('alice')
   })
 
-  test('no token, host, instance, project hash, lease or port reaches the browser', async () => {
-    h.status.mockResolvedValue({ instances: [{ ...instance({}), token: 'tok-secret', host: 'redamon-kali-x' }] })
+  test('no token, host, instance, project hash or lease reaches the browser', async () => {
+    h.status.mockResolvedValue({ instances: [{ ...instance({}), token: 'tok-secret', host: 'redamon-kali-x', ports: { sessions: 8013 } }] })
     const text = await (await read()).text()
-    for (const leak of ['tok-secret', 'redamon-kali', 'aaaaa1', '0123456789abcdef', 'hold', '4444', 'created_at', 'last_used']) {
+    for (const leak of ['tok-secret', 'redamon-kali', 'aaaaa1', '0123456789abcdef', 'hold', '8013', 'created_at', 'last_used']) {
       expect(text).not.toContain(leak)
     }
   })
@@ -89,12 +90,51 @@ describe('the person and the view come from the session', () => {
     h.guard.mockResolvedValue(as('member-m', 'admin-x'))
     const body = await (await read()).json()
     expect(h.status).toHaveBeenCalledWith('member-m')
-    expect(body.instances).toEqual([{ state: 'running', stop_at: 1_790_001_300, stop_reason: null, warn: false }])
+    expect(body.instances).toEqual([{ state: 'running', stop_at: 1_790_001_300, stop_reason: null, warn: false, reverse_port: 4444, reverse_port_state: null }])
   })
 
   test('no sandbox running: no instance, and no mode is named', async () => {
     h.status.mockResolvedValue({ mode: 'per_user', instances: [] })
     expect(await (await read()).json()).toEqual({ instances: [] })
+  })
+})
+
+describe("the person's own reverse-shell port (FU-24, D-B)", () => {
+  const port = async (over: Record<string, unknown>) => {
+    h.status.mockResolvedValue({ instances: [instance(over)] })
+    const [first] = (await (await read()).json()).instances
+    return { reverse_port: first.reverse_port, reverse_port_state: first.reverse_port_state }
+  }
+
+  test('a pool port: the port and "assigned"', async () => {
+    expect(await port({ reverse_port: 31001, reverse_port_state: 'assigned' })).toEqual({ reverse_port: 31001, reverse_port_state: 'assigned' })
+  })
+
+  test('a full pool and no pool: 4444 (none) with the reason', async () => {
+    expect(await port({ reverse_port: 4444, reverse_port_state: 'pool_full' })).toEqual({ reverse_port: 4444, reverse_port_state: 'pool_full' })
+    expect(await port({ reverse_port: 4444, reverse_port_state: 'no_pool' })).toEqual({ reverse_port: 4444, reverse_port_state: 'no_pool' })
+  })
+
+  test('an orchestrator older than the state: the port alone, the state null, never an error', async () => {
+    const res = await read()
+    expect(res.status).toBe(200)
+    expect(await port({ reverse_port: 31002 })).toEqual({ reverse_port: 31002, reverse_port_state: null })
+  })
+
+  test('a value outside the contract is null, never passed on', async () => {
+    expect(await port({ reverse_port: '31001; rm', reverse_port_state: 'shared' })).toEqual({ reverse_port: null, reverse_port_state: null })
+    expect(await port({ reverse_port: 70000, reverse_port_state: { x: 1 } })).toEqual({ reverse_port: null, reverse_port_state: null })
+  })
+
+  test("under act-as: the act_as sandbox's port, never the member's own", async () => {
+    h.guard.mockResolvedValue(as('member-m', 'admin-x'))
+    h.status.mockResolvedValue({ instances: [
+      instance({ reverse_port: 31001, reverse_port_state: 'assigned' }),
+      instance({ instance: 'aaaaa2', view: 'act_as', reverse_port: 31009, reverse_port_state: 'assigned' }),
+    ] })
+    const body = await (await read()).json()
+    expect(body.instances.map((i: { reverse_port: number }) => i.reverse_port)).toEqual([31009])
+    expect(JSON.stringify(body)).not.toContain('31001')
   })
 })
 

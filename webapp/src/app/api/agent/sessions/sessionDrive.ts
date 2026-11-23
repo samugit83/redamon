@@ -5,9 +5,9 @@
  *
  * A target is the pair (sandbox instance, number) (group 1, TD-11): every per-user sandbox numbers
  * its sessions from 1, so the route takes `?sandbox=<instance>` (required), the pair is looked up
- * whole and authorized by its own project, and the agent is sent that same instance. The instance
- * comes from the agent's list, never as a person or a view: the caller cannot choose whose sandbox
- * it reaches, only which of the entries it may see.
+ * whole and authorized by its own project, and the agent is sent that same instance with the
+ * person and view the agent tagged the row with. They come from the agent's list, never from the
+ * request: the caller cannot choose whose sandbox it reaches, only which of the entries it may see.
  *
  * Server-side only.
  */
@@ -59,9 +59,25 @@ export async function findDriveTarget(
   return NextResponse.json({ error: 'Not found' }, { status: 404 })
 }
 
-/** The agent's route for the drive, naming the same instance the target was found in. */
-export function drivePath(kind: DriveKind, id: string, action: 'interact' | 'kill', sandbox: string): string {
-  return `/${kind === 'session' ? 'sessions' : 'jobs'}/${encodeURIComponent(id)}/${action}?sandbox=${encodeURIComponent(sandbox)}`
+/**
+ * The agent's route for the drive, naming the same instance the target was found in and, when the
+ * agent tagged its row, that sandbox's person and view. Instance ids are unique per person only, so
+ * the agent then resolves the drive to that person's sandbox or to none (agentic/api.py
+ * `_session_target`), even if the sandboxes changed since the list was read.
+ */
+export function drivePath(
+  kind: DriveKind,
+  id: string,
+  action: 'interact' | 'kill',
+  sandbox: string,
+  target: Pick<SessionTarget, 'sandboxUser' | 'sandboxView'> = {},
+): string {
+  const query = new URLSearchParams({ sandbox })
+  if (target.sandboxUser && target.sandboxView) {
+    query.set('sandbox_user', target.sandboxUser)
+    query.set('sandbox_view', target.sandboxView)
+  }
+  return `/${kind === 'session' ? 'sessions' : 'jobs'}/${encodeURIComponent(id)}/${action}?${query}`
 }
 
 export type DriveAction = 'agent.session_interact' | 'agent.session_kill' | 'agent.job_kill'

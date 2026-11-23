@@ -182,6 +182,8 @@ export const IngestionReport = z.object({
 
 export const CheckUrlRequest = z.object({
   user_id: id,
+  // The administrator acting as `user_id` (FU-18), else null: the agent then never uses the account's own sandbox.
+  real_actor_user_id: id.nullable().default(null),
   url,
   forced_type: siteTypeOrAuto.default(''),
   type_options: record.default({}),
@@ -241,6 +243,8 @@ export const PreviewResult = z.object({
 
 export const ReadNowRequest = z.object({
   user_id: id,
+  // The administrator acting as `user_id` (FU-18), else null.
+  real_actor_user_id: id.nullable().default(null),
   resource_id: id,
   url,
   read_settings: record.default({}),

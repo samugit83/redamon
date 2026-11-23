@@ -146,6 +146,11 @@ function toJob(raw: Record<string, unknown>): KaliJob {
   }
 }
 
+// JobRegistry.spawn's codes and its job-store failure text (agentic/job_runner.py).
+const JOB_STORE_ERROR = 'job_store_error'
+const JOB_STORE_ERROR_TEXT = "the job's log could not be created"
+const JOB_STORE_REFUSED = 'job_store_refused'
+
 /**
  * Turn an agent failure into a caller-facing message.
  *
@@ -167,6 +172,20 @@ async function execFailure(resp: Response): Promise<never> {
   const code = sandboxErrorCode(detail.error_code)
   if (code && (resp.status < 500 || resp.status === 503)) {
     throw new McpToolError(`${sandboxFailure(code, message)} (errorCode: ${code})`, code)
+  }
+
+  // The agent's job store (agentic/job_runner.py), not the sandbox: the command's log could not be
+  // created in the project's jobs/ folder. An agent that sends no `code` sends this exact text.
+  if (resp.status === 503 && (detail.code === JOB_STORE_ERROR || message === JOB_STORE_ERROR_TEXT)) {
+    throw new McpToolError(
+      "The command did not run: its log could not be created in the project's jobs folder. " +
+        'Retry once; if it fails again, tell a person.',
+      JOB_STORE_ERROR
+    )
+  }
+  // A jobs/ folder the agent will not write in: written for the caller, so quoted, under its own code.
+  if (resp.status === 409 && detail.code === JOB_STORE_REFUSED && message) {
+    throw new McpToolError(message, JOB_STORE_REFUSED)
   }
 
   if (resp.status === 400) {
