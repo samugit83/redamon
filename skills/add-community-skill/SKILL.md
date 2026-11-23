@@ -63,9 +63,17 @@ workflow, that is a Community Chat Skill (different flow).
   markdown content is injected verbatim into the system prompt.
 - **Remember it is per-user, not global.** Users import via Global Settings >
   Agent Skills; already-imported users do NOT auto-pick-up new skills (they
-  re-import; duplicates are skipped by name). The same skip means an EDIT to a
-  shipped skill never reaches existing importers: they must delete the old copy
-  and re-import. Say so in the CHANGELOG.
+  re-import; duplicates are skipped by name). An EDIT to a shipped skill reaches
+  existing importers only through that import: it lists their copies whose text
+  differs from the catalog and, when the person confirms, replaces them with the
+  catalog's text (their own edits included). Say so in the CHANGELOG.
+- **One reachable port.** A person's Kali sandbox takes inbound connections from a
+  target on one port only (their pool port, or 4444 through their own tunnel), and
+  the payload settings block names it. Never write a literal LPORT, an
+  `http.server` on a sandbox port, a second inbound port (a JNDI referral server on
+  1389/1099, a relay or `nc`/`socat` listener on a fixed port) or an `ngrok`/`chisel`
+  of the skill's own. `agentic/tests/test_prompts_reverse_ports.py` scans this
+  folder for them.
 
 ---
 

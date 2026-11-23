@@ -714,9 +714,11 @@ sit under the project scope).
 - **Address guard.** A host the operator typed (the target domain and its
   subdomain prefixes, Domain-batch hosts, configured document URLs, custom URLs,
   target IPs and CIDRs) is fetched whatever it resolves to, as everywhere in
-  recon. Any other host is resolved on every hop and refused if it is a cloud
-  metadata name, if any address is loopback, link-local, unspecified or
-  multicast (IPv4-mapped IPv6 judged on its IPv4), or if it does not resolve:
+  recon, except into the Kali sandbox pool `10.214.0.0/16`, which is refused
+  whoever typed the host. Any other host is resolved on every hop and refused if
+  it is a cloud metadata name, if any address is loopback, link-local,
+  unspecified, multicast or in the sandbox pool (IPv4-mapped IPv6 judged on its
+  IPv4), or if it does not resolve:
   recon runs on the host network, and the agent API there serves `/openapi.json`.
   Private and CGNAT addresses stay allowed. A refusal sends nothing and reports
   `blocked_address`. The check and the connection resolve separately (the

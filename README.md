@@ -264,15 +264,15 @@ All lifecycle management is handled by a single script:
 | **`./redamon.sh update`** | **Pull latest version, smart-rebuild only changed services (preserves your install-time GVM/KB choice), and apply a changed `.env` to the running services** |
 | `./redamon.sh up` | Start services (auto-detects GVM and KB mode from install) |
 | `./redamon.sh up dev` | Start in dev mode with hot-reload (auto-detects GVM and KB mode) |
-| `./redamon.sh down` | Stop services and remove this stack's Kali sandboxes (preserves data) |
+| `./redamon.sh down` | Stop services and this stack's Kali sandboxes, keeping their reverse-shell port holds (preserves data) |
 | `./redamon.sh status` | Show running services, version, GVM mode, KB state, plugin platform state (and why it cannot run on this host, when it cannot), and this stack's Kali sandboxes |
-| `./redamon.sh clean` | Remove containers (Kali sandboxes included) + images, keep data |
+| `./redamon.sh clean` | Remove containers + images (Kali sandboxes are stopped, keeping their port holds), keep data |
 | `./redamon.sh create-admin` | Create the admin login (or reset it) -- use if no prompt appeared at install |
 | `./redamon.sh reset-password` | Reset an existing user's password from the terminal |
 | `./redamon.sh set-root <email>` | Make that account the instance's Root, or confirm it (break-glass; moving Root signs both accounts out) |
 | `./redamon.sh update --preview` | Pull and build like `update`, print what it changes for the accounts, and restart nothing |
 | `./redamon.sh supply-chain-sync [ecosystems]` | Populate the offline OSV database for the supply-chain feature (default: `npm`; e.g. `npm PyPI Go`) |
-| `./redamon.sh purge` | Remove everything including all data, the Kali sandboxes' networks and their nuclei templates volume |
+| `./redamon.sh purge` | Remove everything including all data, the Kali sandboxes' networks and their nuclei templates volume, every person's Kali output and template copies (`mcp/output/users`, `mcp/output/templates`) and the reverse-shell port holds |
 
 
 ### Updating to a New Version

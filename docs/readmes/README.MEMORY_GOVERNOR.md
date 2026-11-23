@@ -495,8 +495,11 @@ full value survives at reasonable RAM and only throttles hard when memory is gen
     can admit more sessions than `AGENT_MEM / 512 MB`: to run several loop sessions at
     once, raise `AGENT_MEM` or lower `MAX_AGENT_SESSIONS`.
   - **Background jobs** (`job_runner._governed_max_jobs`, `MAX_BACKGROUND_JOBS` default 16):
-    byte-budgeted on `background_job_envelope_bytes`. Count-and-insert is atomic under the
-    registry lock.
+    byte-budgeted on `background_job_envelope_bytes`. A job whose tool runs in a Kali
+    sandbox (MCP `kali_exec`, `job_spawn` of a Kali tool) counts against its person's own
+    cap, with at most `SANDBOX_JOBS_MAX` (256) of them across everybody, so one person's
+    long scans never refuse another's; a job that runs in the agent itself counts against
+    the cap over every such job. Count-and-insert is atomic under the registry lock.
 - **MCP terminal sessions** (`mcp/servers/terminal_server.py`): the existing
   `TERMINAL_MAX_SESSIONS` (default 5) is further reduced under pressure by the byte-budget.
 
