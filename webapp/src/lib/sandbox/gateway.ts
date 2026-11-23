@@ -320,32 +320,33 @@ export async function reconcileSandbox(userIds: readonly string[], actor: Sandbo
 }
 
 /**
- * Stops both views of the person (or only `view`), then forgets them at the agent; one
- * `sandbox.stopped` row when any stopped.
+ * Forgets the person at the agent (both views, or only `view`), then stops those instances; one
+ * `sandbox.stopped` row when any stopped. The agent forgets them first, so a call in flight that
+ * then finds its sandbox gone fails instead of starting another one before the forget lands.
  */
 export async function stopSandbox(userId: string, reason: StopReason, actor: SandboxActor, view?: SandboxView): Promise<number> {
   checkUserId(userId)
   checkReason(reason)
+  await dropSandboxClient(userId, view)
   const stopped = await orchestratorStopUser(userId, reason, view)
   if (stopped > 0) {
-    await dropSandboxClient(userId)
     await auditStop(actor, { targetType: 'user', targetId: userId }, reason, stopped)
   }
   return stopped
 }
 
-/** Stops every sandbox (the emergency stop), then forgets each person at the agent. */
+/** Forgets every person with a sandbox at the agent, then stops every sandbox (the emergency stop). */
 export async function stopAllSandboxes(reason: StopReason, actor: SandboxActor): Promise<number> {
   checkReason(reason)
-  // Read before the stop: afterwards the orchestrator no longer knows whose clients to drop.
+  // The list says whose clients to forget; read before anything stops.
   const before = await orchestratorList().catch((err: unknown) => {
     console.warn(`[sandbox] the list before stop-all was not read: ${failureCode(err)}`)
     return null
   })
+  const people = [...new Set((before?.sandboxes ?? []).map((s) => s.user_id))]
+  await Promise.all(people.map((userId) => dropSandboxClient(userId)))
   const stopped = await orchestratorStopAll(reason)
   if (stopped > 0) {
-    const people = [...new Set((before?.sandboxes ?? []).map((s) => s.user_id))]
-    await Promise.all(people.map((userId) => dropSandboxClient(userId)))
     await auditStop(actor, { targetType: 'instance', targetId: null }, reason, stopped)
   }
   return stopped

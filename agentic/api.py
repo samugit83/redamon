@@ -3658,13 +3658,16 @@ def _tunnel_config(raw) -> Optional[dict]:
 
 @app.post(sandbox_contract.AGENT_ROUTE_DROP, tags=["Sandboxes"],
           dependencies=[Depends(require_configured_master_auth)])
-async def drop_sandbox_clients(user_id: str):
-    """Forget every client and handle of the person, both views: the webapp stopped their
-    sandboxes, so the next acquire ensures again."""
+async def drop_sandbox_clients(user_id: str, view: Optional[str] = None):
+    """Forget every client and handle of the person, both views or only ``?view=``: the
+    webapp stopped those sandboxes, so the next acquire ensures again."""
     if not sandbox_contract.valid_user_id(user_id):
         return JSONResponse(status_code=400, content={
             "error": "not a user id", "code": sandbox_contract.ERR_INVALID_USER_ID})
-    await sandbox_router.drop(user_id)
+    if view is not None and view not in sandbox_contract.VIEWS:
+        return JSONResponse(status_code=400, content={
+            "error": "not a view", "code": sandbox_contract.ERR_INVALID_VIEW})
+    await sandbox_router.drop(user_id, view)
     return {"ok": True}
 
 

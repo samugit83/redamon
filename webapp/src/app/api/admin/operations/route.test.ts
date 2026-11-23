@@ -717,7 +717,9 @@ describe('POST /api/admin/operations/sandboxes/stop', () => {
     sandboxStop = () => json({ stopped: 0 })
     expect(await body(await stopSandbox())).toEqual({ stopped: 0 })
     expect(h.db.auditCreate).not.toHaveBeenCalled()
-    expect(agentPaths()).not.toContain('/sandboxes/mem-a/drop')
+    // The agent forgets the person before the stop (so nothing in flight starts one again),
+    // whether or not anything turns out to be running.
+    expect(agentPaths()).toContain('/sandboxes/mem-a/drop')
   })
 
   test('cross-origin 403 and a non-JSON body 415, nothing stopped', async () => {

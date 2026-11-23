@@ -245,9 +245,9 @@ _looked_up: "OrderedDict[Tuple[str, str], float]" = OrderedDict()
 #: The instance each unit of work (person, view, chat session) last called, with its
 #: reverse port: a call that lands on another one carries the restart note.
 _seen: "OrderedDict[Tuple[str, str, str], Tuple[str, int, Optional[str]]]" = OrderedDict()
-#: When each person's sandboxes were last stopped on request (monotonic): a call that was
-#: already in flight then finds its sandbox gone and must not start a new one for it.
-_stop_requested: "OrderedDict[str, float]" = OrderedDict()
+#: When each person's sandboxes of a view were last stopped on request (monotonic): a call
+#: that was already in flight then finds its sandbox gone and must not start a new one for it.
+_stop_requested: "OrderedDict[Tuple[str, str], float]" = OrderedDict()
 #: A Fireteam member's id inside its own task: members share the run's chat session, and
 #: each is a separate model context that must learn of a restart for itself.
 _note_unit: ContextVar[str] = ContextVar("sandbox_note_unit", default="")
@@ -1283,18 +1283,22 @@ def headers_for(handle: SandboxHandle, port_name: Optional[str] = None) -> dict:
     return kali_auth_headers_for(handle.tunnel_token if port_name == "tunnel" else handle.token)
 
 
-def note_stop_requested(user_id: str) -> None:
-    """The person's sandboxes are being stopped on purpose (an emergency stop, an operator's
-    stop, an access loss): every live handle is marked, and a call in flight that then
-    finds its sandbox gone fails instead of being sent to a new one."""
-    if not isinstance(user_id, str) or not user_id:
+def note_stop_requested(user_id: str, view: Optional[str] = None) -> None:
+    """The person's sandboxes (of ``view`` only, when named) are being stopped on purpose (an
+    emergency stop, an operator's stop, an access loss): every live handle of them is marked,
+    and a call in flight that then finds its sandbox gone fails instead of being sent to a
+    new one. An admin's stop of a member's act_as view leaves the member's own work alone."""
+    if not isinstance(user_id, str) or not user_id or (view is not None and view not in contract.VIEWS):
         return
-    _stop_requested[user_id] = time.monotonic()
-    _stop_requested.move_to_end(user_id)
+    now = time.monotonic()
+    for v in contract.VIEWS if view is None else (view,):
+        _stop_requested[(user_id, v)] = now
+        _stop_requested.move_to_end((user_id, v))
     while len(_stop_requested) > KNOWN_MAX:
         _stop_requested.popitem(last=False)
     for handle in list(_live.get(user_id, ())):
-        handle.stop_requested = True
+        if view is None or handle.view == view:
+            handle.stop_requested = True
 
 
 def note_stop_requested_all() -> None:
@@ -1303,29 +1307,45 @@ def note_stop_requested_all() -> None:
         note_stop_requested(user_id)
 
 
-def stop_requested_since(user_id: str, since: float) -> bool:
-    """Whether the person's sandboxes were stopped on request at or after ``since``
-    (``time.monotonic()``)."""
-    at = _stop_requested.get(user_id) if isinstance(user_id, str) else None
-    return at is not None and at >= since
+def stop_requested_since(user_id: str, since: float, view: Optional[str] = None) -> bool:
+    """Whether the person's sandboxes (of ``view``, else of either view) were stopped on
+    request at or after ``since`` (``time.monotonic()``)."""
+    if not isinstance(user_id, str):
+        return False
+    for v in contract.VIEWS if view is None else (view,):
+        at = _stop_requested.get((user_id, v))
+        if at is not None and at >= since:
+            return True
+    return False
 
 
-async def drop(user_id: str) -> None:
-    """Forget every client and handle of the person, both views (their sandboxes were
-    stopped): in-flight handles turn stale and are marked stopped on request, so no call
-    in flight is sent again; the next unit of work's ``acquire`` ensures again."""
-    note_stop_requested(user_id)
+async def drop(user_id: str, view: Optional[str] = None) -> None:
+    """Forget every client and handle of the person, both views or only ``view`` (their
+    sandboxes were stopped): in-flight handles turn stale and are marked stopped on request,
+    so no call in flight is sent again; the next unit of work's ``acquire`` ensures again.
+    A background job's handle that turns stale ends the job, so a stop of one view never
+    touches the handles of the other."""
+    if view is not None and view not in contract.VIEWS:
+        return
+    note_stop_requested(user_id, view)
     renewals = []
-    for handle in list(_live.pop(user_id, ())):
+    live = _live.get(user_id)
+    for handle in list(live or ()):
+        if view is not None and handle.view != view:
+            continue
+        live.discard(handle)
         handle.stale = True
         if handle._renew_task is not None and not handle._renew_task.done():
             _cancel_quietly(handle._renew_task)
             renewals.append(handle._renew_task)
-    for key in [k for k in list(_clients) + list(_client_locks) if k[0] == user_id]:
+    if live is not None and not live:
+        _live.pop(user_id, None)
+    for key in [k for k in list(_clients) + list(_client_locks)
+                if k[0] == user_id and (view is None or k[1] == view)]:
         _drop_client(key)
-    for view in contract.VIEWS:
-        _current.pop((user_id, view), None)
-    _mark_gone(user_id)
+    for v in contract.VIEWS if view is None else (view,):
+        _current.pop((user_id, v), None)
+    _mark_gone(user_id, view)
     current = asyncio.current_task()
     renewals = [t for t in renewals if t is not current]
     if renewals:

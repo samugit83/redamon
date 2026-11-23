@@ -110,6 +110,32 @@ class TheDropRoute(_Base):
 
         self.assertTrue(asyncio.run(scenario()))
 
+    def test_a_drop_of_one_view_leaves_the_other_views_handles(self):
+        """An admin's emergency stop of a member's act_as view (G-18): the member's own
+        handles stay usable, so their own background jobs do not end."""
+        self.fleet.add("bob")
+        self.fleet.add("bob", contract.VIEW_ACT_AS)
+
+        async def scenario():
+            own = await router.acquire("bob", project_id="p1", kind="exec", view=contract.VIEW_OWN)
+            with router.for_person("bob", acting=True):
+                acting = await router.acquire("bob", project_id="p1", kind="exec")
+            since = time.monotonic()
+            await api.drop_sandbox_clients("bob", view=contract.VIEW_ACT_AS)
+            out = (own.stale, own.stop_requested, acting.stale, acting.stop_requested,
+                   router.stop_requested_since("bob", since, view=contract.VIEW_OWN),
+                   router.stop_requested_since("bob", since, view=contract.VIEW_ACT_AS))
+            await router.release(own)
+            await router.release(acting)
+            await router._shutdown()
+            return out
+
+        self.assertEqual(asyncio.run(scenario()), (False, False, True, True, False, True))
+
+    def test_a_drop_names_a_view_of_the_contract(self):
+        self.assertEqual(self.client.post("/sandboxes/bob/drop?view=act_as", headers=KEY).status_code, 200)
+        self.assertEqual(self.client.post("/sandboxes/bob/drop?view=both", headers=KEY).status_code, 400)
+
     def test_drop_needs_the_master_key_and_a_user_id(self):
         self.assertIn("require_configured_master_auth", _dep_names(contract.AGENT_ROUTE_DROP, "POST"))
         self.assertEqual(self.client.post("/sandboxes/bob/drop").status_code, 401)

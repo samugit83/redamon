@@ -688,16 +688,28 @@ describe('stops: orchestrator, then the agent\'s client, then one audit row', ()
     })])
   })
 
-  test('stopSandbox of one view names that view only (G-18)', async () => {
+  test('stopSandbox of one view names that view only, at the orchestrator and the agent (G-18)', async () => {
     on('POST /sandboxes/bob/stop', () => [200, { stopped: 1 }])
     expect(await stopSandbox('bob', 'emergency', ADMIN, 'act_as')).toBe(1)
     expect(callsTo('POST', '/sandboxes/bob/stop').map((c) => c.body)).toEqual([{ reason: 'emergency', view: 'act_as' }])
+    // The member's own view keeps its handles: a background job there must not end.
+    expect(h.agentCalls.map((c) => c.path)).toEqual(['/sandboxes/bob/drop?view=act_as'])
   })
 
-  test('nothing stopped: no drop and no row', async () => {
+  test('the agent forgets the person before the stop, so no call in flight starts a sandbox again', async () => {
+    let forgotten: string[] = []
+    on('POST /sandboxes/bob/stop', () => {
+      forgotten = h.agentCalls.map((c) => c.path)
+      return [200, { stopped: 1 }]
+    })
+    expect(await stopSandbox('bob', 'emergency', ADMIN)).toBe(1)
+    expect(forgotten).toEqual(['/sandboxes/bob/drop'])
+  })
+
+  test('nothing stopped: forgotten at the agent all the same (the next use ensures again), no row', async () => {
     on('POST /sandboxes/bob/stop', () => [200, { stopped: 0 }])
     expect(await stopSandbox('bob', 'access_lost', null)).toBe(0)
-    expect(h.agentCalls).toEqual([])
+    expect(h.agentCalls.map((c) => c.path)).toEqual(['/sandboxes/bob/drop'])
     expect(h.writeAudit).not.toHaveBeenCalled()
   })
 
@@ -720,9 +732,15 @@ describe('stops: orchestrator, then the agent\'s client, then one audit row', ()
       { user_id: 'bob', view: 'act_as', instance: 'b2c3d4', host: 'h', token: TOKEN, state: 'running' },
       { user_id: 'carol', view: 'own', instance: 'c3d4e5', host: 'h', token: TOKEN, state: 'running' },
     ] }])
-    on('POST /sandboxes/stop-all', () => [200, { stopped: 3 }])
+    let forgotten: string[] = []
+    on('POST /sandboxes/stop-all', () => {
+      forgotten = h.agentCalls.map((c) => c.path).sort()
+      return [200, { stopped: 3 }]
+    })
     expect(await stopAllSandboxes('emergency', ADMIN)).toBe(3)
     expect(callsTo('POST', '/sandboxes/stop-all').map((c) => c.body)).toEqual([{ reason: 'emergency' }])
+    // Each person once, before the stop-all.
+    expect(forgotten).toEqual(['/sandboxes/bob/drop', '/sandboxes/carol/drop'])
     expect(h.agentCalls.map((c) => c.path).sort()).toEqual(['/sandboxes/bob/drop', '/sandboxes/carol/drop'])
     expect(audits('sandbox.stopped')[0]).toMatchObject({ ...ADMIN, targetType: 'instance', after: { reason: 'emergency', stopped: 3 } })
   })

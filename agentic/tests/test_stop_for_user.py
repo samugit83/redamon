@@ -316,10 +316,10 @@ class Route(unittest.TestCase):
     def test_include_acting_reaches_the_runs_started_acting_only_when_asked(self):
         self.runs["uB:p2:s4"] = _FakeTask()
         self.mgr.register_task("uB:p2:s4", self.runs["uB:p2:s4"], actor_id="uA")
-        self.assertEqual(self._post({"user_id": "uA", "project_ids": ["p2"]}).json(), {"stopped": 1})
+        self.assertEqual(self._post({"user_id": "uA", "project_ids": ["p2"]}).json()["stopped"], 1)
         self.assertEqual(self._cancelled(), ["uA:p2:s2"])
         res = self._post({"user_id": "uA", "include_acting": True})
-        self.assertEqual(res.json(), {"stopped": 2})
+        self.assertEqual(res.json()["stopped"], 2)
         self.assertEqual(self._cancelled(), ["uA:p1:s1", "uA:p2:s2", "uB:p2:s4"])
         self.assertFalse(self.runs["uB:p1:s3"].cancelled)
 

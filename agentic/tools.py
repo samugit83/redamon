@@ -3034,7 +3034,7 @@ class PhaseAwareToolExecutor:
                 # or operator stop, an access loss): sending the command again would undo
                 # that stop by starting a new sandbox for it.
                 if (attempt or run_ended() or bound is not None or handle.stop_requested
-                        or sandbox_router.stop_requested_since(handle.user_id, started)):
+                        or sandbox_router.stop_requested_since(handle.user_id, started, view=handle.view)):
                     break
                 logger.warning(f"[sandbox] {tool_name}: the sandbox went away; acquiring it again")
                 handle = await self._reacquire(handle, kind)

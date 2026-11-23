@@ -11,7 +11,7 @@
  */
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { upstreamFailure } from '@/lib/routeErrors'
-import { AGENT_ROUTE_DROP, AGENT_ROUTE_TUNNEL } from './contract'
+import { AGENT_ROUTE_DROP, AGENT_ROUTE_TUNNEL, type SandboxView } from './contract'
 import { validUserId } from './orchestratorClient'
 
 export interface AgentCallResult {
@@ -43,9 +43,14 @@ async function callAgentRoute(route: string, userId: string, init: RequestInit):
   }
 }
 
-/** POST /sandboxes/{user_id}/drop at the agent: forget every client and handle of the person, both views. */
-export function dropSandboxClient(userId: string): Promise<AgentCallResult> {
-  return callAgentRoute(AGENT_ROUTE_DROP, userId, { method: 'POST' })
+/**
+ * POST /sandboxes/{user_id}/drop at the agent: forget every client and handle of the person, both
+ * views or only `view`. A background job whose handle is forgotten ends, so a stop of one view
+ * names it and leaves the other view's work alone.
+ */
+export function dropSandboxClient(userId: string, view?: SandboxView): Promise<AgentCallResult> {
+  const route = view ? `${AGENT_ROUTE_DROP}?view=${encodeURIComponent(view)}` : AGENT_ROUTE_DROP
+  return callAgentRoute(route, userId, { method: 'POST' })
 }
 
 /** POST /sandboxes/{user_id}/tunnel at the agent: the agent starts the person's own view and pushes the config. */
