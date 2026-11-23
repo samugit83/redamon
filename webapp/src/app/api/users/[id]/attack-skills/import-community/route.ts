@@ -5,8 +5,9 @@ import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
 import { DESCRIPTION_MAX_CHARS, UserSkillError } from '@/lib/userSkills'
 import {
-  USER_SKILL_AUDIT_TARGET, auditActorFor, contentSha256, createUserSkillTx, lockUserSkills,
+  USER_SKILL_AUDIT_TARGET, auditActorFor, contentSha256, createUserSkillTx, lockUserSkills, updateUserSkill,
 } from '@/lib/userSkillWrites'
+import { nameKeys } from '@/lib/userSkillNames'
 import { agentFetch, AgentUnreachableError } from '@/lib/agentFetch'
 import { internalError, upstreamErrorResponse, upstreamFailureResponse } from '@/lib/routeErrors'
 import { requireSelfPermission } from '@/lib/authz/selfService'
@@ -16,7 +17,25 @@ interface RouteParams {
   params: Promise<{ id: string }>
 }
 
-type SkipReason = 'duplicate' | 'limit' | 'fetchFailed' | 'tooLarge' | 'invalid'
+type SkipReason = 'duplicate' | 'outdated' | 'limit' | 'fetchFailed' | 'tooLarge' | 'invalid'
+
+/** A copy the person holds under a catalog skill's name whose text is not the catalog's any more. */
+interface OutdatedCopy {
+  skillId: string
+  name: string
+  communityId: string
+}
+
+const UPDATE_IDS_MAX = 1000
+const SKILL_ID = /^[A-Za-z0-9_-]{1,64}$/
+
+/** The skill ids the person chose to bring up to the catalog's text; anything malformed is none. */
+async function updateRequest(request: NextRequest): Promise<Set<string>> {
+  const body: unknown = await request.json().catch(() => null)
+  const update = body && typeof body === 'object' ? (body as { update?: unknown }).update : undefined
+  if (!Array.isArray(update)) return new Set()
+  return new Set(update.slice(0, UPDATE_IDS_MAX).filter((v): v is string => typeof v === 'string' && SKILL_ID.test(v)))
+}
 
 const SKIP_FOR_CODE: Record<string, SkipReason> = {
   name_taken: 'duplicate',
@@ -31,6 +50,12 @@ const SKIP_FOR_CODE: Record<string, SkipReason> = {
  * is the one checked for duplicates (case- and space-insensitive, including names created
  * earlier in this import), and the cap is counted under the per-user lock. The texts are
  * fetched before the transaction, so no lock is held across the network.
+ *
+ * A copy imported earlier keeps its text: an edit to a shipped skill (the one-port rules of
+ * per-user sandboxes, for example) would otherwise never reach its importers, and silently
+ * replacing it would drop the person's own edits. So a same-name copy whose text differs is
+ * answered in `outdated`, and replaced only when a later call names its id in `update`
+ * (`{update: [skillId]}`), through the same writer as an edit.
  */
 export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
@@ -61,9 +86,10 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       return upstreamErrorResponse('agent', catalogRes, 'Failed to fetch community skills catalog from agent service')
     }
 
+    const chosen = await updateRequest(request)
     const catalog = await catalogRes.json()
     const skills: Array<{ id: string; name: string; description?: string }> = catalog.skills || []
-    const skippedBy: Record<SkipReason, number> = { duplicate: 0, limit: 0, fetchFailed: 0, tooLarge: 0, invalid: 0 }
+    const skippedBy: Record<SkipReason, number> = { duplicate: 0, outdated: 0, limit: 0, fetchFailed: 0, tooLarge: 0, invalid: 0 }
 
     const candidates: { name: unknown; description: string | null; content: unknown; communityId: string }[] = []
     for (const skill of skills) {
@@ -90,6 +116,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       }
     }
 
+    const taken: typeof candidates = []
     const created = await prisma.$transaction(async (tx) => {
       await lockUserSkills(tx, id)
       const out: { id: string; name: string; content: string; communityId: string }[] = []
@@ -99,11 +126,32 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
           out.push({ id: row.id, name: row.name, content: row.content, communityId: c.communityId })
         } catch (e) {
           if (!(e instanceof UserSkillError)) throw e
-          skippedBy[SKIP_FOR_CODE[e.code] ?? 'invalid']++
+          if (e.code === 'name_taken') taken.push(c)
+          else skippedBy[SKIP_FOR_CODE[e.code] ?? 'invalid']++
         }
       }
       return out
     }, { timeout: 30_000 })
+
+    // A name taken by a copy with the catalog's text is a duplicate; one with another text is outdated.
+    const outdated: (OutdatedCopy & { description: string | null; content: string })[] = []
+    if (taken.length) {
+      const own = await prisma.userAttackSkill.findMany({ where: { userId: id }, select: { id: true, name: true, content: true } })
+      const names = taken.map((c) => (typeof c.name === 'string' ? c.name : ''))
+      const keys = await nameKeys(prisma, [...names, ...own.map((s) => s.name)])
+      const ownByKey = new Map(own.map((s, i) => [keys[names.length + i], s]))
+      // A name taken by an entry created earlier in this same import is a catalog duplicate.
+      const createdNow = new Set(created.map((s) => s.id))
+      taken.forEach((c, i) => {
+        const copy = ownByKey.get(keys[i])
+        if (copy && !createdNow.has(copy.id) && typeof c.content === 'string' && copy.content !== c.content) {
+          skippedBy.outdated++
+          outdated.push({ skillId: copy.id, name: copy.name, communityId: c.communityId, description: c.description, content: c.content })
+        } else {
+          skippedBy.duplicate++
+        }
+      })
+    }
 
     const actor = auditActorFor((await signedInActor())?.id, id)
     for (const s of created) {
@@ -121,6 +169,19 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       })
     }
 
+    // Only the copies the person named, and only to the catalog's current text of the same name.
+    const updatedIds: string[] = []
+    for (const o of outdated) {
+      if (!chosen.has(o.skillId)) continue
+      try {
+        await updateUserSkill({ userId: id, skillId: o.skillId, content: o.content, description: o.description ?? '' }, actor)
+        updatedIds.push(o.skillId)
+        skippedBy.outdated--
+      } catch (e) {
+        if (!(e instanceof UserSkillError)) throw e
+      }
+    }
+
     const skipped = Object.values(skippedBy).reduce((a, b) => a + b, 0)
     return NextResponse.json({
       imported: created.length,
@@ -128,6 +189,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       skipped,
       skippedBy,
       total: skills.length,
+      outdated: outdated.filter((o) => !updatedIds.includes(o.skillId)).map(({ skillId, name, communityId }) => ({ skillId, name, communityId })),
+      updated: updatedIds.length,
+      updatedIds,
     })
   } catch (error) {
     return internalError(error, 'Failed to import community attack skills')

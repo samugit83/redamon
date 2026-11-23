@@ -37,7 +37,7 @@ import { JevProviderSection } from '@/components/settings/JevProviderSection'
 import { actionFailedText, failureText, saveWarningLines } from '@/components/settings/failureText'
 import { readApiError } from '@/lib/apiError'
 import { StepUpModal } from '@/components/auth/StepUpModal'
-import { TunnelStatusReadOnly } from '@/components/settings/TunnelStatusReadOnly'
+import { TUNNEL_ACTING_AS_HINT, TunnelStatusReadOnly } from '@/components/settings/TunnelStatusReadOnly'
 import {
   CHISEL_FORWARDS, NGROK_TOKEN_HINT, TUNNEL_ENABLE_HINT, TUNNEL_SECTION_HINT_MANAGE, TUNNEL_SECTION_HINT_READ,
 } from '@/components/settings/tunnelTexts'
@@ -253,6 +253,8 @@ export default function SettingsPage() {
   // explicit `false` from the settings GET hides its controls: the PUT is what refuses a change.
   // The tunnel is this person's own, in their own Kali sandbox (group 1), whatever the identity switch.
   const [canManageTunnels, setCanManageTunnels] = useState(true)
+  // Under act-as the row is the member's: its tunnel is theirs, never offered as the viewer's own.
+  const [tunnelActingAs, setTunnelActingAs] = useState(false)
   const [tunnelTurningOff, setTunnelTurningOff] = useState(false)
   // Remounts the tunnel status after a turn-off, so it reads the state again.
   const [tunnelStatusKey, setTunnelStatusKey] = useState(0)
@@ -562,7 +564,8 @@ export default function SettingsPage() {
         if (data.rotationConfigs) {
           setRotationConfigs(data.rotationConfigs)
         }
-        setCanManageTunnels(data.canManageTunnels !== false)
+        setCanManageTunnels(data.canManageTunnels !== false && data.tunnelActingAs !== true)
+        setTunnelActingAs(data.tunnelActingAs === true)
         setTunnelToggled(false)
         setSettingsLoaded(true)
         setSettingsLoadError(null)
@@ -801,6 +804,7 @@ export default function SettingsPage() {
       flagOn={settings.tunnelsEnabled}
       onTurnOff={turnOwnTunnelOff}
       turningOff={tunnelTurningOff}
+      actingAs={tunnelActingAs}
     />
   )
 
@@ -1641,7 +1645,7 @@ export default function SettingsPage() {
           </h2>
         </div>
         <p className={styles.sectionHint}>
-          {canManageTunnels ? TUNNEL_SECTION_HINT_MANAGE : TUNNEL_SECTION_HINT_READ}
+          {tunnelActingAs ? TUNNEL_ACTING_AS_HINT : canManageTunnels ? TUNNEL_SECTION_HINT_MANAGE : TUNNEL_SECTION_HINT_READ}
         </p>
         {settingsLoading ? (
           <div className={styles.emptyState}><Loader2 size={16} className={styles.spin} /> Loading...</div>

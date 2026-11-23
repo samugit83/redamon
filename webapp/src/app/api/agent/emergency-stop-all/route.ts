@@ -63,8 +63,11 @@ export const POST = withRouteErrors(FAILED, async () => {
   // The Kali sandboxes (group 1, D22) stop after the agent has ended the runs inside them, and also
   // when the agent could not be reached: a runaway shell must not outlive the press.
   const sandbox = await sandboxEmergencyStop(who.scope === 'all' ? { scope: 'all' } : { scope: 'own', userId: who.userId }, presser)
-  if (!call.ok) return call.response
-  if (!call.res.ok) return agentErrorResponse(call.res, FAILED)
+  const sandboxes = 'error' in sandbox ? { error: sandbox.error } : { stopped: sandbox.stopped }
+  // The sandboxes stopped (or not) whatever the agent answered: a failed agent call still
+  // tells the presser, who would otherwise read the error as "nothing was stopped".
+  if (!call.ok) return withSandboxes(call.response, sandboxes)
+  if (!call.res.ok) return withSandboxes(await agentErrorResponse(call.res, FAILED), sandboxes)
   const { stopped } = await call.res.json()
   const count = (typeof stopped === 'number' ? stopped : 0) + navigator
   await writeAudit({
@@ -72,9 +75,16 @@ export const POST = withRouteErrors(FAILED, async () => {
     action: 'agent.emergency_stop',
     targetType: who.scope === 'all' ? 'instance' : 'user',
     targetId: who.scope === 'all' ? null : who.userId,
-    after: { scope: who.scope, count, via: who.via },
+    after: { scope: who.scope, count, via: who.via, sandboxes },
     source: 'ui',
   })
-  const sandboxes = 'error' in sandbox ? { sandboxes: { error: sandbox.error } } : { sandboxes: { stopped: sandbox.stopped } }
-  return NextResponse.json({ scope: who.scope, stopped: count, ...sandboxes })
+  return NextResponse.json({ scope: who.scope, stopped: count, sandboxes })
 })
+
+type SandboxOutcome = { stopped: number } | { error: string }
+
+async function withSandboxes(response: NextResponse, sandboxes: SandboxOutcome): Promise<NextResponse> {
+  const body = await response.json().catch(() => null)
+  const base = body && typeof body === 'object' && !Array.isArray(body) ? body : {}
+  return NextResponse.json({ ...base, sandboxes }, { status: response.status })
+}

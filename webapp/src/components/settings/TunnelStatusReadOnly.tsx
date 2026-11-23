@@ -37,7 +37,16 @@ interface Props {
   /** Per-person mode: turn one's own tunnel off, offered while it runs or the setting reads on. */
   onTurnOff?: () => void
   turningOff?: boolean
+  /**
+   * The viewer acts as this row's person: the tunnel is the member's own, in the member's own
+   * sandbox, while the viewer's act-as work never uses one. The live status is not read (the status
+   * route answers for the act_as view, which has no tunnel) and no off control is offered.
+   */
+  actingAs?: boolean
 }
+
+export const TUNNEL_ACTING_AS_HINT =
+  "You are acting as this person: this is their own tunnel, in their own Kali sandbox, and only they can turn it on or off. The work you do as them runs in a separate act-as sandbox that never uses a tunnel."
 
 /**
  * The Tunneling section's tunnel state and who manages it, for an account that may not change the
@@ -45,9 +54,10 @@ interface Props {
  * permission allows, and turning it off is offered whenever a tunnel runs or the setting reads on,
  * so a stop that never reached the sandbox can be sent again.
  */
-export function TunnelStatusReadOnly({ perPerson = false, canManage = false, flagOn = false, onTurnOff, turningOff = false }: Props = {}) {
+export function TunnelStatusReadOnly({ perPerson = false, canManage = false, flagOn = false, onTurnOff, turningOff = false, actingAs = false }: Props = {}) {
   const [view, setView] = useState<TunnelView>({ kind: 'loading' })
   useEffect(() => {
+    if (actingAs) return
     let live = true
     fetch('/api/agent/tunnel-status', { cache: 'no-store' })
       .then(async res => {
@@ -60,7 +70,19 @@ export function TunnelStatusReadOnly({ perPerson = false, canManage = false, fla
       })
       .catch(() => { if (live) setView({ kind: 'error' }) })
     return () => { live = false }
-  }, [])
+  }, [actingAs])
+
+  if (actingAs) {
+    return (
+      <div className={styles.settingsGrid}>
+        <div className="formGroup">
+          <span className="formLabel">Their tunnel setting</span>
+          <span role="status">{flagOn ? 'On' : 'Off'}</span>
+          <span className="formHint">{TUNNEL_ACTING_AS_HINT}</span>
+        </div>
+      </div>
+    )
+  }
 
   const running = view.kind === 'loaded' && view.running
   const offerOff = perPerson && !!onTurnOff && (running || flagOn)

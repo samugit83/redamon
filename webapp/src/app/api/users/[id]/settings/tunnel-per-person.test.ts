@@ -305,6 +305,20 @@ describe('the GET hint', () => {
     expect(await hint('m1')).toEqual({ canManageTunnels: false, tunnelScope: 'own_sandbox', sharedSettingsAt: 'instance' })
   })
 
+  test('under act-as the tunnel controls are never offered, and the page is told the tunnel is the member\'s (gap G-23)', async () => {
+    accounts.set('managed', { role: 'standard', legacyGrants: ['tunnels'], createdAt: AFTER_CUTOFF, password: null })
+    actingAs = 'managed'
+    storeRow('managed', { tunnelsEnabled: true })
+    const body = await (await GET(new NextRequest('http://x/api/users/managed/settings'), params('managed'))).json()
+    // The admin holds platform:tunnels, but what the page shows is the member's own tunnel.
+    expect(body.canManageTunnels).toBe(false)
+    expect(body.tunnelActingAs).toBe(true)
+    actingAs = null
+    const own = await (await GET(new NextRequest('http://x/api/users/u1/settings'), params('u1'))).json()
+    expect(own.canManageTunnels).toBe(true)
+    expect(own.tunnelActingAs).toBeUndefined()
+  })
+
 })
 
 describe('an explicit "off" is always sent (review C3/F4)', () => {

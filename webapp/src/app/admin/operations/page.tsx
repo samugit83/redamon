@@ -11,6 +11,7 @@ import type {
 } from '@/lib/authz/adminOperations'
 import { partialAnswerLine } from '@/lib/sandbox/contract'
 import { reversePortCell } from '@/lib/sandbox/reversePort'
+import { sandboxStopSummary } from '@/app/graph/components/GraphToolbar/emergencyStopScope'
 import { useConsoleSections } from '../AdminConsole'
 import { whenLabel } from '../shares/shareWords'
 import { ConsoleHeader } from '../ConsoleHeader'
@@ -190,14 +191,21 @@ export default function AdminOperationsPage() {
     if (!confirmed) return
     setStopping('all')
     try {
-      const { scope, stopped } = await fetchJson<{ scope: 'all' | 'own'; stopped: number }>(
+      const answer = await fetchJson<{ scope: 'all' | 'own'; stopped: number; sandboxes?: unknown }>(
         '/api/agent/emergency-stop-all', { method: 'POST' }, 'The emergency stop failed')
+      const { scope, stopped } = answer
       const runs = `${stopped} agent run${stopped === 1 ? '' : 's'}`
-      setNotice(scope === 'all'
+      const sandboxes = sandboxStopSummary(answer, scope)
+      setNotice([scope === 'all'
         ? `Emergency stop: stopped ${runs}.`
-        : `You may no longer stop other people's runs: stopped ${runs} of your own.`)
+        : `You may no longer stop other people's runs: stopped ${runs} of your own.`,
+      sandboxes?.ok ? sandboxes.text : null].filter(Boolean).join(' '))
+      if (sandboxes && !sandboxes.ok) await alerts.alertError(`${sandboxes.text} Press "Stop every run" again to retry.`, 'Kali sandboxes not stopped')
     } catch (err) {
-      await alerts.alertError(toApiError(err, 'The emergency stop failed').message, 'Emergency stop failed')
+      const error = toApiError(err, 'The emergency stop failed')
+      // A failed agent call still names what happened to the sandboxes.
+      const sandboxes = sandboxStopSummary(error.body, undefined)
+      await alerts.alertError([error.message, sandboxes?.text].filter(Boolean).join(' '), 'Emergency stop failed')
     } finally {
       setStopping(null)
       void load()

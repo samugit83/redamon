@@ -72,3 +72,16 @@ describe('the status line follows status', () => {
     expect(tunnelStatusLine([])).toBe('Off')
   })
 })
+
+describe('under act-as the tunnel is the member\'s (gap G-23)', () => {
+  test('their stored setting, said to be theirs; no status read and no off control', () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    render(<TunnelStatusReadOnly perPerson canManage flagOn actingAs onTurnOff={() => {}} />)
+    expect(screen.getByText('Their tunnel setting')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('On')
+    expect(screen.getByText(/this is their own tunnel, in their own Kali sandbox/)).toBeInTheDocument()
+    expect(offButton()).toBeNull()
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+})

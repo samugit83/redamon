@@ -71,7 +71,7 @@ afterEach(() => {
 function panel(over: Record<string, unknown> = {}) {
   return (
     <ActiveSessions
-      sessions={SESSIONS} jobs={JOBS} nonMsfSessions={[]} agentBusy={false} isLoading={false} projectId="p1"
+      sessions={SESSIONS} jobs={JOBS} nonMsfSessions={[]} busyInstances={[]} isLoading={false} projectId="p1"
       onInteract={onInteract as never} onKillSession={onKillSession as never} onKillJob={onKillJob as never}
       {...over}
     />
@@ -119,10 +119,18 @@ describe('rows from two sandboxes with the same number', () => {
     await waitFor(() => expect(onKillJob).toHaveBeenCalledWith({ id: 0, sandbox: 'bbbbb1' }))
   })
 
-  test('a row without an instance is sent with its number alone (the drive route refuses it: sandbox_required)', async () => {
-    render(panel({ sessions: [{ id: 4, type: 'shell', info: 'legacy', connection: '', target_ip: '', chat_session_id: null }], jobs: [] }))
-    fireEvent.click(screen.getByTitle('Kill session'))
-    await waitFor(() => expect(onKillSession).toHaveBeenCalledWith({ id: 4, sandbox: null }))
+  test('a row without an instance offers no Kill, no Stop and no terminal: the drive routes refuse it (sandbox_required)', () => {
+    render(panel({
+      sessions: [{ id: 4, type: 'shell', info: 'legacy', connection: '', target_ip: '', chat_session_id: null }],
+      jobs: [{ id: 2, name: 'legacy handler', payload: '', port: 0 }],
+    }))
+    expect(screen.queryByTitle('Kill session')).toBeNull()
+    expect(screen.queryByTitle('Stop job')).toBeNull()
+    expect(screen.getByText('not stoppable here')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('legacy'))
+    expect(screen.getByTestId('terminal')).toHaveTextContent('terminal none')
+    expect(onKillSession).not.toHaveBeenCalled()
+    expect(onKillJob).not.toHaveBeenCalled()
   })
 })
 

@@ -7,10 +7,10 @@ export const TUNNEL_BOTH_SWITCHES =
   "A chat uses a tunnel only when your own tunnel is on here AND the project's Tunnel Provider (Payload Direction, in the project settings) names it."
 export const TUNNEL_REACHES =
   "Your tunnel runs in your own Kali sandbox and reaches port 4444 inside it; your sandbox's port from the operator's port pool, when it has one, is reached directly, without a tunnel."
-// Under act-as a tunnel can be turned off but never on, and the act_as sandbox never uses one;
-// the member's and the admin's own tunnels keep running in their own sandboxes.
+// Under act-as the page offers no tunnel control: the row is the member's, and an off from it would
+// end the member's own shells; the act_as sandbox never uses a tunnel.
 export const TUNNEL_NEVER_ACTING_AS =
-  'While you act as another person, that work runs in a separate act-as sandbox that never uses a tunnel, and no tunnel can be turned on (turning one off still works).'
+  'While you act as another person, that work runs in a separate act-as sandbox that never uses a tunnel, and this page neither turns their own tunnel on nor off.'
 
 export const TUNNEL_SECTION_HINT_MANAGE = [
   'Configure reverse shell tunneling with your own ngrok or chisel credentials.',

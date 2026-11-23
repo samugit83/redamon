@@ -25,10 +25,11 @@ afterEach(() => {
 })
 
 const base = {
-  jobs: [], nonMsfSessions: [], agentBusy: false, isLoading: false, projectId: 'p1',
+  jobs: [], nonMsfSessions: [], busyInstances: [], isLoading: false, projectId: 'p1',
   onInteract: vi.fn(), onKillSession: vi.fn(async () => {}), onKillJob: vi.fn(async () => {}),
 }
-const session = { id: 7, type: 'shell', info: '', tunnel_peer: '10.0.0.1:4444', target_host: '', via_exploit: '', chat_session_id: null } as never
+// Every real row names its Kali sandbox; one without an instance is never driven (gap G-47).
+const session = { id: 7, sandbox: 'aaaaa1', type: 'shell', info: '', tunnel_peer: '10.0.0.1:4444', target_host: '', via_exploit: '', chat_session_id: null } as never
 
 describe('Active Sessions errors', () => {
   test('an empty list with an error says the list could not load, not "No Reverse Shells"', () => {
@@ -81,7 +82,7 @@ describe('Active Sessions errors', () => {
 
   test('a job stop nobody answered in time is "not confirmed" too', async () => {
     const noAnswer = new ApiError({ reason: 'Job 0: no answer in time; the stop may still complete', status: 502, code: 'agent_error', upstreamStatus: 504 })
-    const job = { id: 0, name: 'Exploit: multi/handler', payload: 'p', port: 4444 } as never
+    const job = { id: 0, sandbox: 'aaaaa1', name: 'Exploit: multi/handler', payload: 'p', port: 4444 } as never
     render(<ActiveSessions {...base} sessions={[session]} jobs={[job]} onKillJob={vi.fn(async () => { throw noAnswer })} />)
     fireEvent.click(screen.getByTitle('Stop job'))
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(noAnswer.message, 'Stop not confirmed'))

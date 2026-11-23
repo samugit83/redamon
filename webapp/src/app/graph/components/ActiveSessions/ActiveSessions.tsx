@@ -20,7 +20,8 @@ interface ActiveSessionsProps {
   sessions: ShownRow<MsfSession>[]
   jobs: ShownRow<MsfJob>[]
   nonMsfSessions: ShownRow<NonMsfSession>[]
-  agentBusy: boolean
+  /** The sandbox instances whose console runs a command of the agent now: the terminal warns for its own row's. */
+  busyInstances: readonly string[]
   isLoading: boolean
   projectId: string
   /** A session or job is the pair (sandbox instance, number): every per-user sandbox numbers from 1. */
@@ -35,11 +36,17 @@ interface ActiveSessionsProps {
 
 const refOf = (row: { id: number; sandbox?: string }): SessionRef => ({ id: row.id, sandbox: row.sandbox ?? null })
 
+/** Whose sandbox and which project a row is, as named to a holder of every session; null for anyone else. */
+export function rowOwnerText(row: { person_label?: string; project_label?: string } | undefined): string | null {
+  const parts = [row?.person_label, row?.project_label].filter((p): p is string => typeof p === 'string' && p !== '')
+  return parts.length ? parts.join(' · ') : null
+}
+
 export const ActiveSessions = memo(function ActiveSessions({
   sessions,
   jobs,
   nonMsfSessions,
-  agentBusy,
+  busyInstances,
   isLoading,
   projectId,
   onInteract,
@@ -59,6 +66,7 @@ export const ActiveSessions = memo(function ActiveSessions({
   const selectedKey = selected ? sessionRowKey(selected) : null
   const selectedSession = selectedKey === null ? undefined : sessions.find(s => sessionRowKey(s) === selectedKey)
   const selectedKilling = selectedKey !== null && killing.has(selectedKey)
+  const selectedBusy = !!selected?.sandbox && busyInstances.includes(selected.sandbox)
   // A complete answer (no sandbox left out, no error) that no longer lists the selected row: it ended.
   const selectedEnded = selected !== null && selectedSession === undefined && unavailable === 0 && !error && !selectedKilling
   const totalSessions = sessions.length + nonMsfSessions.length
@@ -256,7 +264,8 @@ export const ActiveSessions = memo(function ActiveSessions({
           sessionId={selected?.id ?? null}
           sessionKey={selectedKey}
           sessionType={selectedSession?.type || 'shell'}
-          agentBusy={agentBusy}
+          agentBusy={selectedBusy}
+          owner={rowOwnerText(selectedSession)}
           projectId={projectId}
           onInteract={interactSelected}
           ended={selectedEnded}

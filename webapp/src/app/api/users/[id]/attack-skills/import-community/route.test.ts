@@ -36,8 +36,11 @@ type Entry = { id: string; name: string; description?: string }
 type Detail = { name?: string; description?: string; content?: unknown } | 'http_error' | 'throws'
 
 const params = (id: string) => ({ params: Promise.resolve({ id }) })
-const run = async (id = 'alice') => {
-  const res = await POST(new NextRequest(`http://localhost:3000/api/users/${id}/attack-skills/import-community`, { method: 'POST' }), params(id))
+const run = async (id = 'alice', body?: unknown) => {
+  const init = body === undefined
+    ? { method: 'POST' }
+    : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+  const res = await POST(new NextRequest(`http://localhost:3000/api/users/${id}/attack-skills/import-community`, init), params(id))
   return { status: res.status, body: await res.json() }
 }
 const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex')
@@ -89,7 +92,7 @@ describe('POST attack-skills/import-community', () => {
     )
     const { body } = await run()
     expect(body.imported).toBe(1)
-    expect(body.skippedBy).toEqual({ duplicate: 0, limit: 0, fetchFailed: 0, tooLarge: 1, invalid: 0 })
+    expect(body.skippedBy).toEqual({ duplicate: 0, outdated: 0, limit: 0, fetchFailed: 0, tooLarge: 1, invalid: 0 })
     expect(skills().map((s) => s.name)).toEqual(['Ok'])
   })
 
@@ -124,12 +127,47 @@ describe('POST attack-skills/import-community', () => {
   })
 
   test('a name equal to an existing skill but for case and spacing is a duplicate', async () => {
+    db.seed('userAttackSkill', [{ id: 'mine', userId: 'alice', name: 'SQL Injection', content: 'x' }])
+    wire([{ id: 'sqli', name: 'sql  injection' }, { id: 'new', name: 'New one' }], { sqli: { content: 'x' }, new: { content: 'y' } })
+    const { body } = await run()
+    expect(body).toMatchObject({ imported: 1, skipped: 1, outdated: [] })
+    expect(body.skippedBy.duplicate).toBe(1)
+  })
+
+  // Gap G-29: an edit to a shipped skill must reach a person who imported it before, but never
+  // replace their copy (perhaps edited by them) without their choice.
+  test('a same-name copy with another text is offered as outdated, and the import itself never changes it', async () => {
     db.seed('userAttackSkill', [{ id: 'mine', userId: 'alice', name: 'SQL Injection', content: 'My own text' }])
     wire([{ id: 'sqli', name: 'sql  injection' }, { id: 'new', name: 'New one' }], { sqli: { content: 'x' }, new: { content: 'y' } })
     const { body } = await run()
-    expect(body).toMatchObject({ imported: 1, skipped: 1 })
-    expect(body.skippedBy.duplicate).toBe(1)
+    expect(body).toMatchObject({ imported: 1, skipped: 1, updated: 0 })
+    expect(body.skippedBy).toMatchObject({ duplicate: 0, outdated: 1 })
+    expect(body.outdated).toEqual([{ skillId: 'mine', name: 'SQL Injection', communityId: 'sqli' }])
     expect(skills().find((s) => s.id === 'mine')!.content).toBe('My own text')
+  })
+
+  test('a later call naming the outdated copy brings it to the catalog\'s text, through the writer (audited)', async () => {
+    db.seed('userAttackSkill', [{ id: 'mine', userId: 'alice', name: 'SQL Injection', content: 'My own text', description: 'old' }])
+    wire([{ id: 'sqli', name: 'SQL Injection' }], { sqli: { content: 'Catalog text', description: 'New description' } })
+    const { body } = await run('alice', { update: ['mine'] })
+    expect(body).toMatchObject({ imported: 0, updated: 1, updatedIds: ['mine'], outdated: [] })
+    expect(body.skippedBy.outdated).toBe(0)
+    const mine = skills().find((s) => s.id === 'mine')!
+    expect(mine.content).toBe('Catalog text')
+    expect(mine.description).toBe('New description')
+    expect(h.audits.filter((a) => a.action === 'user_attack_skill.update').map((a) => a.targetId)).toEqual(['mine'])
+  })
+
+  test('naming a copy that is not outdated, another person\'s skill or a malformed id changes nothing', async () => {
+    db.seed('userAttackSkill', [
+      { id: 'same', userId: 'alice', name: 'Same', content: 'x' },
+      { id: 'bobs', userId: 'bob', name: 'Other', content: 'bob text' },
+    ])
+    wire([{ id: 'same', name: 'Same' }, { id: 'other', name: 'Other' }], { same: { content: 'x' }, other: { content: 'catalog' } })
+    const { body } = await run('alice', { update: ['same', 'bobs', '../x', 7] })
+    expect(body.updated).toBe(0)
+    expect(db.rows('userAttackSkill').find((s) => s.id === 'bobs')!.content).toBe('bob text')
+    expect(h.audits.filter((a) => a.action === 'user_attack_skill.update')).toEqual([])
   })
 
   test('two entries that create the same name in one import: only the first is created', async () => {
@@ -138,7 +176,7 @@ describe('POST attack-skills/import-community', () => {
       { one: { content: 'first' }, two: { content: 'second' }, three: { content: 'third' } },
     )
     const { body } = await run()
-    expect(body).toMatchObject({ imported: 2, skipped: 1 })
+    expect(body).toMatchObject({ imported: 2, skipped: 1, outdated: [] })
     expect(body.skippedBy.duplicate).toBe(1)
     expect(skills().find((s) => s.name === 'Recon')!.content).toBe('first')
   })
@@ -151,7 +189,9 @@ describe('POST attack-skills/import-community', () => {
     )
     const { body } = await run()
     expect(body).toMatchObject({ imported: 1, skipped: 1 })
-    expect(body.skippedBy.duplicate).toBe(1)
+    // The copy's text differs from the entry that now creates its name: offered, never replaced.
+    expect(body.skippedBy.outdated).toBe(1)
+    expect(body.outdated).toEqual([{ skillId: 'mine', name: 'Taken name', communityId: 'renamed_onto' }])
     expect(skills().map((s) => s.name).sort()).toEqual(['A different name', 'Taken name'])
   })
 
@@ -188,7 +228,7 @@ describe('POST attack-skills/import-community', () => {
       { dup: { content: 'x' }, big: { content: 'x'.repeat(MAX_CONTENT_SIZE + 1) }, down: 'http_error', empty: { content: '' }, ok: { content: 'x' } },
     )
     const { body } = await run()
-    expect(body.skippedBy).toEqual({ duplicate: 1, limit: 0, fetchFailed: 1, tooLarge: 1, invalid: 1 })
+    expect(body.skippedBy).toEqual({ duplicate: 1, outdated: 0, limit: 0, fetchFailed: 1, tooLarge: 1, invalid: 1 })
     expect(body.skipped).toBe(4)
     expect(body.imported).toBe(1)
     expect(body.total).toBe(5)

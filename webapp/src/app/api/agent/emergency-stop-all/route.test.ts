@@ -113,7 +113,7 @@ describe('POST /api/agent/emergency-stop-all', () => {
     expect(agentCall()).toEqual({ path: '/agent-sessions/stop-for', method: 'POST', body: { user_id: 'member-1' } })
     expect(stopRows()).toEqual([{
       actorId: 'member-1', action: 'agent.emergency_stop', targetType: 'user', targetId: 'member-1',
-      after: { scope: 'own', count: 2, via: null }, source: 'ui',
+      after: { scope: 'own', count: 2, via: null, sandboxes: { stopped: 0 } }, source: 'ui',
     }])
   })
 
@@ -127,7 +127,7 @@ describe('POST /api/agent/emergency-stop-all', () => {
     expect(agentCall()).toEqual({ path: '/emergency-stop-all', method: 'POST', body: undefined })
     expect(stopRows()).toEqual([{
       actorId: 'admin-1', action: 'agent.emergency_stop', targetType: 'instance', targetId: null,
-      after: { scope: 'all', count: 5, via: 'admin' }, source: 'ui',
+      after: { scope: 'all', count: 5, via: 'admin', sandboxes: { stopped: 0 } }, source: 'ui',
     }])
   })
 
@@ -140,7 +140,7 @@ describe('POST /api/agent/emergency-stop-all', () => {
 
     expect(await res.json()).toEqual({ scope: 'all', stopped: 1, sandboxes: { stopped: 0 } })
     expect(agentCall().path).toBe('/emergency-stop-all')
-    expect(stopRows()[0].after).toEqual({ scope: 'all', count: 1, via: 'compat' })
+    expect(stopRows()[0].after).toEqual({ scope: 'all', count: 1, via: 'compat', sandboxes: { stopped: 0 } })
     expect(compatRows()).toEqual([expect.objectContaining({ actorId: 'old-member', targetId: 'emergency_stop_all' })])
   })
 
@@ -240,7 +240,7 @@ describe('the Kali sandboxes stop too (group 1, D22)', () => {
     expect(mockSandboxStop).toHaveBeenCalledTimes(1)
     expect(mockSandboxStop).toHaveBeenCalledWith({ scope: 'all' }, { actorId: 'admin-1', ...nobody })
     expect(order).toEqual(['agent', 'sandboxes'])
-    expect(stopRows()[0].after).toEqual({ scope: 'all', count: 5, via: 'admin' })
+    expect(stopRows()[0].after).toEqual({ scope: 'all', count: 5, via: 'admin', sandboxes: { stopped: 3 } })
   })
 
   test('member → only their own sandboxes (both views), never anyone else\'s', async () => {
@@ -266,6 +266,8 @@ describe('the Kali sandboxes stop too (group 1, D22)', () => {
     mockSandboxStop.mockResolvedValue({ error: 'orchestrator_unreachable', stopped: 0 })
 
     expect(await (await post()).json()).toEqual({ scope: 'all', stopped: 0, sandboxes: { error: 'orchestrator_unreachable' } })
+    // The press's audit row says the sandboxes were not stopped, not only that runs were.
+    expect(stopRows()[0].after).toEqual({ scope: 'all', count: 0, via: 'admin', sandboxes: { error: 'orchestrator_unreachable' } })
   })
 
   test('an agent that cannot be reached does not keep the sandboxes running (the answer stays the agent\'s)', async () => {
@@ -277,6 +279,24 @@ describe('the Kali sandboxes stop too (group 1, D22)', () => {
 
     expect(res.status).toBe(503)
     expect(mockSandboxStop).toHaveBeenCalledWith({ scope: 'all' }, { actorId: 'admin-1', ...nobody })
+    // The agent's failure is the answer, and it still says what happened to the sandboxes.
+    const body = await res.json()
+    expect(body.code).toBe('agent_unreachable')
+    expect(body.sandboxes).toEqual({ stopped: 2 })
+  })
+
+  test('an agent refusal still names the sandbox outcome, a failed one included', async () => {
+    signedIn(principal('member-1', 'standard'))
+    agentAnswers({ detail: 'Unauthorized' }, 401)
+    mockSandboxStop.mockResolvedValue({ error: 'orchestrator_timeout', stopped: 0 })
+
+    const res = await post()
+
+    expect(res.ok).toBe(false)
+    const body = await res.json()
+    expect(body.upstreamStatus).toBe(401)
+    expect(body.sandboxes).toEqual({ error: 'orchestrator_timeout' })
+    expect(stopRows()).toEqual([])
   })
 
   test('no session, an account gone or a failed account read stop no sandbox; asking the scope stops none', async () => {

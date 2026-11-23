@@ -25,6 +25,8 @@ const mockLoadPrincipal = vi.fn()
 const mockConversations = vi.fn()
 const mockCutoff = vi.fn()
 const mockWriteAudit = vi.fn()
+const mockUsers = vi.fn()
+const mockProjects = vi.fn()
 
 vi.mock('@/lib/session', () => ({
   requireSession: (...a: unknown[]) => mockRequireSession(...a),
@@ -40,6 +42,8 @@ vi.mock('@/lib/audit', () => ({
 vi.mock('@/lib/prisma', () => ({
   default: {
     conversation: { findMany: (...a: unknown[]) => mockConversations(...a) },
+    user: { findMany: (...a: unknown[]) => mockUsers(...a) },
+    project: { findMany: (...a: unknown[]) => mockProjects(...a) },
     $transaction: async (fn: (tx: unknown) => unknown) => fn({}),
     auditLog: { findFirst: (...a: unknown[]) => mockCutoff(...a) },
   },
@@ -116,7 +120,7 @@ function agentList() {
       { id: 'raw-3', type: 'listener', tool: 'netcat', command: 'nc -lvnp 4447', ...IN_A },
     ],
     cache_age_seconds: 1.5,
-    agent_busy: false,
+    busy: ['aaaaa1', 'bbbbb1'],
   }
 }
 
@@ -139,6 +143,8 @@ beforeEach(() => {
     CONVERSATIONS.filter(c => args.where.sessionId.in.includes(c.sessionId)))
   mockCutoff.mockReset().mockResolvedValue({ createdAt: CUTOFF })
   mockWriteAudit.mockReset().mockResolvedValue(undefined)
+  mockUsers.mockReset().mockResolvedValue([])
+  mockProjects.mockReset().mockResolvedValue([])
   mounts = { 'member-a': ['project-a'], 'member-b': ['project-b'] }
   resetSharedToolsForTests()
   setFlagsForTests({})
@@ -215,9 +221,16 @@ describe('the sessions list', () => {
 
   test('no count of hidden sessions: the answer carries only the agent fields', async () => {
     const out = await visibleSessions(agentList(), await viewerFor(principal('member-a')))
-    expect(Object.keys(out).sort()).toEqual(['agent_busy', 'cache_age_seconds', 'jobs', 'non_msf_sessions', 'sessions'])
+    expect(Object.keys(out).sort()).toEqual(['busy', 'cache_age_seconds', 'jobs', 'non_msf_sessions', 'sessions'])
     expect(out.cache_age_seconds).toBe(1.5)
-    expect(out.agent_busy).toBe(false)
+    // Each sandbox has its own console: member-a is told only about the sandbox her rows come from.
+    expect(out.busy).toEqual(['aaaaa1'])
+  })
+
+  test('the old single busy flag is not passed on (one console per sandbox)', async () => {
+    const out = await visibleSessions({ ...agentList(), busy: undefined, agent_busy: true }, await viewerFor(principal('member-a')))
+    expect(out).not.toHaveProperty('agent_busy')
+    expect(out).not.toHaveProperty('busy')
   })
 
   test('one conversation read, for the distinct chat ids only; none when nothing is tagged', async () => {
@@ -404,5 +417,57 @@ describe('a project shared with the viewer (step 5.10)', () => {
       action: 'agent.session_kill', actorId: 'member-a', targetId: 'bbbbb1:2',
       after: expect.objectContaining({ projectId: 'project-b', via: 'share', sandbox: 'bbbbb1', sandboxUser: 'member-b', outcome: 'attempted' }),
     }))
+  })
+})
+
+describe('every-session holders: busy consoles and whose row it is (gaps G-15, G-33)', () => {
+  test('the busy instances: all of them for a holder of every session, malformed ids dropped', async () => {
+    const out = await visibleSessions({ ...agentList(), busy: ['aaaaa1', 'bbbbb1', '../x', 7] }, await viewerFor(principal('admin-a', 'admin')))
+    expect(out.busy).toEqual(['aaaaa1', 'bbbbb1'])
+  })
+
+  test('another person\'s busy sandbox is never named to someone without a row from it', async () => {
+    const out = await visibleSessions({ ...agentList(), busy: ['bbbbb1'] }, await viewerFor(principal('member-a')))
+    expect(out.busy).toEqual([])
+  })
+
+  test('each row says whose sandbox and which project, from the agent\'s tags and one read of each table', async () => {
+    mockUsers.mockResolvedValue([{ id: 'member-a', name: 'Alice', email: 'a@x' }, { id: 'member-b', name: null, email: 'b@x' }])
+    mockProjects.mockResolvedValue([{ id: 'project-a', name: 'Project A' }, { id: 'project-b', name: 'Project B' }])
+    const out = await visibleSessions(agentList(), await viewerFor(principal('admin-a', 'admin')))
+    const one = out.sessions.find(r => r.id === 1)!
+    expect(one).toMatchObject({ person_label: 'Alice', project_label: 'Project A', project_id: 'project-a' })
+    expect(out.sessions.find(r => r.id === 2)).toMatchObject({ person_label: 'b@x', project_label: 'Project B' })
+    // An unattributed session names its sandbox's person but no project.
+    expect(out.sessions.find(r => r.id === 3)).toMatchObject({ person_label: 'Alice' })
+    expect(out.sessions.find(r => r.id === 3)).not.toHaveProperty('project_label')
+    expect(out.jobs.map(j => j.person_label)).toEqual(['Alice', 'b@x'])
+    // The agent's own person tags still never reach the browser.
+    expect(JSON.stringify(out)).not.toContain('sandbox_user')
+    expect(mockUsers).toHaveBeenCalledTimes(1)
+    expect(mockProjects).toHaveBeenCalledTimes(1)
+  })
+
+  test('an act-as sandbox says so', async () => {
+    mockUsers.mockResolvedValue([{ id: 'member-a', name: 'Alice', email: 'a@x' }])
+    const list = { ...agentList(), sessions: [], non_msf_sessions: [], jobs: [{ id: 5, name: 'h', payload: '', port: 0, sandbox: 'ccccc1', sandbox_user: 'member-a', sandbox_view: 'act_as' }] }
+    const out = await visibleSessions(list, await viewerFor(principal('admin-a', 'admin')))
+    expect(out.jobs[0].person_label).toBe('Alice (act-as)')
+  })
+
+  test('an owner\'s own rows carry no labels, and nothing is read for them', async () => {
+    const out = await visibleSessions(agentList(), await viewerFor(principal('member-a')))
+    for (const row of [...out.sessions, ...out.jobs, ...out.non_msf_sessions]) {
+      expect(row).not.toHaveProperty('person_label')
+      expect(row).not.toHaveProperty('project_label')
+    }
+    expect(mockUsers).not.toHaveBeenCalled()
+  })
+
+  test('a failed read labels nothing and the list still answers', async () => {
+    mockUsers.mockRejectedValue(new Error('db down'))
+    const out = await visibleSessions(agentList(), await viewerFor(principal('admin-a', 'admin')))
+    expect(ids(out.sessions)).toEqual([1, 2, 3, 4])
+    expect(out.sessions[0]).not.toHaveProperty('person_label')
   })
 })

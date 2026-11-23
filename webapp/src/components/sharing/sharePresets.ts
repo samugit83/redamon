@@ -45,6 +45,14 @@ export const TARGET_CREDENTIALS_WARNING = "Run scans and Use AI agent carry the 
 export const READ_SHOWS_FINDINGS_WARNING =
   'Every level shows what recon found as you see it, found secrets and reports included; the project settings never show your own keys and tokens.'
 
+/**
+ * Gap G-09: a collaborator's own Kali sandbox mounts every project they may use with the agent, read
+ * and write, so Raw data off does not keep the agent, a terminal or `kali_exec` out of this
+ * project's folder (README.KALI_SANDBOX §19, "Shared projects are shared live").
+ */
+export const SANDBOX_MOUNT_WARNING =
+  "Their own Kali sandbox mounts this project's folder read-write: they can read and change its workspace files and loot, whatever Raw data says."
+
 /** A collaborator who reads raw files or drives the agent can keep a copy of what they see. */
 export const COPY_WARNING = 'A collaborator with Raw data or the agent can copy what they see: revoking ends the access, not the copies.'
 
@@ -92,12 +100,12 @@ export const SHARE_TOGGLES: readonly ShareToggleInfo[] = [
     id: 'useAgent', label: 'Use AI agent', level: 'write',
     description: 'Chat, Fireteam, triage runs, CodeFix and assistants.',
     // Group 1, I11 (OD-G1-k): the owner's third-party keys reach the collaborator's own sandbox.
-    notices: [SHARE_KEYS_LENT_TEXT, TARGET_CREDENTIALS_WARNING],
+    notices: [SHARE_KEYS_LENT_TEXT, SANDBOX_MOUNT_WARNING, TARGET_CREDENTIALS_WARNING],
   },
   {
     id: 'exploit', label: 'Exploitation & shells', level: 'write',
     description: 'Approve exploitation and dangerous tools, project shell sessions, Kali exec.',
-    notices: [SHARE_KEYS_LENT_TEXT],
+    notices: [SHARE_KEYS_LENT_TEXT, SANDBOX_MOUNT_WARNING],
   },
   {
     id: 'manage', label: 'Manage (co-owner)', level: 'write',

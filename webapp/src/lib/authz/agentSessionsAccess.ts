@@ -58,7 +58,11 @@ export interface VisibleSessions {
   jobs: Row[]
   non_msf_sessions: ProjectRow[]
   cache_age_seconds?: unknown
-  agent_busy?: unknown
+  /**
+   * The sandbox instances whose console runs a command of the agent now (each sandbox has its own
+   * console): of the instances this viewer has a row of, or all of them for holders of every session.
+   */
+  busy?: string[]
   /** How many sandboxes the agent could not ask: their sessions may be out of date or missing. */
   unavailable_count?: number
   /**
@@ -273,7 +277,9 @@ export async function visibleSessions(payload: unknown, viewer: SessionsViewer):
   const { p, sessions, jobs, listeners } = payloadParts(payload)
   const projects = await attributedProjects([...sessions, ...listeners])
   const shared = viewer.all.allowed ? new Set<string>() : await sharedShellProjects(viewer, projects.values())
-  const tag = (row: Row): ProjectRow => ({ ...withoutPerson(row), project_id: projects.get(row)?.projectId ?? null })
+  const labels = viewer.all.allowed ? await rowLabels([...sessions, ...jobs, ...listeners], projects) : new Map<Row, RowLabels>()
+  const labelled = <T extends Row>(row: Row, shown: T): T => ({ ...shown, ...labels.get(row) })
+  const tag = (row: Row): ProjectRow => labelled(row, { ...withoutPerson(row), project_id: projects.get(row)?.projectId ?? null })
   const seen = (row: Row): boolean => {
     if (viewer.all.allowed) return true
     const project = projects.get(row)
@@ -281,16 +287,85 @@ export async function visibleSessions(payload: unknown, viewer: SessionsViewer):
   }
   const out: VisibleSessions = {
     sessions: sessions.filter(seen).map(tag),
-    jobs: (viewer.all.allowed ? jobs : jobs.filter((row) => fromViewerSandbox(row, viewer))).map(withoutPerson),
+    jobs: (viewer.all.allowed ? jobs : jobs.filter((row) => fromViewerSandbox(row, viewer))).map((row) => labelled(row, withoutPerson(row))),
     non_msf_sessions: listeners.filter(seen).map(tag),
   }
   if ('cache_age_seconds' in p) out.cache_age_seconds = p.cache_age_seconds
-  if ('agent_busy' in p) out.agent_busy = p.agent_busy
+  const busy = busyInstances(p)
+  if (busy) {
+    // Another person's instance id names a sandbox the viewer has no business with.
+    const shown = new Set([...out.sessions, ...out.jobs, ...out.non_msf_sessions].map(rowSandbox))
+    out.busy = viewer.all.allowed ? busy : busy.filter((i) => shown.has(i))
+  }
   const unavailable = unavailableInstances(p)
   if (unavailable) {
     out.unavailable_count = unavailable.length
     // Another person's instance id names a sandbox the viewer has no business with.
     out.unavailable = viewer.all.allowed ? unavailable : await unavailableForViewer(unavailable, viewer)
+  }
+  return out
+}
+
+/** The instances whose console the agent reports busy, once each; null when it named none. */
+function busyInstances(p: Record<string, unknown>): string[] | null {
+  return Array.isArray(p.busy) ? [...new Set(p.busy.filter(isSandboxInstance))] : null
+}
+
+/** What a holder of every session sees on a row besides its own fields: whose sandbox, which project. */
+interface RowLabels {
+  person_label?: string
+  project_label?: string
+}
+
+const LABEL_MAX = 120
+
+function labelText(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const clean = value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
+  return clean ? clean.slice(0, LABEL_MAX) : null
+}
+
+/**
+ * Whose sandbox and which project each row is, for a holder of every session only (gap G-33): their
+ * list mixes every person's sandboxes, which all number from 1, so a kill or a stop there would act
+ * on someone's shell without saying whose. The person comes from the agent's tags, never the
+ * sandbox's own fields. A label is a display hint: a failed read labels nothing.
+ */
+async function rowLabels(list: Row[], projects: Map<Row, ChatProject>): Promise<Map<Row, RowLabels>> {
+  const out = new Map<Row, RowLabels>()
+  const people = new Set<string>()
+  for (const row of list) {
+    const person = sandboxPersonOf(row)
+    if (person) people.add(person.userId)
+  }
+  const projectIds = new Set([...projects.values()].map((p) => p.projectId))
+  let names = new Map<string, string>()
+  let projectNames = new Map<string, string>()
+  try {
+    const [users, rowsOfProjects] = await Promise.all([
+      people.size ? prisma.user.findMany({ where: { id: { in: [...people] } }, select: { id: true, name: true, email: true } }) : [],
+      projectIds.size ? prisma.project.findMany({ where: { id: { in: [...projectIds] } }, select: { id: true, name: true } }) : [],
+    ])
+    names = new Map(users.flatMap((u) => {
+      const label = labelText(u.name) ?? labelText(u.email)
+      return label ? [[u.id, label] as const] : []
+    }))
+    projectNames = new Map(rowsOfProjects.flatMap((r) => {
+      const label = labelText(r.name)
+      return label ? [[r.id, label] as const] : []
+    }))
+  } catch {
+    return out
+  }
+  for (const row of list) {
+    const labels: RowLabels = {}
+    const person = sandboxPersonOf(row)
+    const name = person ? names.get(person.userId) : undefined
+    if (person && name) labels.person_label = person.view === 'act_as' ? `${name} (act-as)` : name
+    const project = projects.get(row)
+    const projectName = project ? projectNames.get(project.projectId) : undefined
+    if (projectName) labels.project_label = projectName
+    if (labels.person_label || labels.project_label) out.set(row, labels)
   }
   return out
 }

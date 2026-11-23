@@ -44,6 +44,8 @@ interface SessionTerminalProps {
   sessionKey?: string | null
   sessionType: 'meterpreter' | 'shell' | string
   agentBusy: boolean
+  /** Whose sandbox and project the session is, shown to a holder of every session only. */
+  owner?: string | null
   projectId: string
   onInteract: (sessionId: number, command: string) => Promise<SessionInteractResult>
   /** A complete list no longer holds this session: the output stays, no more commands. */
@@ -57,6 +59,7 @@ export const SessionTerminal = memo(function SessionTerminal({
   sessionKey,
   sessionType,
   agentBusy,
+  owner = null,
   projectId,
   onInteract,
   ended = false,
@@ -224,6 +227,7 @@ export const SessionTerminal = memo(function SessionTerminal({
         <div className={styles.terminalTitle}>
           <span className={styles.dot} />
           Session #{sessionId} - {sessionType}
+          {owner && <span className={styles.ownerLabel} data-testid="session-owner"> · {owner}</span>}
         </div>
       </div>
 

@@ -140,6 +140,11 @@ export function withKeptRows(before: SessionsData | undefined, answer: SessionsD
   return { ...answer, sessions: lists.sessions, jobs: lists.jobs, non_msf_sessions: lists.nonMsfSessions }
 }
 
+/** The answer's busy sandbox instances; none for a missing or malformed list. */
+export function busyInstancesOf(answer: { busy?: unknown }): string[] {
+  return Array.isArray(answer.busy) ? answer.busy.filter((i): i is string => typeof i === 'string' && i !== '') : []
+}
+
 /**
  * Whose rows the lists hold: the signed-in account and the account it acts as. A kept row never
  * outlives it, so an act-as switch never shows the rows read for the other account.
@@ -192,7 +197,8 @@ interface UseActiveSessionsReturn {
   nonMsfSessions: ShownRow<NonMsfSession>[]
   /** How many sandboxes the agent could not ask: their sessions are missing, but for rows kept from before. */
   unavailableCount: number
-  agentBusy: boolean
+  /** The sandbox instances whose console runs a command of the agent now: each sandbox has its own console. */
+  busyInstances: string[]
   isLoading: boolean
   error: string | null
   totalCount: number
@@ -219,7 +225,7 @@ export function useActiveSessions({
   const viewerRef = useRef(viewer)
   useEffect(() => { viewerRef.current = viewer }, [viewer])
   const [unavailableCount, setUnavailableCount] = useState(0)
-  const [agentBusy, setAgentBusy] = useState(false)
+  const [busyInstances, setBusyInstances] = useState<string[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const pollingRef = useRef<NodeJS.Timeout | null>(null)
@@ -235,7 +241,7 @@ export function useActiveSessions({
     if (!refused) return
     setShown(prev => ({ viewer: prev.viewer, lists: NO_SESSION_ROWS }))
     setUnavailableCount(0)
-    setAgentBusy(false)
+    setBusyInstances([])
     setError(null)
   }, [refused])
 
@@ -272,7 +278,7 @@ export function useActiveSessions({
         }
       })
       setUnavailableCount(unavailableCountOf(data))
-      setAgentBusy(data.agent_busy || false)
+      setBusyInstances(busyInstancesOf(data))
       setError(null)
     } catch (err) {
       // Don't clear sessions on transient errors - keep showing last known state
@@ -367,7 +373,7 @@ export function useActiveSessions({
     jobs,
     nonMsfSessions,
     unavailableCount,
-    agentBusy,
+    busyInstances,
     isLoading: isLoading || (enabled && access === 'pending'),
     error,
     totalCount,

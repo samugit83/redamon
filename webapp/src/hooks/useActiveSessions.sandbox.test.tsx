@@ -3,7 +3,8 @@
  * numbers its sessions from 1, so a row is the pair (sandbox, number). A kill, a job kill and a
  * command name the row's instance (`?sandbox=`); a session killed in one sandbox never hides the
  * session with the same number in another; how many sandboxes the agent could not reach is passed on
- * for the partial-answer line. A row with no instance (the shared container) is driven as before.
+ * for the partial-answer line. A row with no instance names no sandbox: the drive routes refuse it
+ * (400 `sandbox_required`) and the panel offers it no drive (gap G-47).
  * A row's id is always encoded into the drive URL (review F2: a planted id must not walk the path).
  *
  * Run: npx vitest run src/hooks/useActiveSessions.sandbox.test.tsx
@@ -23,7 +24,7 @@ const LIVE = {
   jobs: [{ id: 0, sandbox: 'aaaaa1', name: 'handler' }, { id: 0, sandbox: 'bbbbb1', name: 'handler' }],
   non_msf_sessions: [],
   unavailable_count: 2,
-  agent_busy: false,
+  busy: ['bbbbb1'],
 }
 let answer: (url: string, init?: RequestInit) => Response | Promise<Response>
 let fetchMock: ReturnType<typeof vi.fn>
@@ -78,11 +79,30 @@ describe('rows are (sandbox, number)', () => {
     expect(posts()).toEqual(['/api/agent/sessions/1/interact?sandbox=bbbbb1'])
   })
 
-  test('an instance id is encoded, and a row without one (the shared container) is driven as before', async () => {
+  test('an instance id is encoded; a row without one is refused by the route and the kill rejects with its code', async () => {
     const { result } = await mounted()
     await act(async () => { await result.current.killSession({ id: 1, sandbox: 'a b&c' }) })
-    await act(async () => { await result.current.killSession(7) })
+    answer = (url, init) => (init?.method === 'POST' && !url.includes('?sandbox=')
+      ? json(400, { error: 'Name the Kali sandbox of the session', code: 'sandbox_required' })
+      : json(200, LIVE))
+    let refusal: unknown
+    await act(async () => { await result.current.killSession(7).catch((err) => { refusal = err }) })
     expect(posts()).toEqual(['/api/agent/sessions/1/kill?sandbox=a%20b%26c', '/api/agent/sessions/7/kill'])
+    expect((refusal as { code?: string }).code).toBe('sandbox_required')
+  })
+
+  test('the sandboxes whose console is busy are passed on as named; a malformed list is none (gap G-15)', async () => {
+    let hook = await mounted()
+    expect(hook.result.current.busyInstances).toEqual(['bbbbb1'])
+    cleanup()
+    answer = () => json(200, { ...LIVE, busy: 'bbbbb1' })
+    hook = await mounted()
+    expect(hook.result.current.busyInstances).toEqual([])
+    cleanup()
+    answer = () => json(200, { ...LIVE, busy: undefined, agent_busy: true })
+    hook = await mounted()
+    // The old single flag means nothing with one console per sandbox: it is not read.
+    expect(hook.result.current.busyInstances).toEqual([])
   })
 
   test('no count from the webapp: none; a malformed one: none', async () => {

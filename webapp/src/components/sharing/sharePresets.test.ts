@@ -33,6 +33,7 @@ import {
   termsToBody,
   toggleOffer,
   writePresetsRefusal,
+  SANDBOX_MOUNT_WARNING,
 } from './sharePresets'
 import type { MyAccess } from '@/lib/authz/projectAccess'
 import { SHARE_KEYS_LENT_TEXT } from '@/lib/sandbox/contract'
@@ -96,9 +97,18 @@ describe('toggles and their warnings (HD-22, SH-29)', () => {
   test('no toggle says the sandbox is shared: each person runs in their own Kali sandbox (group 1)', () => {
     const notices = Object.fromEntries(SHARE_TOGGLES.map(t => [t.id, t.notices]))
     for (const list of Object.values(notices)) expect(list.join(' ')).not.toMatch(/shared by every project|sandbox shared/)
-    expect(notices.useAgent).toEqual([SHARE_KEYS_LENT_TEXT, TARGET_CREDENTIALS_WARNING])
-    expect(notices.exploit).toEqual([SHARE_KEYS_LENT_TEXT])
+    expect(notices.useAgent).toEqual([SHARE_KEYS_LENT_TEXT, SANDBOX_MOUNT_WARNING, TARGET_CREDENTIALS_WARNING])
+    expect(notices.exploit).toEqual([SHARE_KEYS_LENT_TEXT, SANDBOX_MOUNT_WARNING])
     expect(notices.rawData).toEqual([RAW_DATA_WARNING])
+  })
+
+  // Gap G-09: Raw data off does not keep the collaborator's own sandbox out of this project's folder.
+  test('Use AI agent and Exploitation say their own sandbox mounts the folder read-write, whatever Raw data says', () => {
+    const notices = Object.fromEntries(SHARE_TOGGLES.map(t => [t.id, t.notices]))
+    for (const id of ['useAgent', 'exploit']) expect(notices[id]).toContain(SANDBOX_MOUNT_WARNING)
+    for (const id of ['rawData', 'runScans', 'manage']) expect(notices[id]).not.toContain(SANDBOX_MOUNT_WARNING)
+    expect(SANDBOX_MOUNT_WARNING).toMatch(/own Kali sandbox mounts this project's folder read-write/)
+    expect(SANDBOX_MOUNT_WARNING).toMatch(/whatever Raw data says/)
   })
 
   // Group 1, I11 (OD-G1-k): the owner's WPScan, URLScan and ProjectDiscovery keys reach the sandbox

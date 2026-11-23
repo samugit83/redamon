@@ -202,3 +202,8 @@
   border-radius: var(--radius-sm);
   white-space: nowrap;
 }
+
+/* Whose sandbox a row is, for a holder of every session. */
+.ownerRow {
+  color: var(--text-secondary, #8b949e);
+}

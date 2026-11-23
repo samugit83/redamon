@@ -329,6 +329,32 @@ describe('the global emergency stop', () => {
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Stop every run' }))
     await waitFor(() => expect(screen.getByRole('dialog')).toHaveTextContent('agent_unreachable'))
   })
+
+  test('the Kali sandboxes it stopped are named next to the runs', async () => {
+    stopAllAnswer = () => json({ scope: 'all', stopped: 3, sandboxes: { stopped: 2 } })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop every agent run' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Stop every run' }))
+    expect(await screen.findByText('Emergency stop: stopped 3 agent runs. Kali sandboxes: stopped 2 sandboxes.')).toBeInTheDocument()
+  })
+
+  test('a sandbox stop that failed is an error dialog with how to retry, not a success notice', async () => {
+    stopAllAnswer = () => json({ scope: 'all', stopped: 3, sandboxes: { error: 'orchestrator_unreachable' } })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop every agent run' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Stop every run' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toHaveTextContent('Kali sandboxes: not stopped (orchestrator_unreachable)'))
+    expect(screen.getByRole('dialog')).toHaveTextContent('again to retry')
+  })
+
+  test('a failed agent call still says what happened to the sandboxes', async () => {
+    stopAllAnswer = () => json({ error: 'Failed to stop agents', code: 'agent_unreachable', sandboxes: { stopped: 1 } }, 503)
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop every agent run' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Stop every run' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toHaveTextContent('agent_unreachable'))
+    expect(screen.getByRole('dialog')).toHaveTextContent('Kali sandboxes: stopped 1 sandbox.')
+  })
 })
 
 describe('keyboard and labels', () => {

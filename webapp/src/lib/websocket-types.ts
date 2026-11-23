@@ -621,7 +621,16 @@ export interface WebSocketState {
 // Every person's Kali sandbox runs its own console, which numbers its sessions from 1: a row is the
 // pair (`sandbox` instance, `id`) (group 1, TD-11).
 
-export interface MsfSession {
+/**
+ * What a holder of every session sees on a row besides its own fields (gap G-33): whose sandbox the
+ * row comes from and the project its chat stands for. Absent for everyone else.
+ */
+export interface RowLabels {
+  person_label?: string
+  project_label?: string
+}
+
+export interface MsfSession extends RowLabels {
   id: number
   sandbox?: string
   type: 'meterpreter' | 'shell' | 'unknown'
@@ -631,7 +640,7 @@ export interface MsfSession {
   chat_session_id: string | null
 }
 
-export interface MsfJob {
+export interface MsfJob extends RowLabels {
   id: number
   sandbox?: string
   name: string
@@ -639,7 +648,7 @@ export interface MsfJob {
   port: number
 }
 
-export interface NonMsfSession {
+export interface NonMsfSession extends RowLabels {
   id: string
   sandbox?: string
   type: string
@@ -663,7 +672,8 @@ export interface SessionsData {
   jobs: Array<MsfJob & KeptRowMarks>
   non_msf_sessions: Array<NonMsfSession & KeptRowMarks>
   cache_age_seconds: number
-  agent_busy: boolean
+  /** The sandbox instances whose console runs a command of the agent now, of the rows shown. */
+  busy?: string[]
   /** How many sandboxes did not answer: their sessions may be out of date or missing from the lists. */
   unavailable_count?: number
   /** Their instance ids, for holders of every session only. */

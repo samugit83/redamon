@@ -180,9 +180,9 @@ describe('per-person tunnels (group 1: per-user Kali sandboxes)', () => {
     for (const line of [TUNNEL_BOTH_SWITCHES, TUNNEL_REACHES, TUNNEL_NEVER_ACTING_AS]) expect(TUNNEL_SECTION_HINT_MANAGE).toContain(line)
     expect(TUNNEL_BOTH_SWITCHES).toMatch(/your own tunnel is on here AND the project's Tunnel Provider/)
     expect(TUNNEL_REACHES).toMatch(/reaches port 4444 inside it; your sandbox's port from the operator's port pool.*is reached directly, without a tunnel/)
-    // Round 2: act-as never turns a tunnel on and its sandbox never uses one; the people's own tunnels keep running.
+    // Act-as never changes the member's own tunnel from this page, and its sandbox never uses one.
     expect(TUNNEL_NEVER_ACTING_AS).toBe(
-      'While you act as another person, that work runs in a separate act-as sandbox that never uses a tunnel, and no tunnel can be turned on (turning one off still works).',
+      'While you act as another person, that work runs in a separate act-as sandbox that never uses a tunnel, and this page neither turns their own tunnel on nor off.',
     )
     expect(text).not.toMatch(/act as another person, no tunnel runs/)
     expect(screen.getByText(TUNNEL_ENABLE_HINT)).toBeInTheDocument()
@@ -236,6 +236,30 @@ describe('per-person tunnels (group 1: per-user Kali sandboxes)', () => {
     renderPage()
     await screen.findByText(/^Off$/)
     expect(screen.queryByRole('button', { name: 'Turn my tunnel off' })).toBeNull()
+  })
+
+  test('under act-as: the member\'s own tunnel setting, said to be theirs, no control and no tunnel key in a save (gap G-23)', async () => {
+    const { TUNNEL_ACTING_AS_HINT } = await import('@/components/settings/TunnelStatusReadOnly')
+    routes[`GET ${BASE}/settings`] = { status: 200, body: perPerson(false, { tunnelActingAs: true, tunnelsEnabled: true }) }
+    renderPage()
+    expect((await screen.findAllByText(TUNNEL_ACTING_AS_HINT)).length).toBeGreaterThan(0)
+    expect(screen.getByText('Their tunnel setting')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Turn my tunnel off' })).toBeNull()
+    expect(screen.queryByLabelText('Enable tunnels')).toBeNull()
+    expect(screen.queryByPlaceholderText(URL_PLACEHOLDER)).toBeNull()
+    // The status route answers for the act_as view, which never has a tunnel: it is not asked.
+    expect(fetchMock.mock.calls.some(([u]) => String(u) === '/api/agent/tunnel-status')).toBe(false)
+    fireEvent.change(await screen.findByPlaceholderText('Enter shodan api key'), { target: { value: 'new-shodan-key' } })
+    fireEvent.click(await screen.findByRole('button', { name: 'Save Settings' }))
+    await waitFor(() => expect(putBodies()).toHaveLength(1))
+    for (const f of ['tunnelsEnabled', 'ngrokAuthtoken', 'chiselServerUrl', 'chiselAuth']) expect(putBodies()[0]).not.toHaveProperty(f)
+  })
+
+  test('an admin who may manage tunnels, acting as someone, still gets no control (the hint wins)', async () => {
+    routes[`GET ${BASE}/settings`] = { status: 200, body: perPerson(true, { tunnelActingAs: true }) }
+    renderPage()
+    expect(await screen.findByText('Their tunnel setting')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Enable tunnels')).toBeNull()
   })
 
   test.each([['without', false], ['with', true]])(

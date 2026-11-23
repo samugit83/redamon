@@ -34,7 +34,7 @@ afterEach(() => { cleanup() })
 function panel(sessions: unknown[], over: Record<string, unknown> = {}) {
   return (
     <ActiveSessions
-      sessions={sessions as never} jobs={[]} nonMsfSessions={[]} agentBusy={false} isLoading={false} projectId="p"
+      sessions={sessions as never} jobs={[]} nonMsfSessions={[]} busyInstances={[]} isLoading={false} projectId="p"
       onInteract={(over.onInteract ?? vi.fn(async () => ({ busy: false, output: '' }))) as never}
       onKillSession={(over.onKillSession ?? vi.fn(async () => {})) as never} onKillJob={vi.fn() as never}
       unavailable={(over.unavailable as number | undefined) ?? 0} error={(over.error as string | null | undefined) ?? null}

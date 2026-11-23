@@ -88,6 +88,8 @@ interface GraphToolbarProps {
   // Emergency Pause All
   onEmergencyPauseAll?: () => void
   isAnyPipelineRunning?: boolean
+  /** The viewer's own Kali sandbox runs, or a session or handler of theirs is listed: enables PAUSE ALL with no scan or chat. */
+  isKaliActive?: boolean
   isEmergencyPausing?: boolean
   /** Whose agent runs a press stops, as the emergency-stop route answered; unknown until it does. */
   emergencyStopScope?: EmergencyStopScope
@@ -180,6 +182,7 @@ export function GraphToolbar({
   // Emergency Pause All
   onEmergencyPauseAll,
   isAnyPipelineRunning = false,
+  isKaliActive = false,
   isEmergencyPausing = false,
   emergencyStopScope,
   tunnelStatus,
@@ -296,7 +299,7 @@ export function GraphToolbar({
       <button
         className={`${styles.emergencyPauseButton} ${isEmergencyPausing ? styles.emergencyPauseButtonActive : ''}`}
         onClick={onEmergencyPauseAll}
-        disabled={!isAnyPipelineRunning && !isEmergencyPausing}
+        disabled={!isAnyPipelineRunning && !isKaliActive && !isEmergencyPausing}
         title={emergencyPauseTitle(emergencyStopScope)}
       >
         {isEmergencyPausing ? (

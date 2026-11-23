@@ -80,18 +80,23 @@ interface TunnelHint {
   sharedSettingsAt?: 'instance'
   /** The tunnel is this row's own and runs in the person's own Kali sandbox. */
   tunnelScope?: 'own_sandbox'
+  /** The session acts as this row's person: the tunnel shown is theirs, not the viewer's. */
+  tunnelActingAs?: true
 }
 
 /**
  * Tells a browser whether to offer the tunnel controls. Only a hint: a failed read leaves
  * `canManageTunnels` out, the page then keeps the controls, and the PUT still decides. The tunnel
  * is every person's own (`tunnelScope`), whatever the identity switch; with that switch on
- * `sharedSettingsAt` sends the capture settings to /api/admin/instance-settings (step 2.4).
+ * `sharedSettingsAt` sends the capture settings to /api/admin/instance-settings (step 2.4). Under
+ * act-as the controls are never offered: the PUT refuses turning the member's tunnel on, and an
+ * off from this page would end the member's own shells while the viewer believes it is theirs.
  */
 async function tunnelControlsHint(): Promise<TunnelHint> {
   const scope: TunnelHint = { tunnelScope: 'own_sandbox', ...(rbacFlags().identity ? { sharedSettingsAt: 'instance' as const } : {}) }
   try {
-    return { canManageTunnels: (await tunnelAccess(false)).access.allowed, ...scope }
+    const { access, actingAs } = await tunnelAccess(false, { actAs: true })
+    return { canManageTunnels: access.allowed && !actingAs, ...(actingAs ? { tunnelActingAs: true as const } : {}), ...scope }
   } catch (err) {
     console.warn(`[rbac] tunnel access hint unavailable code=${safeErrorCode(err)}`)
     return scope
