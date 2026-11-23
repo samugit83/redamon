@@ -268,6 +268,8 @@ TS_REQUIRED = (
     "PARTIAL_ANSWER_ONE", "PARTIAL_ANSWER_MANY", "SHARE_KEYS_LENT_TEXT",
     "HOLD_WARN_BEFORE_S", "HOLD_MAX_NO_USE_S", "START_TIMEOUT_S",
     "ORCHESTRATOR_ENSURE_TIMEOUT_S", "ENSURE_RUNNING_KEYS", "ENSURE_STARTING_KEYS",
+    "REVERSE_PORT_ASSIGNED", "REVERSE_PORT_NO_POOL", "REVERSE_PORT_POOL_FULL", "REVERSE_PORT_STATES",
+    "ENSURE_RUNNING_OPTIONAL_KEYS", "STATUS_OPTIONAL_KEYS", "LIST_OPTIONAL_KEYS",
 )
 
 
@@ -348,8 +350,37 @@ def test_ensure_answers_carry_fresh():
     with open(TS_PATH, encoding="utf-8") as f:
         text = f.read()
     assert _ts_interface_keys(text, "EnsureStarting") == list(c.ENSURE_STARTING_KEYS)
-    assert _ts_interface_keys(text, "EnsureRunning") == list(c.ENSURE_RUNNING_KEYS)
+    assert _ts_interface_keys(text, "EnsureRunning") == \
+        list(c.ENSURE_RUNNING_KEYS) + list(c.ENSURE_RUNNING_OPTIONAL_KEYS)
     assert re.search(r"^export interface EnsureStarting \{[^}]*^  fresh: boolean$", text, re.M)
+
+
+def _ts_optional_keys(text: str, name: str) -> list:
+    body = re.search(r"^export interface " + name + r" \{\n(.*?)^\}", _strip_ts_comments(text), re.M | re.S)
+    return re.findall(r"^\s*([A-Za-z_]\w*)\?:", body.group(1), re.M)
+
+
+def test_reverse_port_state_is_optional_everywhere():
+    """D-B: every answer carries reverse_port_state (the list also reverse_port), but a
+    reader of an older orchestrator's answer finds neither: none is a required key, each
+    is optional in its TypeScript type, and an unknown or missing value reads as None."""
+    assert c.REVERSE_PORT_STATES == ("assigned", "no_pool", "pool_full")
+    assert c.ENSURE_RUNNING_OPTIONAL_KEYS == ("reverse_port_state",)
+    assert c.STATUS_OPTIONAL_KEYS == ("reverse_port_state",)
+    assert c.LIST_OPTIONAL_KEYS == ("reverse_port", "reverse_port_state")
+    assert not set(c.ENSURE_RUNNING_OPTIONAL_KEYS) & set(c.ENSURE_RUNNING_KEYS)
+    with open(TS_PATH, encoding="utf-8") as f:
+        text = f.read()
+    assert _ts_optional_keys(text, "EnsureRunning") == list(c.ENSURE_RUNNING_OPTIONAL_KEYS)
+    assert _ts_optional_keys(text, "SandboxInstanceStatus") == list(c.STATUS_OPTIONAL_KEYS)
+    assert _ts_optional_keys(text, "SandboxListEntry") == list(c.LIST_OPTIONAL_KEYS)
+    assert re.search(r"^export function reversePortState\(value: unknown\): ReversePortState \| null \{$",
+                     text, re.M)
+    for copy in (c, agent_copy):
+        for state in copy.REVERSE_PORT_STATES:
+            assert copy.reverse_port_state(state) == state
+        for unknown in (None, "", "full", "ASSIGNED", 1, ["assigned"], {"assigned": 1}):
+            assert copy.reverse_port_state(unknown) is None
 
 
 # --- the mount plan (T5, I9, D16) -----------------------------------------------------
@@ -389,8 +420,7 @@ def test_mount_plan_never_mounts_workspace_root_or_staging():
                 assert m.target.rstrip("/") == m.target
     mounts = c.mount_targets(ALICE, "own", [P_ALICE_1])
     kinds = {m.kind for m in mounts}
-    assert kinds == {"workspace", "output", "servers", "graph_db", "custom_templates",
-                     "volume:templates", "volume:osv"}
+    assert kinds == {"workspace", "output", "servers", "graph_db", "volume:templates", "volume:osv"}
     # Nothing else: no Docker socket, no secret, no other folder.
     targets = {m.target for m in mounts}
     assert targets == {f"/workspace/{P_ALICE_1}", "/opt/output", "/opt/mcp_servers",
@@ -399,7 +429,7 @@ def test_mount_plan_never_mounts_workspace_root_or_staging():
     assert not any("docker.sock" in m.target or "docker.sock" in m.rel for m in mounts)
     read_only = {m.target for m in mounts if m.read_only}
     assert read_only == targets - {f"/workspace/{P_ALICE_1}", "/opt/output"}
-    # The empty custom templates folder is left out on request.
+    # The empty custom templates copy is left out on request.
     assert "/opt/nuclei-templates" not in {
         m.target for m in c.mount_targets(ALICE, "own", [], custom_templates=False)}
     # Every host-side kind has its orchestrator mount; volumes name their volume.
@@ -412,6 +442,34 @@ def test_mount_plan_never_mounts_workspace_root_or_staging():
     assert osv[0].rel == "custom-osv"
     tpl = [m for m in mounts if m.kind == "volume:templates"]
     assert tpl[0].rel == c.TEMPLATES_VOLUME == "redamon-kali-nuclei-templates"
+
+
+def test_custom_templates_are_the_views_own_copy():
+    """FU-6: no plan mounts the shared folder every member's templates sit in, only the
+    copy the orchestrator makes per person and view (of their templates and the
+    instance's), read-only, outside the `users/` folder the sandbox writes."""
+    for user in (ALICE, BOB):
+        for view in c.VIEWS:
+            mounts = c.mount_targets(user, view, [P_ALICE_1])
+            assert c.MOUNT_CUSTOM_TEMPLATES not in {m.kind for m in mounts}
+            (tpl,) = [m for m in mounts if m.target == "/opt/nuclei-templates"]
+            assert tpl.kind == c.MOUNT_OUTPUT and tpl.read_only
+            assert tpl.rel == c.custom_templates_rel(user, view) == f"templates/{c.sandbox_key(user, view)}"
+            assert not tpl.rel.startswith(c.OUTPUT_USERS_DIR + "/")
+    rels = {c.custom_templates_rel(u, v) for u in (ALICE, BOB, CAROL) for v in c.VIEWS}
+    assert len(rels) == 6
+
+
+def test_template_paths_keep_only_plain_template_files():
+    good = ["a.yaml", "sub/dir/b.YML", "x_y-z.1.yaml", "a.yaml"]
+    assert c.normalize_template_paths(good) == ["a.yaml", "sub/dir/b.YML", "x_y-z.1.yaml"]
+    bad = ["../etc/passwd.yaml", "/abs.yaml", ".hidden.yaml", "sub/.git/x.yaml", "a/../b.yaml",
+           "a//b.yaml", "a.txt", "a.yaml/", "a b.yaml", "a\\b.yaml", "a.yaml\n", "", ".", "..",
+           "/".join(["d"] * 8) + "/x.yaml", None, 3, b"a.yaml"]
+    assert c.normalize_template_paths(bad) == []
+    for value in (None, "a.yaml", b"a.yaml", 7):
+        assert c.normalize_template_paths(value) == []
+    assert agent_copy.normalize_template_paths(good) == c.normalize_template_paths(good)
 
 
 BAD_PROJECT_IDS = [
@@ -445,7 +503,7 @@ def test_mount_plan_refuses_bad_volume_names():
 
 def test_output_folder_is_per_person():
     def output(user, view="own"):
-        (m,) = [m for m in c.mount_targets(user, view, []) if m.kind == c.MOUNT_OUTPUT]
+        (m,) = [m for m in c.mount_targets(user, view, []) if m.target == c.OUTPUT_TARGET]
         assert m.target == "/opt/output" and not m.read_only
         return m.rel
 
@@ -714,7 +772,11 @@ def test_env_parsers_defaults():
                 "40000 - 40001"):
         assert c.port_pool(raw) is None, raw
     assert c.ENV_VARS == ("KALI_SANDBOX_IDLE_MINUTES", "KALI_SANDBOX_MAX_CONCURRENT",
-                          "KALI_SANDBOX_PORT_POOL")
+                          "KALI_SANDBOX_PORT_POOL", "KALI_SANDBOX_PORT_HOLD_HOURS")
+    for raw in ("", "x", "-1", None, "1.5", " ", "²", "9" * 20):
+        assert c.port_hold_hours(raw) == 24, raw
+    assert c.port_hold_hours("0") == 0
+    assert c.port_hold_hours(" 48 ") == 48
 
 
 def test_the_pool_never_hands_out_the_default_reverse_port():
@@ -775,8 +837,8 @@ def test_the_switch_is_gone_from_every_copy():
     assert "EnsureShared" not in text
     for interface in ("EnsureRunning", "EnsureStarting"):
         assert "mode" not in _ts_interface_keys(text, interface)
-    # The sandbox still tells the servers inside it they run for one person
-    # (mcp/servers/tunnel_manager.py and metasploit_server.py read it).
+    # Still in the fixed environment every adopted sandbox carries; no server
+    # branches on it any more (FU-8).
     assert c.CONTAINER_ENV_FIXED["REDAMON_SANDBOX_MODE"] == "per_user"
 
 

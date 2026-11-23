@@ -554,6 +554,9 @@ class SandboxEnsureRequest(BaseModel):
     need_project: Optional[str] = None
     wait: bool = True
     touch: bool = False
+    # The custom nuclei templates the person may use (the webapp alone knows their
+    # owners); None from a webapp that sends none, which mounts none.
+    custom_templates: Optional[list[str]] = None
 
 
 class SandboxLeaseRequest(BaseModel):

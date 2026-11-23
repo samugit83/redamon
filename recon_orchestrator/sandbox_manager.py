@@ -13,6 +13,10 @@ instance nobody leases once it has been unused for the idle minutes, one held
 only by live sessions or a tunnel (a ``hold`` lease, which is not use) after
 eight hours without use, and a replaced (draining) one once its leases end.
 
+A stopped or replaced instance's pool port is held for its person and view
+(``sc.PORT_HOLD_HOURS_ENV``): nobody else gets it, the same person gets it back,
+and the holds outlive a restart in a file of the output folder.
+
 Concurrency: one asyncio lock per person guards every decision for both of
 that person's views, a lease and the idle loop's stop included, and one global
 lock guards subnet and port allocation and the retry of network removals.
@@ -34,6 +38,7 @@ import os
 import re
 import shutil
 import stat
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -128,6 +133,19 @@ NEUTRAL_HOST_KEYS = (
 HEALTH_POLL_S = 1
 # A pool port the host already uses fails the start; it is skipped this long.
 BUSY_PORT_HOLD_S = 600
+# The pool ports held for their person and view (sc.PORT_HOLD_HOURS_ENV), as
+# {"holds": [{"port", "key", "since"}]}: the sandbox key, never a user id. In the
+# output folder, which survives an orchestrator restart, which git ignores, and
+# which only the orchestrator mounts whole (a sandbox mounts its `users/<key>`).
+PORT_HOLDS_FILE = ".sandbox-port-holds.json"
+# The same content, written after it: read when the file itself is damaged.
+PORT_HOLDS_COPY = ".sandbox-port-holds.json.prev"
+PORT_HOLDS_MAX_BYTES = 1 << 20
+_SANDBOX_KEY = re.compile(r"[0-9a-f]{16}")
+# The copy of one view's custom nuclei templates: the webapp caps one upload at 1 MiB.
+CUSTOM_TEMPLATE_MAX_BYTES = 1 << 20
+CUSTOM_TEMPLATES_MAX_FILES = 2000
+CUSTOM_TEMPLATES_MAX_TOTAL_BYTES = 64 << 20
 INSTANCE_DRAWS = 32
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")
 _PORT_BUSY_MARKERS = ("port is already allocated", "address already in use")
@@ -143,6 +161,10 @@ _LIVE_STATES = ("starting", "running", "draining", "stopping")
 _LEASE_ID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 ERR_INVALID_LEASE = "invalid_sandbox_request"
 DRAIN_REASON = "replaced"
+# Why an adopted sandbox without a pool port drains: a pool is configured now and has
+# a port for its person and view. With none to give, its replacement would get no port
+# either, and would turn the person's tunnel off.
+PORTLESS_DRAIN = "a pool port is free now"
 
 # A restart loses every lease. An adopted instance therefore takes lease ids it
 # does not know, and is never stopped for holding none, for one lease lifetime,
@@ -264,6 +286,8 @@ class Instance:
     tunnel_token: str = field(default="", repr=False)
     reverse_port: int = sc.DEFAULT_REVERSE_PORT
     pool_port: Optional[int] = None
+    # None (unknown) until its port is allocated.
+    reverse_port_state: Optional[str] = None
     container_id: Optional[str] = None
     # {lease_id: (kind, expires_at)}
     leases: dict = field(default_factory=dict)
@@ -363,6 +387,13 @@ class SandboxManager:
         self._seq = 0
         self._tunnel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._tunnel_pending: set = set()
+        # {pool port: (sandbox key, when its instance stopped)}; written in a
+        # thread, the newest snapshot last (_save_port_holds_sync).
+        self._port_holds: Dict[int, tuple] = {}
+        self._holds_version = 0
+        self._holds_written = 0
+        self._holds_lock = threading.Lock()
+        self._load_port_holds_sync()
 
     # --- Small helpers --------------------------------------------------------
 
@@ -505,9 +536,12 @@ class SandboxManager:
 
     async def ensure(self, user_id, projects, view: str = sc.VIEW_OWN,
                      need_project: Optional[str] = None, wait: bool = True,
-                     touch: bool = False) -> dict:
+                     touch: bool = False, custom_templates=None) -> dict:
         """B.7: the person's running sandbox for ``view``, started when needed.
-        ``touch`` starts in the background and swallows errors and refusals."""
+        ``touch`` starts in the background and swallows errors and refusals.
+        ``custom_templates`` lists the custom nuclei templates the person may use
+        (theirs and the instance's, which only the webapp knows); a start copies
+        exactly those. None (a webapp that sends no list) copies none."""
         try:
             sc.check_user_id(user_id)
             sc.check_view(view)
@@ -518,6 +552,7 @@ class SandboxManager:
                     raise ValueError(sc.ERR_INVALID_PROJECT_ID)
         except ValueError as e:
             raise SandboxInvalid(str(e)) from None
+        templates = None if custom_templates is None else tuple(sc.normalize_template_paths(custom_templates))
         if touch:
             wait = False
         # Registered before the first await, so a stop called in the same loop pass
@@ -526,7 +561,7 @@ class SandboxManager:
         self._pending.setdefault(user_id, set()).add(pending)
         try:
             inst, fresh = await self._shielded(
-                self._ensure_locked(user_id, view, tuple(projects), need_project, pending))
+                self._ensure_locked(user_id, view, tuple(projects), need_project, pending, templates))
             if inst.state == "starting":
                 if not wait:
                     return {"state": "starting", "instance": inst.instance, "fresh": fresh}
@@ -544,7 +579,8 @@ class SandboxManager:
         return {"user_id": inst.user_id, "view": inst.view,
                 "instance": inst.instance, "host": inst.host, "token": inst.token,
                 "tunnel_token": inst.tunnel_token, "ports": dict(sc.PORTS),
-                "reverse_port": inst.reverse_port, "projects": list(inst.projects),
+                "reverse_port": inst.reverse_port, "reverse_port_state": inst.reverse_port_state,
+                "projects": list(inst.projects),
                 "state": "running", "fresh": fresh, "stop_at": self._stop_at(inst, now),
                 "stop_reason": None, "warn": self._warn(inst, now)}
 
@@ -559,7 +595,8 @@ class SandboxManager:
             raise SandboxStartError(sc.ERR_START_FAILED, "the sandbox stopped while starting")
 
     async def _ensure_locked(self, user_id: str, view: str, projects: tuple,
-                             need_project: Optional[str], pending: _Pending):
+                             need_project: Optional[str], pending: _Pending,
+                             templates: Optional[tuple] = None):
         try:
             async with self._user_lock(user_id):
                 allowed = set(projects)
@@ -580,7 +617,7 @@ class SandboxManager:
                                             "the sandbox was stopped while this start waited; ask again")
                 # A replacement is admitted and made under its own key first: a
                 # refusal or a failed start leaves the current instance current.
-                new = await self._start_locked(user_id, view, projects)
+                new = await self._start_locked(user_id, view, projects, templates)
                 if replace and cur.state in ("starting", "running"):
                     self._mark_draining(cur, "a project it lacks is needed")
                 await self._stop_older_draining(user_id, view)
@@ -608,7 +645,8 @@ class SandboxManager:
     def _missing_compose_mounts(self) -> list:
         return [line for kind, line in COMPOSE_MOUNTS.items() if not self.host_bases.get(kind)]
 
-    async def _start_locked(self, user_id: str, view: str, projects: tuple) -> Instance:
+    async def _start_locked(self, user_id: str, view: str, projects: tuple,
+                            templates: Optional[tuple] = None) -> Instance:
         missing = self._missing_compose_mounts()
         if missing:
             self._warn_once("missing-mounts:" + ",".join(missing),
@@ -643,7 +681,7 @@ class SandboxManager:
                         f"{result.limit_type} - {result.detail}")
             raise SandboxRefused(result)
         try:
-            await self._create_locked(inst)
+            await self._create_locked(inst, templates)
         except SandboxError as e:
             await self._abort_start(inst, e)
             raise
@@ -656,17 +694,21 @@ class SandboxManager:
         self._spawn(self._finish_start(inst))
         return inst
 
-    async def _create_locked(self, inst: Instance) -> None:
+    async def _create_locked(self, inst: Instance, templates: Optional[tuple] = None) -> None:
         image = await asyncio.to_thread(self._image_sync)
         if image is None:
             logger.error(f"[sandbox] cannot start key={inst.key}: {IMAGE_MISSING_DETAIL}")
             raise SandboxStartError(sc.ERR_IMAGE_MISSING, IMAGE_MISSING_DETAIL)
-        await asyncio.to_thread(sandbox_templates.ensure_templates_ready, self.client, self.owner)
+        # Before the templates wait (minutes on a first start), so the status of a
+        # starting instance says which port it will have.
         async with self._alloc_lock:
             await asyncio.to_thread(self._network_sync, inst.user_id, inst.view)
-            inst.pool_port = await self._allocate_port()
+            inst.pool_port, inst.reverse_port_state = await self._allocate_port(inst)
+            inst.reverse_port = inst.pool_port or sc.DEFAULT_REVERSE_PORT
+        await asyncio.to_thread(sandbox_templates.ensure_templates_ready, self.client, self.owner)
         await self._ensure_guests(inst.network, strict=True)
-        custom = await asyncio.to_thread(self._custom_templates_sync)
+        custom = await asyncio.to_thread(self._copy_custom_templates_sync, inst.user_id,
+                                         inst.view, templates)
         identities = await asyncio.to_thread(self._prepare_folders_sync, inst.user_id,
                                              inst.view, inst.projects, custom)
         servers = await asyncio.to_thread(self._servers_hash_sync)
@@ -689,7 +731,10 @@ class SandboxManager:
                 self._busy_ports[inst.pool_port] = self.clock() + BUSY_PORT_HOLD_S
                 logger.info(f"[sandbox] pool port {inst.pool_port} is in use on the host; trying another")
                 async with self._alloc_lock:
-                    inst.pool_port = await self._allocate_port()
+                    inst.pool_port, inst.reverse_port_state = await self._allocate_port(inst)
+        # Only now that its container publishes the port is the person's hold on it
+        # spent: a start that failed before (a busy host port, a crash) keeps it.
+        self._release_hold(inst)
         # Docker resolves a bind source when it starts the container, and follows a
         # link: a folder swapped for a link and back around the start passes any
         # check made from outside. So what was mounted is read from inside, before
@@ -740,6 +785,14 @@ class SandboxManager:
             mounts.append(docker.types.Mount(m.target, join_host_path(base, *m.rel_parts()),
                                              type="bind", read_only=m.read_only))
         return mounts
+
+    def _shared_templates_mount(self) -> Optional[tuple]:
+        """The mount of the shared folder of every member's custom templates, as an
+        older release gave every sandbox (normalized like _norm_mount), or None."""
+        host = self.host_bases.get(sc.MOUNT_CUSTOM_TEMPLATES)
+        if not host:
+            return None
+        return "bind", join_host_path(host), sc.CUSTOM_TEMPLATES_TARGET, True
 
     async def _finish_start(self, inst: Instance) -> None:
         try:
@@ -799,6 +852,7 @@ class SandboxManager:
             return False
         await self.ledger.release(inst.reservation_key)
         self._unregister(inst)
+        self._hold_port(inst)
         if not self._view_instances(inst.user_id, inst.view):
             await asyncio.to_thread(self._remove_network_sync, inst.network)
         self._log("stopped", inst, reason)
@@ -923,14 +977,17 @@ class SandboxManager:
                         "lease_kinds": sorted(self._live_kinds(inst, now)),
                         "stop_at": self._stop_at(inst, now),
                         "stop_reason": self._shown_stop_reason(inst),
-                        "warn": self._warn(inst, now), "reverse_port": inst.reverse_port})
+                        "warn": self._warn(inst, now), "reverse_port": inst.reverse_port,
+                        "reverse_port_state": inst.reverse_port_state})
         return {"instances": out}
 
     def list_running(self) -> list:
         """Running and draining instances with their address and token, for the
-        agent (its session fan-out reaches a draining instance's sessions too)."""
+        agent (its session fan-out reaches a draining instance's sessions too, and
+        its prompt reads a person's reverse port here without starting anything)."""
         return [{"user_id": i.user_id, "view": i.view, "instance": i.instance, "host": i.host,
-                 "token": i.token, "state": i.state}
+                 "token": i.token, "state": i.state, "reverse_port": i.reverse_port,
+                 "reverse_port_state": i.reverse_port_state}
                 for i in self.instances() if i.state in ("running", "draining")]
 
     # --- Leases (B.8) ---------------------------------------------------------
@@ -1596,58 +1653,276 @@ class SandboxManager:
             self._warn_once(f"pool:{raw}", f"[sandbox] {sc.PORT_POOL_ENV} is malformed; no pool port is published")
         return pool
 
-    async def _allocate_port(self) -> Optional[int]:
-        """The lowest free pool port, under the allocation lock. A port the sandbox
-        serves itself (4040's unauthenticated ngrok API above all) is never one."""
+    async def _allocate_port(self, inst: Instance) -> tuple:
+        """(port, reverse_port_state) for ``inst``, under the allocation lock: the
+        port held for its person and view when one is free (the one they used last),
+        else the lowest pool port nobody uses and nobody else holds. A port held for
+        another person is never given out: with only those left the instance starts
+        without one (``pool_full``). A port the sandbox serves itself (4040's
+        unauthenticated ngrok API above all) is never one."""
+        pool = self._pool()
+        if pool is None:
+            return None, sc.REVERSE_PORT_NO_POOL
+        now = self.clock()
+        usable = self._usable_ports(pool, now, await asyncio.to_thread(self._labelled_ports_sync))
+        holds = self._live_holds(now)
+        own = [p for p in usable if holds.get(p) == inst.key]
+        if own:
+            port = max(own, key=lambda p: (self._port_holds[p][1], -p))
+        else:
+            free = [p for p in usable if p not in holds]
+            if not free:
+                held = sum(1 for p in usable if p in holds)
+                logger.warning(f"[sandbox] the port pool is full for key={inst.key} view={inst.view} "
+                               f"instance={inst.instance}: {len(pool.ports()) - len(usable)} in use, "
+                               f"{held} held for other persons; it starts without a reverse-shell port")
+                return None, sc.REVERSE_PORT_POOL_FULL
+            port = free[0]
+        return port, sc.REVERSE_PORT_ASSIGNED
+
+    def _usable_ports(self, pool, now: float, labelled: set) -> list:
+        """The pool ports no instance uses, no sandbox container is labelled with, the
+        host does not hold busy and the sandbox does not serve itself; a hold decides
+        who of them may get one."""
+        taken = {i.pool_port for i in self.instances() if i.pool_port}
+        taken |= {p for p, until in self._busy_ports.items() if until > now}
+        taken |= set(sc.PORTS.values()) | set(sc.HEALTH_PROBE_PORTS)
+        taken |= labelled
+        return [p for p in pool.ports() if p not in taken]
+
+    def _port_for(self, key: str, labelled: set, promised: set) -> Optional[int]:
+        """A pool port a start of this person and view would get now, past those
+        ``promised`` to others already, or None."""
         pool = self._pool()
         if pool is None:
             return None
         now = self.clock()
-        taken = {i.pool_port for i in self.instances() if i.pool_port}
-        taken |= {p for p, until in self._busy_ports.items() if until > now}
-        taken |= set(sc.PORTS.values()) | set(sc.HEALTH_PROBE_PORTS)
-        taken |= await asyncio.to_thread(self._labelled_ports_sync)
-        for port in pool.ports():
-            if port not in taken:
-                return port
-        self._warn_once("pool-full", "[sandbox] the port pool has no free port; a sandbox starts without one")
-        return None
+        holds = self._live_holds(now)
+        ports = [p for p in self._usable_ports(pool, now, labelled)
+                 if p not in promised and holds.get(p, key) == key]
+        return ports[0] if ports else None
+
+    # --- Pool port holds (D-A) ------------------------------------------------
+
+    def _hold_s(self) -> int:
+        return sc.port_hold_hours(os.environ.get(sc.PORT_HOLD_HOURS_ENV)) * 3600
+
+    def _live_holds(self, now: float) -> dict:
+        """{port: sandbox key} of the holds not yet over (the hold time is read now,
+        so a changed KALI_SANDBOX_PORT_HOLD_HOURS applies to every hold)."""
+        hold_s = self._hold_s()
+        return {port: key for port, (key, since) in self._port_holds.items() if now < since + hold_s}
+
+    def _release_hold(self, inst: Instance) -> None:
+        held = self._port_holds.get(inst.pool_port) if inst.pool_port is not None else None
+        if held is not None and held[0] == inst.key:
+            del self._port_holds[inst.pool_port]
+            self._holds_changed()
+
+    def _hold_port(self, inst: Instance) -> None:
+        """A stopped instance's pool port goes to nobody else for the hold time."""
+        if inst.pool_port is None or self._hold_s() <= 0:
+            return
+        self._port_holds[inst.pool_port] = (inst.key, self.clock())
+        logger.info(f"[sandbox] pool port {inst.pool_port} held for key={inst.key} view={inst.view} "
+                    f"for {self._hold_s() // 3600} h")
+        self._holds_changed()
+
+    def _hold_removed_port(self, container) -> bool:
+        """At adoption, a sandbox removed as not adoptable (an exited one after a host
+        restart, above all) held its pool port as much as one stopped here. Its
+        labels name the port and person; a container made through the broker can
+        carry any label, so it holds nothing."""
+        labels = container.labels or {}
+        user_id, view, raw = labels.get(sc.LABEL_USER), labels.get(sc.LABEL_VIEW), labels.get(sc.LABEL_PORT) or ""
+        if labels.get(BROKER_OWNED_LABEL) or not sc.valid_user_id(user_id) or view not in sc.VIEWS \
+                or not re.fullmatch(r"[0-9]{1,5}", raw) or not 1 <= int(raw) <= 65535 or self._hold_s() <= 0:
+            return False
+        self._port_holds[int(raw)] = (sc.sandbox_key(user_id, view), self.clock())
+        return True
+
+    def _holds_changed(self) -> None:
+        """Drop the holds that are over and save the rest, in a thread."""
+        now, hold_s = self.clock(), self._hold_s()
+        for port, (_, since) in list(self._port_holds.items()):
+            if now >= since + hold_s:
+                del self._port_holds[port]
+        self._holds_version += 1
+        self._spawn(asyncio.to_thread(self._save_port_holds_sync, self._holds_version,
+                                      dict(self._port_holds)))
+
+    def _holds_folder(self) -> Optional[str]:
+        """The output folder as the orchestrator sees it, when compose mounts it (its
+        host path is known): without the mount /app/mcp-output is a folder of the
+        source tree, which git does not ignore, and the holds stay in memory."""
+        if not self.host_bases.get(sc.MOUNT_OUTPUT):
+            return None
+        return self.local_bases.get(sc.MOUNT_OUTPUT) or None
+
+    def _save_port_holds_sync(self, version: int, holds: dict) -> None:
+        """Write one snapshot, unless a newer one was written already (the threads
+        may run out of order): the file, then its copy, each synced and renamed into
+        place, then the folder synced. Never follows a link; never raises."""
+        folder = self._holds_folder()
+        if folder is None:
+            return
+        with self._holds_lock:
+            if version <= self._holds_written:
+                return
+            body = json.dumps({"holds": [{"port": port, "key": key, "since": since}
+                                         for port, (key, since) in sorted(holds.items())]}).encode()
+            try:
+                dir_fd = self._open_folder(folder, (), create=False)
+            except _UnsafeFolder:
+                self._warn_once("holds-write", "[sandbox] the output folder cannot be opened; the pool port "
+                                               "holds last until the orchestrator restarts")
+                return
+            try:
+                for name in (PORT_HOLDS_FILE, PORT_HOLDS_COPY):
+                    self._write_synced(dir_fd, name, body)
+                os.fsync(dir_fd)
+                self._holds_written = version
+            except OSError as e:
+                self._warn_once("holds-write", f"[sandbox] the pool port holds cannot be saved in the output "
+                                               f"folder ({type(e).__name__}); they last until a restart")
+            finally:
+                os.close(dir_fd)
+
+    @staticmethod
+    def _write_synced(dir_fd: int, name: str, body: bytes) -> None:
+        # Whatever sits at the temporary name (a planted FIFO or link) is removed,
+        # and the new file is created exclusively, so nothing there is opened.
+        tmp = name + ".tmp"
+        try:
+            os.unlink(tmp, dir_fd=dir_fd)
+        except FileNotFoundError:
+            pass
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600,
+                     dir_fd=dir_fd)
+        try:
+            view = memoryview(body)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+
+    @staticmethod
+    def _read_holds(dir_fd: int, name: str):
+        """The entries of one holds file, None when it does not exist; ValueError
+        when it is there but unreadable (a link, not a file, too large, not JSON)."""
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+        except FileNotFoundError:
+            return None
+        except OSError as e:
+            raise ValueError(type(e).__name__) from None
+        try:
+            with os.fdopen(fd, "rb") as f:
+                if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                    raise ValueError("not a file")
+                raw = f.read(PORT_HOLDS_MAX_BYTES + 1)
+        except OSError as e:
+            raise ValueError(type(e).__name__) from None
+        if len(raw) > PORT_HOLDS_MAX_BYTES:
+            raise ValueError("too large")
+        try:
+            entries = json.loads(raw)["holds"]
+        except (ValueError, KeyError, TypeError) as e:
+            raise ValueError(type(e).__name__) from None
+        if not isinstance(entries, list):
+            raise ValueError("not a list")
+        return entries
+
+    def _load_port_holds_sync(self) -> None:
+        """The holds saved before a restart: the file, else its copy. Only when both
+        are unreadable does the orchestrator run with no hold, and it says so loudly;
+        the start never fails on it. A hold dated in the future counts from now."""
+        folder = self._holds_folder()
+        if folder is None:
+            self._warn_once("holds-memory", "[sandbox] the output folder is not mounted: the pool port holds "
+                                            "last until the orchestrator restarts")
+            return
+        try:
+            dir_fd = self._open_folder(folder, (), create=False)
+        except _UnsafeFolder:
+            return
+        damaged = []
+        entries = None
+        try:
+            for name in (PORT_HOLDS_FILE, PORT_HOLDS_COPY):
+                try:
+                    entries = self._read_holds(dir_fd, name)
+                except ValueError as e:
+                    damaged.append(f"{name} ({e})")
+                    continue
+                if entries is not None:
+                    break
+        finally:
+            os.close(dir_fd)
+        if entries is None:
+            if damaged:
+                logger.error(f"[sandbox] the pool port holds are unreadable ({', '.join(damaged)}): none is "
+                             f"kept, so a port whose sandbox stopped in the last {self._hold_s() // 3600} h "
+                             f"can go to another person")
+            return
+        if damaged:
+            logger.warning(f"[sandbox] the pool port holds file is unreadable ({damaged[0]}); its last good "
+                           f"copy is used")
+        now = self.clock()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            port, key, since = entry.get("port"), entry.get("key"), entry.get("since")
+            if (isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535
+                    and isinstance(key, str) and _SANDBOX_KEY.fullmatch(key)
+                    and isinstance(since, (int, float)) and not isinstance(since, bool)
+                    and since == since):
+                self._port_holds[port] = (key, min(float(since), now))
 
     def _labelled_ports_sync(self) -> set:
+        """The ports sandbox-labelled containers name, whoever made them. A label that
+        is not a port (a broker-made container may carry any) is skipped: it must
+        never fail every pool start."""
         ports = set()
         for c in self.client.containers.list(all=True, ignore_removed=True,
                                              filters={"label": f"{sc.LABEL_SANDBOX}={sc.LABEL_TRUE}"}):
             raw = (c.labels or {}).get(sc.LABEL_PORT) or ""
-            if raw.isdigit():
+            if isinstance(raw, str) and re.fullmatch(r"[0-9]{1,5}", raw):
                 ports.add(int(raw))
         return ports
 
     # --- Folders --------------------------------------------------------------
 
     def _bind_chains(self, user_id: str, view: str, projects, custom: bool) -> list:
-        """(target inside the sandbox, local base, components) of every bind."""
-        chains = [(f"{sc.WORKSPACE_ROOT}/{p}", self.local_bases[sc.MOUNT_WORKSPACE], (p,)) for p in projects]
-        chains.append((sc.OUTPUT_TARGET, self.local_bases[sc.MOUNT_OUTPUT],
-                       tuple(sc.output_rel(user_id, view).split("/"))))
-        kinds = [(sc.SERVERS_TARGET, sc.MOUNT_SERVERS), (sc.GRAPH_DB_TARGET, sc.MOUNT_GRAPH_DB)]
+        """(target inside the sandbox, local base, components, make it when
+        missing) of every bind. The custom templates copy is made by the copy."""
+        output = self.local_bases[sc.MOUNT_OUTPUT]
+        chains = [(f"{sc.WORKSPACE_ROOT}/{p}", self.local_bases[sc.MOUNT_WORKSPACE], (p,), True)
+                  for p in projects]
+        chains.append((sc.OUTPUT_TARGET, output, tuple(sc.output_rel(user_id, view).split("/")), True))
+        chains += [(target, self.local_bases[kind], (), False) for target, kind in
+                   ((sc.SERVERS_TARGET, sc.MOUNT_SERVERS), (sc.GRAPH_DB_TARGET, sc.MOUNT_GRAPH_DB))]
         if custom:
-            kinds.append((sc.CUSTOM_TEMPLATES_TARGET, sc.MOUNT_CUSTOM_TEMPLATES))
-        chains += [(target, self.local_bases[kind], ()) for target, kind in kinds]
+            chains.append((sc.CUSTOM_TEMPLATES_TARGET, output,
+                           tuple(sc.custom_templates_rel(user_id, view).split("/")), False))
         return chains
 
     @staticmethod
-    def _walk(base: str, parts, create: bool) -> tuple:
-        """Open ``base/parts...`` one component at a time, never following a link,
-        making a missing component when ``create``: the last one 0777 (the agent
-        and the sandbox both write it), one above it 0755 (only the orchestrator
-        adds to ``users/``), set through the descriptor so the umask cannot narrow
-        them. Returns the final folder's (dev, inode). A link or a non-folder
-        anywhere raises ``_UnsafeFolder``."""
+    def _open_folder(base, parts, create: bool, leaf_mode: int = 0o777) -> int:
+        """A descriptor of ``base/parts...`` (``base`` a path, or a folder
+        descriptor), opened one component at a time, never following a link,
+        making a missing component when ``create``: the last one ``leaf_mode``
+        (0777 by default: the agent and the sandbox both write it), one above it
+        0755 (only the orchestrator adds to ``users/``), set through the descriptor
+        so the umask cannot narrow them. A link or a non-folder anywhere raises
+        ``_UnsafeFolder``."""
         flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
         try:
-            fd = os.open(base, flags)
+            fd = os.dup(base) if isinstance(base, int) else os.open(base, flags)
         except OSError as e:
-            raise _UnsafeFolder(base) from e
+            raise _UnsafeFolder(str(base)) from e
         try:
             for index, name in enumerate(parts):
                 made = False
@@ -1664,10 +1939,20 @@ class SandboxManager:
                 os.close(fd)
                 fd = child
                 if made:
-                    os.fchmod(fd, 0o777 if index == len(parts) - 1 else 0o755)
-            st = os.fstat(fd)
-            if not stat.S_ISDIR(st.st_mode):
+                    os.fchmod(fd, leaf_mode if index == len(parts) - 1 else 0o755)
+            if not stat.S_ISDIR(os.fstat(fd).st_mode):
                 raise _UnsafeFolder(base)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+    @classmethod
+    def _walk(cls, base: str, parts, create: bool) -> tuple:
+        """``_open_folder``, returning the final folder's (dev, inode)."""
+        fd = cls._open_folder(base, parts, create)
+        try:
+            st = os.fstat(fd)
             return st.st_dev, st.st_ino
         finally:
             os.close(fd)
@@ -1677,9 +1962,9 @@ class SandboxManager:
         source that is (or passes through) a symlink, or is not a folder. A link
         planted where a folder belongs would have Docker mount its target."""
         out = {}
-        for target, base, parts in self._bind_chains(user_id, view, projects, custom):
+        for target, base, parts, create in self._bind_chains(user_id, view, projects, custom):
             try:
-                out[target] = self._walk(base, parts, create=bool(parts))
+                out[target] = self._walk(base, parts, create=create)
             except _UnsafeFolder:
                 logger.error(f"[sandbox] refusing to start key={sc.sandbox_key(user_id, view)}: a mount "
                              f"source is missing, a symlink or not a folder")
@@ -1705,14 +1990,100 @@ class SandboxManager:
                 return f"{target} is not the folder that was checked"
         return None
 
-    def _custom_templates_sync(self) -> bool:
-        local = self.local_bases.get(sc.MOUNT_CUSTOM_TEMPLATES)
-        if not local or not self.host_bases.get(sc.MOUNT_CUSTOM_TEMPLATES):
+    def _copy_custom_templates_sync(self, user_id: str, view: str, templates: Optional[tuple]) -> bool:
+        """The view's copy of the custom nuclei templates holds exactly ``templates``
+        (the files of the shared folder its person may use, as the webapp lists
+        them), so no sandbox sees another member's template. A file is read without
+        following a link anywhere on its path (the webapp writes the shared folder),
+        and only a regular file within the size caps is copied. True when the copy
+        holds one at least, so it is mounted."""
+        try:
+            dest = self._open_folder(self.local_bases[sc.MOUNT_OUTPUT],
+                                     tuple(sc.custom_templates_rel(user_id, view).split("/")),
+                                     create=True, leaf_mode=0o755)
+        except _UnsafeFolder:
+            # Something planted in the output folder must not stop every sandbox:
+            # this one starts without custom templates.
+            logger.error(f"[sandbox] key={sc.sandbox_key(user_id, view)} starts without custom templates: "
+                         f"{sc.custom_templates_rel(user_id, view)} in the output folder passes through a "
+                         f"symlink or is not a folder")
             return False
         try:
-            return any(True for _ in os.scandir(local))
+            self._empty_folder(dest)
+            if templates is None:
+                self._warn_once("no-template-list", "[sandbox] the webapp named no custom nuclei templates "
+                                                    "in its ensure; a sandbox starts without any")
+                return False
+            source = self.local_bases.get(sc.MOUNT_CUSTOM_TEMPLATES)
+            copied = total = 0
+            for rel in templates[:CUSTOM_TEMPLATES_MAX_FILES]:
+                data = self._read_template(source, rel) if source else None
+                if data is None:
+                    continue
+                if total + len(data) > CUSTOM_TEMPLATES_MAX_TOTAL_BYTES:
+                    self._warn_once("templates-cap", f"[sandbox] the custom templates of a sandbox pass "
+                                                     f"{CUSTOM_TEMPLATES_MAX_TOTAL_BYTES >> 20} MiB; the rest "
+                                                     f"are not copied")
+                    break
+                if self._write_template(dest, rel, data):
+                    copied += 1
+                    total += len(data)
+            return copied > 0
+        finally:
+            os.close(dest)
+
+    @staticmethod
+    def _empty_folder(fd: int) -> None:
+        for name in os.listdir(fd):
+            if stat.S_ISDIR(os.lstat(name, dir_fd=fd).st_mode):
+                shutil.rmtree(name, dir_fd=fd)
+            else:
+                os.unlink(name, dir_fd=fd)
+
+    @classmethod
+    def _read_template(cls, base: str, rel: str) -> Optional[bytes]:
+        parts = rel.split("/")
+        try:
+            folder = cls._open_folder(base, tuple(parts[:-1]), create=False)
+        except _UnsafeFolder:
+            return None
+        try:
+            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder)
         except OSError:
+            return None
+        finally:
+            os.close(folder)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return None
+            data = b""
+            while len(data) <= CUSTOM_TEMPLATE_MAX_BYTES:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    return data
+                data += chunk
+            return None
+        finally:
+            os.close(fd)
+
+    @classmethod
+    def _write_template(cls, dest: int, rel: str, data: bytes) -> bool:
+        parts = rel.split("/")
+        try:
+            folder = cls._open_folder(dest, tuple(parts[:-1]), create=True, leaf_mode=0o755)
+        except _UnsafeFolder:
             return False
+        try:
+            fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644,
+                         dir_fd=folder)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            return True
+        except OSError:
+            # Two names a case-insensitive host folder sees as one, say.
+            return False
+        finally:
+            os.close(folder)
 
     def _servers_hash_sync(self, fresh: bool = False) -> str:
         now = self.clock()
@@ -1723,8 +2094,9 @@ class SandboxManager:
         return value
 
     def _delete_outputs_sync(self, user_id: str) -> None:
-        """Both views' ``users/<key>`` folders. A link planted there is unlinked,
-        never followed; a ``users`` that is itself a link is left alone."""
+        """Both views' ``users/<key>`` folders and custom templates copies. A link
+        planted there is unlinked, never followed; a ``users`` (or ``templates``)
+        that is itself a link is left alone."""
         flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
         try:
             base = os.open(self.local_bases[sc.MOUNT_OUTPUT], flags)
@@ -1732,28 +2104,30 @@ class SandboxManager:
             logger.warning("[sandbox] the output folder cannot be opened; no output deleted")
             return
         try:
-            try:
-                users = os.open(sc.OUTPUT_USERS_DIR, flags, dir_fd=base)
-            except FileNotFoundError:
-                return
-            except OSError:
-                logger.warning(f"[sandbox] {sc.OUTPUT_USERS_DIR}/ in the output folder is a symlink or "
-                               f"not a folder; no output deleted")
-                return
-            try:
-                for view in sc.VIEWS:
-                    name = sc.sandbox_key(user_id, view)
-                    try:
-                        st = os.lstat(name, dir_fd=users)
-                    except FileNotFoundError:
-                        continue
-                    if stat.S_ISDIR(st.st_mode):
-                        shutil.rmtree(name, dir_fd=users)
-                    else:
-                        os.unlink(name, dir_fd=users)
-                    logger.info(f"[sandbox] deleted the output folder of key={name} (account deleted)")
-            finally:
-                os.close(users)
+            for folder, what in ((sc.OUTPUT_USERS_DIR, "output folder"),
+                                 (sc.CUSTOM_TEMPLATES_COPY_DIR, "custom templates copy")):
+                try:
+                    parent = os.open(folder, flags, dir_fd=base)
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    logger.warning(f"[sandbox] {folder}/ in the output folder is a symlink or "
+                                   f"not a folder; nothing in it deleted")
+                    continue
+                try:
+                    for view in sc.VIEWS:
+                        name = sc.sandbox_key(user_id, view)
+                        try:
+                            st = os.lstat(name, dir_fd=parent)
+                        except FileNotFoundError:
+                            continue
+                        if stat.S_ISDIR(st.st_mode):
+                            shutil.rmtree(name, dir_fd=parent)
+                        else:
+                            os.unlink(name, dir_fd=parent)
+                        logger.info(f"[sandbox] deleted the {what} of key={name} (account deleted)")
+                finally:
+                    os.close(parent)
         finally:
             os.close(base)
 
@@ -1763,17 +2137,19 @@ class SandboxManager:
         """B.7 at orchestrator start, over this stack's sandboxes only (its owner
         label: another RedAmon stack on the same daemon keeps its own). A running,
         healthy sandbox exactly as this orchestrator starts it is kept; one that
-        differs only by an older Kali image, a changed port pool, no init process or
-        the hostname every sandbox once shared (``sc.SELF_NAME``, no ExtraHosts) is
-        kept draining (it stops when unused, reason ``replaced``); every other one is
-        removed, and so is every network of this stack no kept instance uses. The
-        templates refresher is left to finish."""
+        differs only by an older Kali image, a changed port pool, no init process,
+        the hostname every sandbox once shared (``sc.SELF_NAME``, no ExtraHosts) or
+        the shared custom templates folder every sandbox once mounted is kept
+        draining (it stops when unused, reason ``replaced``); every other one is
+        removed, its pool port held for its person and view, and so is every
+        network of this stack no kept instance uses. The templates refresher is
+        left to finish."""
         current = await asyncio.to_thread(self._image_sync)
         daemon = await asyncio.to_thread(self._daemon_facts_sync)
         mine = [f"{sc.LABEL_SANDBOX}={sc.LABEL_TRUE}", f"{LABEL_OWNER}={self.owner}"]
         containers = await asyncio.to_thread(
             lambda: self.client.containers.list(all=True, ignore_removed=True, filters={"label": mine}))
-        candidates, removed = [], 0
+        candidates, removed, held = [], 0, False
         for c in containers:
             labels = c.labels or {}
             if labels.get(LABEL_OWNER) != self.owner:
@@ -1797,8 +2173,22 @@ class SandboxManager:
                 logger.warning(f"[sandbox] removing sandbox-labelled container {c.id[:12]}: {problem}")
                 if await asyncio.to_thread(self._force_remove_sync, c):
                     removed += 1
+                    held = self._hold_removed_port(c) or held
                 continue
             candidates.append((inst, c, drain))
+        if held:
+            self._holds_changed()
+        if any(drain == PORTLESS_DRAIN for _, _, drain in candidates):
+            labelled, promised, decided = await asyncio.to_thread(self._labelled_ports_sync), set(), []
+            for inst, c, drain in candidates:
+                if drain == PORTLESS_DRAIN:
+                    port = self._port_for(inst.key, labelled, promised)
+                    if port is None:
+                        drain = None
+                    else:
+                        promised.add(port)
+                decided.append((inst, c, drain))
+            candidates = decided
         # The created label holds whole seconds: a replacement started in the same
         # second as the instance it replaced is told apart by Docker's own time.
         candidates.sort(key=lambda t: (t[0].created, _docker_created_ns((t[1].attrs or {}).get("Created"))))
@@ -1873,7 +2263,8 @@ class SandboxManager:
     def _adoptable(self, c, current, own_image, daemon: Mapping) -> tuple:
         """(Instance, None, drain) when ``c`` is a sandbox exactly as this
         orchestrator starts it, ``drain`` naming why it must drain (an older
-        image, a changed port pool, no init process, the shared hostname) or None;
+        image, a changed port pool, no init process, the shared hostname, the
+        shared custom templates) or None;
         else (None, why, None). Labels
         alone prove nothing: a scan container can ask the broker for any label,
         but never without the broker's own. The host config is compared with what
@@ -1928,6 +2319,11 @@ class SandboxManager:
                          network=sc.network_name(user_id, view), created=0.0, last_used=0.0,
                          token=env[sc.ENV_MCP_AUTH_TOKEN], tunnel_token=env[sc.ENV_TUNNEL_AUTH_TOKEN],
                          pool_port=pool_port, reverse_port=pool_port or sc.DEFAULT_REVERSE_PORT,
+                         # Without a port while a pool is configured now it drains
+                         # (below), so its next start gets one.
+                         reverse_port_state=(sc.REVERSE_PORT_ASSIGNED if pool_port else
+                                             sc.REVERSE_PORT_POOL_FULL if self._pool() else
+                                             sc.REVERSE_PORT_NO_POOL),
                          container_id=c.id, image_id=attrs.get("Image"),
                          servers=labels.get(sc.LABEL_SERVERS) or None)
         try:
@@ -1941,9 +2337,16 @@ class SandboxManager:
             return refused("its plan cannot be rebuilt")
         expected = plans[0]
         got_mounts = [_norm_mount(m) for m in mounts]
-        if len(got_mounts) != len(set(got_mounts)) or \
-                set(got_mounts) not in [{_norm_mount(m) for m in plan["mounts"]} for plan in plans]:
+        planned = [{_norm_mount(m) for m in plan["mounts"]} for plan in plans]
+        if len(got_mounts) != len(set(got_mounts)):
             return refused("mounts differ from the plan")
+        if set(got_mounts) not in planned:
+            # Started when every sandbox mounted the shared folder of every member's
+            # templates: kept until unused, never current.
+            shared = self._shared_templates_mount()
+            if shared is None or set(got_mounts) != planned[1] | {shared}:
+                return refused("mounts differ from the plan")
+            drain = drain or "every member's custom templates"
         skip = {sc.LABEL_CREATED, sc.LABEL_SERVERS, sc.LABEL_PORT}
         if any(labels.get(k) != v for k, v in expected["labels"].items() if k not in skip):
             return refused("labels differ from the plan")
@@ -1989,6 +2392,9 @@ class SandboxManager:
         if pool_port is None:
             if bindings:
                 return refused("publishes a port")
+            if self._pool() is not None:
+                # adopt() keeps it current when the pool has no port for it now.
+                drain = drain or PORTLESS_DRAIN
         else:
             entries = bindings.get(f"{pool_port}/tcp") or []
             if set(bindings) != {f"{pool_port}/tcp"} or len(entries) != 1 or \

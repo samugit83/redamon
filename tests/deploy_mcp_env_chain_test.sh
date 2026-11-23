@@ -184,13 +184,15 @@ KNOBS='ACCESS_MODE=https-ip
 TLS_MODE=self-signed
 KALI_SANDBOX_PORT_POOL=4600-4609
 KALI_SANDBOX_MAX_CONCURRENT=3
-KALI_SANDBOX_IDLE_MINUTES=45'
+KALI_SANDBOX_IDLE_MINUTES=45
+KALI_SANDBOX_PORT_HOLD_HOURS=6'
 BLANKS='ACCESS_MODE=https-ip
 TLS_MODE=self-signed
 KALI_SANDBOX_PORT_POOL=
 KALI_SANDBOX_MAX_CONCURRENT=
-KALI_SANDBOX_IDLE_MINUTES='
-SERVER=$'AUTH_SECRET=keep-me\nKALI_SANDBOX_PORT_POOL=4500-4509\nKALI_SANDBOX_MAX_CONCURRENT=2\nKALI_SANDBOX_IDLE_MINUTES=10\nHOST_LAN_IP=10.0.0.5\n'
+KALI_SANDBOX_IDLE_MINUTES=
+KALI_SANDBOX_PORT_HOLD_HOURS='
+SERVER=$'AUTH_SECRET=keep-me\nKALI_SANDBOX_PORT_POOL=4500-4509\nKALI_SANDBOX_MAX_CONCURRENT=2\nKALI_SANDBOX_IDLE_MINUTES=10\nKALI_SANDBOX_PORT_HOLD_HOURS=48\nHOST_LAN_IP=10.0.0.5\n'
 for cmd in cmd_init cmd_update; do
   render_seed "$cmd" 203.0.113.5 "$KNOBS"
   if ! grep -q '^seed' "$T/$cmd.seed.sh"; then
@@ -198,7 +200,8 @@ for cmd in cmd_init cmd_update; do
     continue
   fi
   after="$(run_seed "$cmd" "$SERVER")"
-  for kv in KALI_SANDBOX_PORT_POOL=4600-4609 KALI_SANDBOX_MAX_CONCURRENT=3 KALI_SANDBOX_IDLE_MINUTES=45; do
+  for kv in KALI_SANDBOX_PORT_POOL=4600-4609 KALI_SANDBOX_MAX_CONCURRENT=3 KALI_SANDBOX_IDLE_MINUTES=45 \
+            KALI_SANDBOX_PORT_HOLD_HOURS=6; do
     eq "$cmd: ${kv%%=*} set locally replaces the server's" "$(grep "^${kv%%=*}=" <<<"$after")" "$kv"
   done
   eq "$cmd: HOST_IP, an IPv4 literal, becomes HOST_LAN_IP (the LHOST a target reaches)" \
@@ -248,6 +251,13 @@ for v in 1 20 '' ; do
 done
 for v in 0 twenty -5 20m 1234567890; do
   eq "KALI_SANDBOX_IDLE_MINUTES=$v is refused" "$(verdict "KALI_SANDBOX_IDLE_MINUTES=$v")" refused
+done
+# The hold time takes 0 (no hold), unlike the idle time.
+for v in 0 1 24 '' ; do
+  eq "KALI_SANDBOX_PORT_HOLD_HOURS='$v' is accepted" "$(verdict "KALI_SANDBOX_PORT_HOLD_HOURS=$v")" ok
+done
+for v in day -1 24h 1.5 1234567890; do
+  eq "KALI_SANDBOX_PORT_HOLD_HOURS=$v is refused" "$(verdict "KALI_SANDBOX_PORT_HOLD_HOURS=$v")" refused
 done
 
 # ------------------------------------------------------------------- hop 4 ---

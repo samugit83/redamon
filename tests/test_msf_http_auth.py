@@ -191,9 +191,12 @@ class MetasploitManagerAuth(_ServerCase):
     def setUp(self):
         super().setUp()
         self.console = _RecordingConsole()
-        patcher = mock.patch.object(metasploit_server, "get_msf_console", return_value=self.console)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        # A console already started: a list from one never started answers empty.
+        for name, value in (("get_msf_console", mock.Mock(return_value=self.console)),
+                            ("_msf_console", self.console)):
+            patcher = mock.patch.object(metasploit_server, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def test_no_token_401_on_every_route_of_8013(self):
         self.assertRefusedEverywhere(headers={})

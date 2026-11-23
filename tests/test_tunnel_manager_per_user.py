@@ -7,7 +7,8 @@ listens on the sandbox's loopback only, and the agent reads the tunnel's public
 endpoint through the tunnel manager (8015), which checks a bearer: the instance's
 tunnel token for anything, or its MCP token to read the status or to stop the tunnels
 (the agent holds that one for every listed instance; it is already a root shell there).
-The shared container keeps ngrok's API where it was (compose publishes it).
+Every sandbox is one person's: the switch the shared container once read
+(`REDAMON_SANDBOX_MODE`) changes none of this (FU-8).
 
 Runs in the agent image (root-agent section): python -m pytest tests/test_tunnel_manager_per_user.py
 """
@@ -37,9 +38,14 @@ class TestNgrokApiAddress:
         assert "web_addr: 127.0.0.1:4040" in tunnel_manager.ngrok_config("tok")
         assert "0.0.0.0" not in tunnel_manager.ngrok_config("tok")
 
-    def test_the_shared_container_keeps_it_where_compose_publishes_it(self, monkeypatch):
-        monkeypatch.delenv("REDAMON_SANDBOX_MODE", raising=False)
-        assert "web_addr: 0.0.0.0:4040" in tunnel_manager.ngrok_config("tok")
+    @pytest.mark.parametrize("mode", [None, "shared", ""])
+    def test_the_old_mode_switch_never_opens_it(self, monkeypatch, mode):
+        if mode is None:
+            monkeypatch.delenv("REDAMON_SANDBOX_MODE", raising=False)
+        else:
+            monkeypatch.setenv("REDAMON_SANDBOX_MODE", mode)
+        assert "web_addr: 127.0.0.1:4040" in tunnel_manager.ngrok_config("tok")
+        assert "0.0.0.0" not in tunnel_manager.ngrok_config("tok")
 
     def test_the_config_written_is_the_one_built(self, monkeypatch, tmp_path):
         monkeypatch.setenv("REDAMON_SANDBOX_MODE", "per_user")
@@ -79,16 +85,20 @@ class TestStatusCarriesThePublicEndpoint:
         with mock.patch.object(tunnel_manager, "_ngrok_public_endpoint",
                                return_value=("0.tcp.ngrok.io", 14444)):
             status = tunnel_manager.get_status()
-        assert status["ngrok"]["active"] is True
+        assert status["ngrok"]["active"] is True and status["ngrok"]["status"] == "on"
         assert (status["ngrok"]["host"], status["ngrok"]["port"]) == ("0.tcp.ngrok.io", 14444)
 
-    def test_an_active_chisel_tunnel_names_its_server_host(self):
+    def test_an_active_chisel_tunnel_names_its_server_host(self, monkeypatch, tmp_path):
+        # On once its server took the tunnel (the client's log says so, FU-5).
+        log = tmp_path / "chisel.log"
+        log.write_text("2026/11/23 10:00:00 client: Connected (Latency 1.2ms)\n")
+        monkeypatch.setattr(tunnel_manager, "CHISEL_LOG", str(log))
         with mock.patch.object(tunnel_manager, "_start_chisel",
                                side_effect=lambda *a: subprocess.Popen(["sleep", "30"])):
             tunnel_manager.configure_tunnels({"chiselServerUrl": "https://vps.example:8443",
                                               "chiselAuth": "u:p"})
         status = tunnel_manager.get_status()
-        assert status["chisel"]["active"] is True
+        assert status["chisel"]["active"] is True and status["chisel"]["status"] == "on"
         assert status["chisel"]["host"] == "vps.example"
 
     def test_no_tunnel_names_no_host(self):
@@ -157,13 +167,17 @@ class TestTheBearers:
         assert self._call("/tunnel/configure", TUNNEL, {"ngrokAuthtoken": "2abc"}) == 200
         assert self.started == ["ngrok"]
 
-    def test_the_shared_container_takes_only_the_tunnel_token(self, monkeypatch):
-        """Shared mode exactly as before: the instance's MCP token reads and stops
-        nothing there (it is the agent's shared token)."""
-        monkeypatch.delenv("REDAMON_SANDBOX_MODE", raising=False)
-        assert self._call("/tunnel/status", MCP) == 401
-        assert self._call("/tunnel/configure", MCP, {}) == 401
+    @pytest.mark.parametrize("mode", [None, "shared"])
+    def test_the_old_mode_switch_changes_no_bearer(self, monkeypatch, mode):
+        if mode is None:
+            monkeypatch.delenv("REDAMON_SANDBOX_MODE", raising=False)
+        else:
+            monkeypatch.setenv("REDAMON_SANDBOX_MODE", mode)
+        assert self._call("/tunnel/status", MCP) == 200
+        assert self._call("/tunnel/configure", MCP, {}) == 200
+        assert self._call("/tunnel/configure", MCP, {"ngrokAuthtoken": "2abc"}) == 401
         assert self._call("/tunnel/status", TUNNEL) == 200
+        assert not hasattr(tunnel_manager, "_per_user_sandbox")
 
     def test_without_an_mcp_token_only_the_tunnel_token_works(self, monkeypatch):
         monkeypatch.delenv("MCP_AUTH_TOKEN")

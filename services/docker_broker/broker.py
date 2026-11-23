@@ -644,6 +644,17 @@ def validate_create(body: dict) -> tuple[bool, str]:
         elif mtype:
             return False, f"mount type not allowed: {mtype!r}"
 
+    # A tool container never poses as a per-user sandbox: the orchestrator's
+    # adoption, cleanup and pool port allocation read the `redamon.sandbox` labels
+    # of every container on the daemon, so a scan that set them could hold pool
+    # ports or feed the orchestrator labels it never wrote.
+    labels = body.get("Labels")
+    if labels is not None and not isinstance(labels, dict):
+        return False, "Labels is not a JSON object"
+    for name in labels or {}:
+        if str(name) == SANDBOX_LABEL or str(name).startswith(SANDBOX_LABEL + "."):
+            return False, f"sandbox label denied: {str(name)!r}"
+
     return True, "ok"
 
 

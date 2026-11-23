@@ -91,17 +91,17 @@ class _HeldConsole:
 
 class _ServedCase(unittest.TestCase):
     def setUp(self):
-        env = {k: v for k, v in os.environ.items() if k != "REDAMON_SANDBOX_MODE"}
-        env["MCP_AUTH_TOKEN"] = TOKEN
-        patcher = mock.patch.dict(os.environ, env, clear=True)
+        patcher = mock.patch.dict(os.environ, {"MCP_AUTH_TOKEN": TOKEN})
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def serve(self, console, server=None):
-        """The session manager on an ephemeral port, its console replaced by `console`."""
-        patcher = mock.patch.object(msf, "get_msf_console", return_value=console)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        """The session manager on an ephemeral port, its console replaced by `console`, a
+        console already started (a list never starts one)."""
+        for name, value in (("get_msf_console", mock.Mock(return_value=console)), ("_msf_console", console)):
+            patcher = mock.patch.object(msf, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         if server is None:
             server = msf.start_progress_server(0)
         else:

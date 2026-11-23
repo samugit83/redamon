@@ -57,16 +57,29 @@ MSF_DEFAULT_QUIET_PERIOD = float(os.getenv("MSF_DEFAULT_QUIET_PERIOD", "3"))
 # the console itself. Tab is the one control byte a command legitimately carries.
 _SESSION_CMD_CONTROL_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
 
-# One msfconsole serves every project of the instance, so its sessions, jobs, module
-# context and global datastore are shared: a project at the console could list, type
-# into or kill another project's sessions (`sessions -i`, `set SESSION`, `route`, `irb`,
-# `sessions -K`, msf_restart), and a `setg RHOSTS` left by one engagement would aim the
-# next one's exploit at the wrong target. So the console is held by one project at a
-# time (GHSA-w454-6hwp-fm58): the holder keeps it while it runs a command, while it has
-# a live session or job, and for this long after its last command, so that a `use` /
+# One msfconsole serves every project of the person's sandbox, so its sessions, jobs,
+# module context and global datastore are shared: a project at the console could list,
+# type into or kill another project's sessions (`sessions -i`, `set SESSION`, `route`,
+# `irb`, `sessions -K`, msf_restart), and a `setg RHOSTS` left by one engagement would
+# aim the next one's exploit at the wrong target. So the console is held by one project
+# at a time (GHSA-w454-6hwp-fm58): the holder keeps it while it runs a command, while it
+# has a live session or job, and for this long after its last command, so that a `use` /
 # `set` / `exploit` sequence is not cut in the middle. Every session and job in the
 # console is the holder's; the next project gets a restarted msfconsole.
 MSF_PROJECT_LEASE_IDLE_S = float(os.getenv("MSF_PROJECT_LEASE_IDLE_S", "600"))
+
+# The sandbox's one reverse-shell port (the orchestrator sets it: its pool port, or 4444
+# without one), shared by every chat and project of the person. 4444 is also the local
+# port a tunnel (ngrok, chisel) forwards to.
+REVERSE_PORT_ENV = "MSF_REVERSE_PORT"
+DEFAULT_REVERSE_PORT = 4444
+
+
+def reverse_port() -> int:
+    raw = os.environ.get(REVERSE_PORT_ENV, "").strip()
+    if re.fullmatch(r"[0-9]{1,5}", raw) and 1 <= int(raw) <= 65535:
+        return int(raw)
+    return DEFAULT_REVERSE_PORT
 # The refresh loop rewrites the session/job cache every few seconds while the console
 # is idle; an older cache cannot prove the holder has nothing left to lose.
 _LEASE_CACHE_MAX_AGE_S = 30.0
@@ -144,12 +157,165 @@ NO_OWNER_REFUSAL = (
 
 def _busy_refusal(reason: str) -> str:
     return (
-        f"[REFUSED] Metasploit is held by another project on this RedAmon instance ({reason}), "
-        "so nothing was sent to the console. The sandbox runs one msfconsole for every "
-        "project: it serves one project at a time and never shows or drives another "
-        "project's sessions. Try again later or continue without Metasploit; an "
-        "administrator can end that project's sessions and jobs in the Reverse Shell tab."
+        f"[REFUSED] Metasploit in your Kali sandbox is held by another of your projects ({reason}), "
+        "so nothing was sent to the console. Your sandbox runs one msfconsole for all of your "
+        "projects and chats: it serves one project at a time and never shows or drives another "
+        "project's sessions. Try again once that project's sessions and jobs have ended (you can "
+        "end them in the Sessions panel of the Reverse Shell tab), or continue without Metasploit."
     )
+
+
+# A handler that could not bind, as msfconsole reports it. It tries LHOST first and
+# falls back to 0.0.0.0, so "Handler failed to bind to <LHOST>:<port>" followed by
+# "Started reverse TCP handler on 0.0.0.0:<port>" is a normal start (LHOST is the
+# address targets dial, which is not the sandbox's). The handler failed only when the
+# final "Rex::BindFailed The address is already in use or unavailable: (<addr>:<port>)"
+# comes, or no start follows a failed bind.
+_HANDLER_BIND_FAILED_RE = re.compile(r"Handler failed to bind to (\[[^\]]*\]|[^\s\[\]]+?):(\d+)", re.I)
+_REX_BIND_FAILED_RE = re.compile(r"Rex::BindFailed[^\n]*?\(\s*(\[[^\]]*\]|[^()\s]*):(\d+)\s*\)", re.I)
+# "Started reverse TCP handler on 0.0.0.0:4444", "Started HTTPS reverse handler on
+# https://0.0.0.0:8443", "Started bind TCP handler against 10.0.0.5:4444".
+_HANDLER_STARTED_RE = re.compile(
+    r"Started .+? handler (on|against) (?:[a-z][a-z0-9+.-]*://)?(\[[^\]]*\]|[^\s/]+?):(\d+)", re.I)
+# "Meterpreter session 1 opened (10.214.0.2:4444 -> 203.0.113.9:51234) at ...": the
+# local end is the handler's port for a reverse payload, the remote one a bind payload's.
+_SESSION_OPENED_RE = re.compile(
+    r"session (\d+) opened \(\s*([^\s()]+):(\d+)\s*->\s*([^\s()]+):(\d+)\s*\)", re.I)
+
+
+def bind_failure(output: str) -> Optional[Tuple[str, int]]:
+    """(address, port) a handler of this output could not bind, or None."""
+    text = output or ""
+    final = _REX_BIND_FAILED_RE.search(text)
+    if final:
+        return final.group(1).strip("[]"), int(final.group(2))
+    started = [(m.end(), int(m.group(3))) for m in _HANDLER_STARTED_RE.finditer(text)
+               if m.group(1).lower() == "on"]
+    for failed in _HANDLER_BIND_FAILED_RE.finditer(text):
+        port = int(failed.group(2))
+        if not any(end > failed.end() and started_port == port for end, started_port in started):
+            return failed.group(1).strip("[]"), port
+    return None
+
+
+# The sandbox's own process table: this server runs inside the sandbox, as root.
+PROC_ROOT = "/proc"
+_TCP_LISTEN = "0A"
+
+
+def listening_pids(port: int) -> Optional[set]:
+    """The pids holding a TCP socket that listens on ``port`` in this sandbox, from
+    /proc (an empty set when none listens), or None when /proc cannot say."""
+    inodes, readable = set(), False
+    for table in ("tcp", "tcp6"):
+        try:
+            with open(os.path.join(PROC_ROOT, "net", table), encoding="ascii", errors="replace") as f:
+                rows = f.read().splitlines()[1:]
+        except OSError:
+            continue
+        readable = True
+        for row in rows:
+            cols = row.split()
+            if len(cols) < 10 or cols[3] != _TCP_LISTEN:
+                continue
+            try:
+                if int(cols[1].rsplit(":", 1)[-1], 16) == port:
+                    inodes.add(f"socket:[{cols[9]}]")
+            except ValueError:
+                continue
+    if not readable:
+        return None
+    pids = set()
+    if not inodes:
+        return pids
+    for pid in os.listdir(PROC_ROOT):
+        if not pid.isdigit():
+            continue
+        fd_dir = os.path.join(PROC_ROOT, pid, "fd")
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                if os.readlink(os.path.join(fd_dir, fd)) in inodes:
+                    pids.add(int(pid))
+                    break
+            except OSError:
+                continue
+    # A listening socket whose owner cannot be found still holds the port.
+    return pids or {0}
+
+
+def process_name(pid: int) -> str:
+    try:
+        with open(os.path.join(PROC_ROOT, str(pid), "comm"), encoding="utf-8", errors="replace") as f:
+            name = f.read().strip()
+    except OSError:
+        return "unknown"
+    return re.sub(r"[^A-Za-z0-9._ -]", "?", name)[:32] or "unknown"
+
+
+def _parent_pid(pid: int) -> Optional[int]:
+    try:
+        with open(os.path.join(PROC_ROOT, str(pid), "stat"), encoding="ascii", errors="replace") as f:
+            # The name in parentheses may hold spaces: the fields after it are plain.
+            return int(f.read().rsplit(")", 1)[1].split()[1])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _describe_job(job: dict) -> str:
+    return (f"job {job.get('id')} ({job.get('name', '')}, payload {job.get('payload', '')}"
+            + (f", {job['opts']}" if job.get("opts") else "") + ")")
+
+
+def handler_busy_note(address: str, port: int, holder, jobs: List[dict]) -> str:
+    """What to do when a handler could not bind ``address:port``, by who holds the
+    port in the sandbox: ``holder`` is "metasploit" (``jobs`` then lists the console's
+    jobs), a (pid, name) of another process, "unknown", or None when nothing listens
+    there (then it is the address that the sandbox does not have)."""
+    if holder is None:
+        # Every address and the loopback are the sandbox's own (a tunnel's handler binds
+        # 127.0.0.1:4444): failing on one is no wrong address.
+        if address in ("0.0.0.0", "::", "", "::1") or address.startswith("127."):
+            return (f"[REDAMON] Metasploit could not bind {address or '0.0.0.0'}:{port}, although nothing in "
+                    f"your Kali sandbox listens on port {port} now: start the handler again, or choose "
+                    f"another LPORT.")
+        return (f"[REDAMON] Address {address} is not an address of your Kali sandbox, so this handler did not "
+                f"start (nothing listens on port {port} there). Leave ReverseListenerBindAddress unset, so "
+                f"Metasploit binds 0.0.0.0, and keep LHOST as the address targets dial.")
+    lines = [f"[REDAMON] Port {port} is already in use in your Kali sandbox, so this handler did not start."]
+    if holder == "metasploit":
+        named = [j for j in jobs if j.get("port") == port] or jobs
+        if not named:
+            lines.append("A Metasploit handler of your console listens on it (`jobs -v` shows each job's bind "
+                         "port): reuse it, or stop it with `jobs -k <id>` and start yours again.")
+        elif len(named) == 1:
+            job = named[0]
+            lines.append(f"Metasploit {_describe_job(job)} already listens on it: reuse it (run `jobs` to see "
+                         f"it; a shell it catches shows in `sessions -l`), or stop it with "
+                         f"`jobs -k {job.get('id')}` and start yours again.")
+        else:
+            lines.append(f"One of your Metasploit jobs listens on it ({'; '.join(map(_describe_job, named))}; "
+                         f"`jobs -v` shows each one's bind port): reuse it, or stop it with `jobs -k <id>` "
+                         f"and start yours again.")
+    elif isinstance(holder, tuple) and holder[0]:
+        pid, name = holder
+        lines.append(f"Process {name} (pid {pid}) listens on it, outside Metasploit (a listener started with "
+                     f"kali_shell, such as nc or socat): catch the shell with it, or stop it with "
+                     f"`kill {pid}` from kali_shell and start yours again.")
+    else:
+        lines.append(f"Another process in your sandbox listens on it (`ss -ltnp 'sport = :{port}'` in "
+                     f"kali_shell names it): catch the shell with it, or stop it and start yours again.")
+    if port == reverse_port():
+        lines.append(f"All of your chats and projects share this sandbox and its one reverse-shell port "
+                     f"(LPORT {port}): a handler another chat started there catches this chat's shells "
+                     f"too, so reuse it rather than starting a second one.")
+    elif port == DEFAULT_REVERSE_PORT:
+        lines.append(f"Port {port} is where your tunnel (ngrok or chisel) delivers shells, one port for all "
+                     f"of your chats and projects: reuse the handler there rather than starting a second one.")
+    return "\n".join(lines)
 
 
 class PersistentMsfConsole:
@@ -182,6 +348,13 @@ class PersistentMsfConsole:
         self._detail_cache_time: float = 0
         self._detail_lock = threading.Lock()
         self._chat_session_map: Dict[int, str] = {}
+        # The chat whose command started each handler: ("lport", port) for a reverse
+        # handler, ("bind", host, port) for a bind one. A session goes to the chat of
+        # the handler that caught it. Under _detail_lock.
+        self._handler_chats: Dict[tuple, str] = {}
+        # The chat whose command runs now (set under self.lock by execute()); read
+        # without a lock by the reader thread.
+        self._command_chat: Optional[str] = None
         self._non_msf_sessions: Dict[str, dict] = {}
         self._detail_thread_started = False
 
@@ -225,6 +398,7 @@ class PersistentMsfConsole:
 
             # Wait for msfconsole to be ready (can take 60-120s on first start)
             self._wait_for_output(timeout=120, quiet_period=5.0)
+            self._apply_reverse_port()
             self._initialized = True
             print(f"[MSF] Persistent msfconsole ready (PID: {self.process.pid})")
 
@@ -243,6 +417,20 @@ class PersistentMsfConsole:
             print(f"[MSF] Failed to start msfconsole: {e}")
             return False
 
+    def _apply_reverse_port(self) -> None:
+        """Every new msfconsole (a start, a restart, the reset for the next project)
+        defaults LPORT to the sandbox's reverse port: only that port is published to
+        the targets, and Metasploit's own default (4444; 4433 for `sessions -u`) is
+        reached by nothing but a tunnel. A module's own `set LPORT` still wins."""
+        port = reverse_port()
+        if port == DEFAULT_REVERSE_PORT:
+            return
+        try:
+            self._quick_execute(f"setg LPORT {port}", timeout=10, quiet_period=1.0)
+            print(f"[MSF] LPORT defaults to the sandbox's reverse port {port}")
+        except Exception as e:  # the console still serves; the agent sets LPORT itself
+            print(f"[MSF] Could not set the default LPORT: {e}")
+
     def _read_output(self):
         """Background thread to continuously read msfconsole output."""
         if DEBUG:
@@ -260,9 +448,43 @@ class PersistentMsfConsole:
         if DEBUG:
             print("[MSF] Reader thread exited")
 
+    def _note_handler(self, line: str) -> None:
+        """Remember which chat's command started the handler this line announces."""
+        chat = self._command_chat
+        match = _HANDLER_STARTED_RE.search(line)
+        if not chat or not match:
+            return
+        side, host, port = match.group(1).lower(), match.group(2).strip("[]"), int(match.group(3))
+        key = ("lport", port) if side == "on" else ("bind", host, port)
+        with self._detail_lock:
+            self._handler_chats[key] = chat
+
+    def _chat_of_new_session(self, line: str) -> Optional[str]:
+        """The chat a session that just opened belongs to: the one whose command
+        started the handler that caught it (its local port for a reverse payload, its
+        remote end for a bind one), else the one whose command is running (a
+        foreground exploit), else, when the console cannot tell, the holder's latest
+        chat. Every one of them is the holder project's."""
+        match = _SESSION_OPENED_RE.search(line)
+        if match:
+            lport, rhost, rport = int(match.group(3)), match.group(4).strip("[]"), int(match.group(5))
+            with self._detail_lock:
+                chat = self._handler_chats.get(("lport", lport)) or self._handler_chats.get(("bind", rhost, rport))
+            if chat:
+                return chat
+        if self._command_chat:
+            return self._command_chat
+        # Read without _lease_lock: this thread feeds the output queue a running
+        # command waits on, so it never blocks.
+        holder = self._holder
+        return (holder or {}).get("chat_session_id") or None
+
     def _detect_session_events(self, line: str):
-        """Simple session event detection - just tracks session IDs."""
+        """Session event detection: tracks session ids, the handler each chat started,
+        and the chat each new session is listed under."""
         line_lower = line.lower()
+        if 'handler' in line_lower and 'started' in line_lower:
+            self._note_handler(line)
 
         # Detect "session X opened"
         if 'session' in line_lower and 'opened' in line_lower:
@@ -277,11 +499,10 @@ class PersistentMsfConsole:
                     # A close line that was missed must not hand this id the old chat.
                     self._unlink_chat_session(session_id)
                     # Every session in the console is the holder's, a handler's late
-                    # catch included. Read without _lease_lock: this thread feeds the
-                    # output queue a running command waits on, so it never blocks.
-                    holder = self._holder
-                    if holder and holder.get("chat_session_id"):
-                        self.link_chat_session(session_id, holder["chat_session_id"])
+                    # catch included.
+                    chat = self._chat_of_new_session(line)
+                    if chat:
+                        self.link_chat_session(session_id, chat)
                     print(f"[MSF] Session {session_id} opened")
             except (ValueError, IndexError):
                 pass
@@ -386,42 +607,51 @@ class PersistentMsfConsole:
 
         return '\n'.join(output_lines)
 
-    def execute(self, command: str, timeout: float = 120, quiet_period: float = 2.0) -> str:
-        """Execute a command in the persistent msfconsole."""
+    def execute(self, command: str, timeout: float = 120, quiet_period: float = 2.0,
+                chat: Optional[str] = None) -> str:
+        """Execute a command in the persistent msfconsole. ``chat`` is the chat the
+        command runs for: a handler it starts catches sessions for that chat."""
         with self.lock:
             if not self.process or self.process.poll() is not None:
                 if not self.start():
                     return "[ERROR] Failed to start msfconsole"
-
-            # Track current command for progress endpoint
-            with self._progress_lock:
-                self._current_command = command
-
-            # Clear any pending output
-            while not self.output_queue.empty():
-                try:
-                    self.output_queue.get_nowait()
-                except queue.Empty:
-                    break
-
-            # Send command(s) - split by semicolons to support chaining
-            # msfconsole doesn't parse semicolons in stdin, so we convert them to newlines
+            self._command_chat = chat or None
             try:
-                if ';' in command:
-                    # Split by semicolons and send each as separate line
-                    commands = [cmd.strip() for cmd in command.split(';') if cmd.strip()]
-                    for cmd in commands:
-                        self.process.stdin.write(cmd + "\n")
-                    self.process.stdin.flush()
-                else:
-                    self.process.stdin.write(command + "\n")
-                    self.process.stdin.flush()
-            except Exception as e:
-                return f"[ERROR] Failed to send command: {e}"
+                return self._execute_locked(command, timeout, quiet_period)
+            finally:
+                self._command_chat = None
 
-            # Collect output
-            output = self._wait_for_output(timeout=timeout, quiet_period=quiet_period)
-            return output if output else "(no output)"
+    def _execute_locked(self, command: str, timeout: float, quiet_period: float) -> str:
+        """The body of execute(), under self.lock."""
+        # Track current command for progress endpoint
+        with self._progress_lock:
+            self._current_command = command
+
+        # Clear any pending output
+        while not self.output_queue.empty():
+            try:
+                self.output_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        # Send command(s) - split by semicolons to support chaining
+        # msfconsole doesn't parse semicolons in stdin, so we convert them to newlines
+        try:
+            if ';' in command:
+                # Split by semicolons and send each as separate line
+                commands = [cmd.strip() for cmd in command.split(';') if cmd.strip()]
+                for cmd in commands:
+                    self.process.stdin.write(cmd + "\n")
+                self.process.stdin.flush()
+            else:
+                self.process.stdin.write(command + "\n")
+                self.process.stdin.flush()
+        except Exception as e:
+            return f"[ERROR] Failed to send command: {e}"
+
+        # Collect output
+        output = self._wait_for_output(timeout=timeout, quiet_period=quiet_period)
+        return output if output else "(no output)"
 
     def stop(self, force: bool = False):
         """Stop the msfconsole process."""
@@ -458,6 +688,49 @@ class PersistentMsfConsole:
     def _forget_chat_links(self) -> None:
         with self._detail_lock:
             self._chat_session_map.clear()
+            self._handler_chats.clear()
+
+    def current_jobs(self) -> List[dict]:
+        """The console's jobs, read fresh (the cache may predate the command that just
+        ran), or from the cache when the console is busy."""
+        if self.lock.acquire(timeout=10):
+            try:
+                raw = self._quick_execute("jobs -l", timeout=10, quiet_period=1.0)
+                with self._detail_lock:
+                    self._job_details = self._parse_jobs_output(raw)
+                return self._parse_jobs_output(raw, with_opts=True)
+            finally:
+                self.lock.release()
+        with self._detail_lock:
+            return list(self._job_details)
+
+    def port_holder(self, port: int):
+        """Who listens on ``port`` in the sandbox: "metasploit" (this console's
+        process or a child of it), (pid, name) of another process, "unknown" when
+        /proc cannot say, or None when nothing listens."""
+        pids = listening_pids(port)
+        if pids is None:
+            return "unknown"
+        if not pids:
+            return None
+        console = self.process.pid if self.process else None
+        for pid in sorted(pids):
+            seen, current = 0, pid
+            while current and seen < 8:
+                if current == console:
+                    return "metasploit"
+                current, seen = _parent_pid(current), seen + 1
+        pid = min(pids)
+        return (pid, process_name(pid)) if pid else "unknown"
+
+    def busy_note(self, output: str) -> Optional[str]:
+        """The note for a handler of ``output`` that could not bind, or None."""
+        failed = bind_failure(output)
+        if failed is None:
+            return None
+        address, port = failed
+        holder = self.port_holder(port)
+        return handler_busy_note(address, port, holder, self.current_jobs() if holder == "metasploit" else [])
 
     # ─── One project at a time (GHSA-w454-6hwp-fm58) ───
 
@@ -827,8 +1100,9 @@ class PersistentMsfConsole:
 
         return sessions
 
-    def _parse_jobs_output(self, raw: str) -> List[dict]:
-        """Parse 'jobs -l' output into structured dicts."""
+    def _parse_jobs_output(self, raw: str, with_opts: bool = False) -> List[dict]:
+        """Parse 'jobs -l' output into structured dicts (``with_opts``: and each one's
+        payload options, which the session list does not carry)."""
         jobs = []
         if not raw or 'No active jobs' in raw:
             return jobs
@@ -864,6 +1138,7 @@ class PersistentMsfConsole:
                     "name": name,
                     "payload": payload,
                     "port": port,
+                    **({"opts": opts} if with_opts else {}),
                 })
 
         return jobs
@@ -1329,8 +1604,12 @@ def metasploit_console(command: str, _redamon_owner: str = "") -> str:
         if DEBUG:
             print(f"[MSF] timeout={timeout}s, quiet_period={quiet_period}s")
 
-        result = msf.execute(command, timeout=timeout, quiet_period=quiet_period)
+        result = msf.execute(command, timeout=timeout, quiet_period=quiet_period,
+                             chat=owner["chat_session_id"])
         result = _clean_ansi_output(result)
+        note = msf.busy_note(result)
+        if note:
+            result = f"{result}\n\n{note}"
     finally:
         msf.release(owner)
 
@@ -1408,13 +1687,13 @@ _DRIVES_FULL = {"busy": True, "message": "Too many commands are waiting for the 
 
 
 def _sessions_of_an_unstarted_console() -> Optional[dict]:
-    """The session list of a per-user sandbox whose console was never started, or None.
+    """The session list of a sandbox whose console was never started, or None.
 
-    The agent's hold watcher reads every per-user sandbox's /sessions once a minute, and
+    The agent's hold watcher reads every sandbox's /sessions once a minute, and
     get_msf_console() would start msfconsole (seconds, and hundreds of MB of the sandbox's
     memory) for a console that holds nothing: no session, job or non-MSF session exists
-    before it starts. The shared container still starts it on this read."""
-    if os.environ.get("REDAMON_SANDBOX_MODE") != "per_user" or _msf_console is not None:
+    before it starts."""
+    if _msf_console is not None:
         return None
     return {"sessions": [], "jobs": [], "non_msf_sessions": [],
             "cache_age_seconds": -1, "agent_busy": False}

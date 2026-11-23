@@ -286,6 +286,10 @@ MOUNT_HOST_BASES = MappingProxyType({
 WORKSPACE_ROOT = "/workspace"
 OUTPUT_TARGET = "/opt/output"
 OUTPUT_USERS_DIR = "users"
+# Each view's copy of the custom nuclei templates its person may use, made by the
+# orchestrator under the output base (never inside a `users/` folder, which the
+# sandbox writes). The shared folder of every member's templates is never mounted.
+CUSTOM_TEMPLATES_COPY_DIR = "templates"
 SERVERS_TARGET = "/opt/mcp_servers"
 GRAPH_DB_TARGET = "/opt/graph_db"
 CUSTOM_TEMPLATES_TARGET = "/opt/nuclei-templates"
@@ -300,9 +304,43 @@ def output_rel(user_id: str, view: str) -> str:
     return f"{OUTPUT_USERS_DIR}/{sandbox_key(user_id, view)}"
 
 
+def custom_templates_rel(user_id: str, view: str) -> str:
+    return f"{CUSTOM_TEMPLATES_COPY_DIR}/{sandbox_key(user_id, view)}"
+
+
 def person_output_rels(user_id: str) -> tuple:
     """Both views' output folders: what a stop for ``account_deleted`` removes."""
     return tuple(output_rel(user_id, view) for view in VIEWS)
+
+
+# One custom template as the webapp names it: a path relative to the templates
+# folder, plain segments (no dot-led one, so no `..` and no hidden file), ending
+# in .yaml or .yml. The webapp's uploads always fit; a file an operator put on
+# the host under another name is simply not copied.
+_TEMPLATE_SEGMENT = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}")
+_TEMPLATE_FILE = re.compile(r".*\.ya?ml", re.IGNORECASE)
+CUSTOM_TEMPLATES_MAX_DEPTH = 8
+
+
+def normalize_template_paths(paths) -> list:
+    """The template paths of an ensure, sorted and de-duplicated. An entry that is
+    not such a path is dropped (it can name no file the person may use); a value
+    that is not a list of strings is an empty list."""
+    if isinstance(paths, (str, bytes)) or paths is None:
+        return []
+    try:
+        entries = list(paths)
+    except TypeError:
+        return []
+    out = set()
+    for entry in entries:
+        if not isinstance(entry, str):
+            continue
+        parts = entry.split("/")
+        if (len(parts) <= CUSTOM_TEMPLATES_MAX_DEPTH and _TEMPLATE_FILE.fullmatch(parts[-1])
+                and all(_TEMPLATE_SEGMENT.fullmatch(p) for p in parts)):
+            out.add(entry)
+    return sorted(out)
 
 
 def mount_targets(user_id: str, view: str, project_ids, *,
@@ -312,8 +350,9 @@ def mount_targets(user_id: str, view: str, project_ids, *,
     allowed project, the view's own output folder, and read-only tools.
 
     The workspace root and `.staging` can never appear (PROJECT_ID_RE has no
-    dot); an empty project list is valid. Pass ``custom_templates=False`` when
-    the custom nuclei templates folder is empty."""
+    dot); an empty project list is valid. The custom nuclei templates are the
+    view's own copy (``custom_templates_rel``) of its person's templates and the
+    instance's; pass ``custom_templates=False`` when that copy is empty."""
     key = sandbox_key(user_id, view)
     projects = normalize_projects(project_ids)
     if not isinstance(osv_volume, str) or not _VOLUME_NAME.fullmatch(osv_volume):
@@ -326,7 +365,8 @@ def mount_targets(user_id: str, view: str, project_ids, *,
         MountTarget(MOUNT_GRAPH_DB, "", GRAPH_DB_TARGET, True),
     ]
     if custom_templates:
-        mounts.append(MountTarget(MOUNT_CUSTOM_TEMPLATES, "", CUSTOM_TEMPLATES_TARGET, True))
+        mounts.append(MountTarget(MOUNT_OUTPUT, f"{CUSTOM_TEMPLATES_COPY_DIR}/{key}",
+                                  CUSTOM_TEMPLATES_TARGET, True))
     mounts += [
         MountTarget(MOUNT_TEMPLATES_VOLUME, TEMPLATES_VOLUME, TEMPLATES_TARGET, True),
         MountTarget(MOUNT_OSV_VOLUME, osv_volume, OSV_TARGET, True),
@@ -377,8 +417,8 @@ CONTAINER_ENV_FIXED = MappingProxyType({
     "NUCLEI_AUTO_UPDATE": "false",
     "REDAMON_AGENT_URL": "http://agent:8080",
     "WEBAPP_API_URL": "",
-    # Read by the servers inside (mcp/servers/tunnel_manager.py, metasploit_server.py):
-    # one person's sandbox, whose tunnels the agent pushes.
+    # No server branches on it (a sandbox is always one person's); every sandbox
+    # started so far carries it, and adoption requires the fixed environment as is.
     "REDAMON_SANDBOX_MODE": "per_user",
 })
 ENV_MCP_AUTH_TOKEN = "MCP_AUTH_TOKEN"
@@ -604,6 +644,28 @@ ENSURE_RUNNING_KEYS = ("user_id", "view", "instance", "host", "token",
                        "fresh", "stop_at", "stop_reason", "warn")
 ENSURE_STARTING_KEYS = ("state", "instance", "fresh")
 
+# Why an answer's `reverse_port` is what it is: a pool port was given to the
+# instance, no pool is configured, or the pool had no port free for this person
+# and view (every one in use or held for someone else, see PORT_HOLD_HOURS_ENV).
+# Without a pool port the sandbox's reverse port is DEFAULT_REVERSE_PORT, which
+# only a tunnel the person runs reaches.
+REVERSE_PORT_ASSIGNED = "assigned"
+REVERSE_PORT_NO_POOL = "no_pool"
+REVERSE_PORT_POOL_FULL = "pool_full"
+REVERSE_PORT_STATES = (REVERSE_PORT_ASSIGNED, REVERSE_PORT_NO_POOL, REVERSE_PORT_POOL_FULL)
+# Keys this orchestrator always sends and an older one did not: a reader keeps
+# them when present and never requires them (reverse_port_state() reads one). A
+# starting instance's status carries null until its port is allocated.
+ENSURE_RUNNING_OPTIONAL_KEYS = ("reverse_port_state",)
+STATUS_OPTIONAL_KEYS = ("reverse_port_state",)
+LIST_OPTIONAL_KEYS = ("reverse_port", "reverse_port_state")
+
+
+def reverse_port_state(value) -> Optional[str]:
+    """One of REVERSE_PORT_STATES, or None (unknown) for a missing or other value:
+    an answer from an orchestrator older than the field is never an error."""
+    return value if isinstance(value, str) and value in REVERSE_PORT_STATES else None
+
 ERR_IMAGE_MISSING = "sandbox_image_missing"
 ERR_START_FAILED = "sandbox_start_failed"
 ERR_START_TIMEOUT = "sandbox_start_timeout"
@@ -679,9 +741,15 @@ PARTIAL_ANSWER_MANY = "{n} sandboxes did not answer; their sessions may be out o
 IDLE_MINUTES_ENV = "KALI_SANDBOX_IDLE_MINUTES"
 MAX_CONCURRENT_ENV = "KALI_SANDBOX_MAX_CONCURRENT"
 PORT_POOL_ENV = "KALI_SANDBOX_PORT_POOL"
+# How long a pool port stays reserved for its person and view after their
+# instance stops or is replaced: a callback still on its way (a phishing payload,
+# an implant, a handler left waiting at the hold cap) must never land in another
+# person's sandbox, and the person gets the same port back on their next start.
+PORT_HOLD_HOURS_ENV = "KALI_SANDBOX_PORT_HOLD_HOURS"
 # Every one is optional and read by the orchestrator only.
-ENV_VARS = (IDLE_MINUTES_ENV, MAX_CONCURRENT_ENV, PORT_POOL_ENV)
+ENV_VARS = (IDLE_MINUTES_ENV, MAX_CONCURRENT_ENV, PORT_POOL_ENV, PORT_HOLD_HOURS_ENV)
 IDLE_MINUTES_DEFAULT = 20
+PORT_HOLD_HOURS_DEFAULT = 24
 
 
 def idle_minutes(value: Optional[str]) -> int:
@@ -691,6 +759,14 @@ def idle_minutes(value: Optional[str]) -> int:
         if minutes >= 1:
             return minutes
     return IDLE_MINUTES_DEFAULT
+
+
+def port_hold_hours(value: Optional[str]) -> int:
+    """An integer of at least 0 (0: a stopped instance's port is free at once),
+    else ``PORT_HOLD_HOURS_DEFAULT``."""
+    if isinstance(value, str) and _DIGITS.fullmatch(value.strip()):
+        return int(value.strip())
+    return PORT_HOLD_HOURS_DEFAULT
 
 
 def max_concurrent(value: Optional[str]) -> Optional[int]:

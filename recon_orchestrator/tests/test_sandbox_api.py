@@ -191,7 +191,19 @@ async def test_ensure_passes_the_request_to_the_manager(served, env):
     assert status == 202 and answer == stub.answer
     name, args, kw = stub.calls[0]
     assert name == "ensure" and args == (ALICE, ["projA"])
-    assert kw == {"view": "act_as", "need_project": "projA", "wait": False, "touch": True}
+    assert kw == {"view": "act_as", "need_project": "projA", "wait": False, "touch": True,
+                  "custom_templates": None}
+
+
+async def test_ensure_passes_the_custom_template_list_to_the_manager(served, env):
+    # FU-6: only the webapp knows whose each template is; the list it sends is the
+    # one the start copies.
+    stub = served(StubManager())
+    stub.answer = {"state": "starting", "instance": "abc123", "fresh": True}
+    body = dict(ENSURE_BODY, custom_templates=["mine.yaml", "sub/instance.yaml"])
+    status, _ = await asgi("POST", "/sandboxes/ensure", body)
+    assert status == 202
+    assert stub.calls[0][2]["custom_templates"] == ["mine.yaml", "sub/instance.yaml"]
 
 
 async def test_ensure_running_answers_200(served, env):

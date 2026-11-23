@@ -24,7 +24,8 @@ When performing these actions, ALWAYS invoke the corresponding skill FIRST:
   `env_file`**; a var is honoured only if it is listed in its `environment:`
   block in `docker-compose.yml`. A knob added to `.env` alone is silently inert.
   The Kali sandbox knobs (`KALI_SANDBOX_IDLE_MINUTES`, `KALI_SANDBOX_MAX_CONCURRENT`,
-  `KALI_SANDBOX_PORT_POOL`) and `TERMINAL_MAX_SESSIONS` reach it that way.
+  `KALI_SANDBOX_PORT_POOL`, `KALI_SANDBOX_PORT_HOLD_HOURS`) and `TERMINAL_MAX_SESSIONS`
+  reach it that way.
 - **NEVER** start a Kali sandbox with a mount, network or variable outside the
   contract: `sandbox_contract.py` (byte-identical to `agentic/sandbox_contract.py`,
   mirrored in `webapp/src/lib/sandbox/contract.ts`, all kept equal by

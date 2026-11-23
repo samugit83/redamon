@@ -129,8 +129,9 @@ CERT_BASE="${LEGACY_CERT_DIR:-$SCRIPT_DIR}"
 : "${REVSHELL_TARGET_CIDRS:=}"; : "${TUNNELS_ENABLED:=false}"
 # Per-user Kali sandboxes (the orchestrator's knobs). Empty: removed from the server
 # .env by init and update, so the app's defaults hold (no port pool, no count limit,
-# 20 idle minutes).
+# 20 idle minutes, a 24-hour hold on a stopped sandbox's pool port).
 : "${KALI_SANDBOX_PORT_POOL:=}"; : "${KALI_SANDBOX_MAX_CONCURRENT:=}"; : "${KALI_SANDBOX_IDLE_MINUTES:=}"
+: "${KALI_SANDBOX_PORT_HOLD_HOURS:=}"
 # Inbound MCP server (/api/mcp-server): an external AI agent connects IN with a
 # bearer token and acts as one RedAmon user. OFF by default -- a credentialed
 # programmatic surface must be switched on deliberately, never inherited by an
@@ -285,6 +286,8 @@ preflight_validate() {
     || die "KALI_SANDBOX_MAX_CONCURRENT ('${KALI_SANDBOX_MAX_CONCURRENT}') must be a whole number (0 blocks every new sandbox; blank: no cap)"
   [[ -z "${KALI_SANDBOX_IDLE_MINUTES}" || ( "${KALI_SANDBOX_IDLE_MINUTES}" =~ ^[0-9]{1,9}$ && 10#${KALI_SANDBOX_IDLE_MINUTES} -ge 1 ) ]] \
     || die "KALI_SANDBOX_IDLE_MINUTES ('${KALI_SANDBOX_IDLE_MINUTES}') must be a whole number of minutes, at least 1 (blank: 20)"
+  [[ -z "${KALI_SANDBOX_PORT_HOLD_HOURS}" || "${KALI_SANDBOX_PORT_HOLD_HOURS}" =~ ^[0-9]{1,9}$ ]] \
+    || die "KALI_SANDBOX_PORT_HOLD_HOURS ('${KALI_SANDBOX_PORT_HOLD_HOURS}') must be a whole number of hours (0: a stopped sandbox's pool port is free at once; blank: 24)"
 
   case "${ACCESS_MODE}" in
     *-domain) [[ -n "${DOMAIN}" ]] || die "ACCESS_MODE=${ACCESS_MODE} requires DOMAIN" ;;
@@ -482,7 +485,7 @@ build_deploy_env() {
              OS_RESERVE_PCT SERVICES_PCT BURST_FACTOR BURST_SWAP_MIN_PCT BLAST_PCT DISK_RESERVE_PCT \
              REDAMON_WEIGHT_WEBAPP REDAMON_WEIGHT_NEO4J REDAMON_WEIGHT_AGENT \
              REVSHELL_TARGET_CIDRS TUNNELS_ENABLED \
-             KALI_SANDBOX_PORT_POOL KALI_SANDBOX_MAX_CONCURRENT KALI_SANDBOX_IDLE_MINUTES \
+             KALI_SANDBOX_PORT_POOL KALI_SANDBOX_MAX_CONCURRENT KALI_SANDBOX_IDLE_MINUTES KALI_SANDBOX_PORT_HOLD_HOURS \
              MCP_SERVER_ENABLED MCP_EDGE_ALLOW_BEARER MCP_CLIENT_CIDRS \
              MCP_TOKEN_RETENTION_DAYS MCP_LLM_DAILY_BUDGET MCP_RATE_MUTE_PER_MIN \
              MCP_RATE_READ_PER_MIN MCP_RATE_QUERY_PER_MIN MCP_RATE_WRITE_PER_MIN \
@@ -623,6 +626,7 @@ seed TUNNELS_ENABLED "\${TUNNELS_ENABLED}"
 seed_or_unset KALI_SANDBOX_PORT_POOL "\${KALI_SANDBOX_PORT_POOL}"
 seed_or_unset KALI_SANDBOX_MAX_CONCURRENT "\${KALI_SANDBOX_MAX_CONCURRENT}"
 seed_or_unset KALI_SANDBOX_IDLE_MINUTES "\${KALI_SANDBOX_IDLE_MINUTES}"
+seed_or_unset KALI_SANDBOX_PORT_HOLD_HOURS "\${KALI_SANDBOX_PORT_HOLD_HOURS}"
 # The LHOST the agent and the project settings suggest. redamon.sh would detect the
 # default route's source address, which on a cloud host behind 1:1 NAT is the private
 # one, while a target reaches revshell-open's forwarders at the public one. A DNS name
@@ -1121,6 +1125,7 @@ seed MCP_TOKEN_PRUNE_INTERVAL "\${MCP_TOKEN_PRUNE_INTERVAL}"
 seed_or_unset KALI_SANDBOX_PORT_POOL "\${KALI_SANDBOX_PORT_POOL}"
 seed_or_unset KALI_SANDBOX_MAX_CONCURRENT "\${KALI_SANDBOX_MAX_CONCURRENT}"
 seed_or_unset KALI_SANDBOX_IDLE_MINUTES "\${KALI_SANDBOX_IDLE_MINUTES}"
+seed_or_unset KALI_SANDBOX_PORT_HOLD_HOURS "\${KALI_SANDBOX_PORT_HOLD_HOURS}"
 # The LHOST the agent and the project settings suggest. redamon.sh would detect the
 # default route's source address, which on a cloud host behind 1:1 NAT is the private
 # one, while a target reaches revshell-open's forwarders at the public one. A DNS name

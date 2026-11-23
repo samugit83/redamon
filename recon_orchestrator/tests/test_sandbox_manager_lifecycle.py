@@ -569,7 +569,7 @@ class Gate:
 @pytest.fixture
 def env(monkeypatch, tmp_path):
     for name in ("RECON_MAX_CONCURRENT_GLOBAL", "RECON_MAX_CONCURRENT_PER_USER",
-                 sc.MAX_CONCURRENT_ENV, sc.PORT_POOL_ENV, sc.IDLE_MINUTES_ENV,
+                 sc.MAX_CONCURRENT_ENV, sc.PORT_POOL_ENV, sc.IDLE_MINUTES_ENV, sc.PORT_HOLD_HOURS_ENV,
                  sc.TERMINAL_MAX_SESSIONS_ENV, "RESOURCE_PROFILE_DEFAULT_PATH", "KALI_SANDBOX_MODE",
                  "CAPTURE_PROXY_IMAGE"):
         monkeypatch.delenv(name, raising=False)
@@ -601,7 +601,8 @@ def env_of(container):
 
 async def test_ensure_starts_one_container_per_user(world):
     ans = await world.mgr.ensure(ALICE, ["projA"])
-    assert set(ans) == set(sc.ENSURE_RUNNING_KEYS)
+    assert set(ans) == set(sc.ENSURE_RUNNING_KEYS) | set(sc.ENSURE_RUNNING_OPTIONAL_KEYS)
+    assert ans["reverse_port_state"] == sc.REVERSE_PORT_NO_POOL
     assert "mode" not in ans and ans["state"] == "running" and ans["fresh"] is True
     assert ans["view"] == sc.VIEW_OWN and ans["projects"] == ["projA"]
     assert ans["ports"] == dict(sc.PORTS) and ans["reverse_port"] == sc.DEFAULT_REVERSE_PORT
@@ -713,7 +714,7 @@ async def test_subnet_skips_a_used_one(world):
 
 
 async def test_mounts_are_the_contract_plan(world):
-    await world.mgr.ensure(ALICE, ["projB", "projA"])
+    await world.mgr.ensure(ALICE, ["projB", "projA"], custom_templates=["custom.yaml"])
     mounts = world.created(ALICE)[0].created_kwargs["mounts"]
     got = sorted((m["Type"], m["Source"], m["Target"], m["ReadOnly"]) for m in mounts)
     key = sc.sandbox_key(ALICE, "own")
@@ -723,7 +724,7 @@ async def test_mounts_are_the_contract_plan(world):
         ("bind", f"{HOST_BASES['output']}/users/{key}", "/opt/output", False),
         ("bind", HOST_BASES["servers"], "/opt/mcp_servers", True),
         ("bind", HOST_BASES["graph_db"], "/opt/graph_db", True),
-        ("bind", HOST_BASES["custom_templates"], "/opt/nuclei-templates", True),
+        ("bind", f"{HOST_BASES['output']}/templates/{key}", "/opt/nuclei-templates", True),
         ("volume", sc.TEMPLATES_VOLUME, "/root/nuclei-templates", True),
         ("volume", "redamon-osv-db", "/osv-db", True),
     ])
@@ -731,12 +732,12 @@ async def test_mounts_are_the_contract_plan(world):
     for _, source, target, _ in got:
         assert target != "/workspace" and ".staging" not in source + target
         assert "docker.sock" not in source + target
-        assert source != HOST_BASES["workspace"]
+        assert source not in (HOST_BASES["workspace"], HOST_BASES["custom_templates"])
 
 
 async def test_empty_custom_templates_folder_is_not_mounted(world):
     os.remove(os.path.join(world.local[sc.MOUNT_CUSTOM_TEMPLATES], "custom.yaml"))
-    await world.mgr.ensure(ALICE, [])
+    await world.mgr.ensure(ALICE, [], custom_templates=["custom.yaml"])
     targets = {m["Target"] for m in world.created(ALICE)[0].created_kwargs["mounts"]}
     assert sc.CUSTOM_TEMPLATES_TARGET not in targets
     assert sc.OUTPUT_TARGET in targets and not any(t.startswith("/workspace") for t in targets)
@@ -746,7 +747,7 @@ async def test_missing_custom_templates_folder_does_not_block_a_start(world, tmp
     local = dict(world.local)
     local[sc.MOUNT_CUSTOM_TEMPLATES] = str(tmp_path / "absent")
     mgr = world.manager(local_bases=local)
-    assert (await mgr.ensure(ALICE, []))["state"] == "running"
+    assert (await mgr.ensure(ALICE, [], custom_templates=["custom.yaml"]))["state"] == "running"
     targets = {m["Target"] for m in world.created(ALICE)[0].created_kwargs["mounts"]}
     assert sc.CUSTOM_TEMPLATES_TARGET not in targets
 
@@ -1342,7 +1343,7 @@ async def test_mounts_that_cannot_be_read_from_inside_refuse_the_start(world):
 
 
 async def test_mounts_are_read_from_inside_before_the_instance_runs(world):
-    await world.mgr.ensure(ALICE, ["projA"])
+    await world.mgr.ensure(ALICE, ["projA"], custom_templates=["custom.yaml"])
     execs = [c for c in world.d.calls if c[0] == "container.exec"]
     assert len(execs) == 1
     targets = set(execs[0][2][3:])
@@ -2226,7 +2227,9 @@ async def test_status_and_list_running(world):
     assert set(status) == {"instances"} and len(status["instances"]) == 2
     own = next(i for i in status["instances"] if i["view"] == "own")
     assert set(own) == {"instance", "view", "state", "projects_hash", "created_at", "last_used",
-                        "lease_kinds", "stop_at", "stop_reason", "warn", "reverse_port"}
+                        "lease_kinds", "stop_at", "stop_reason", "warn", "reverse_port",
+                        *sc.STATUS_OPTIONAL_KEYS}
+    assert own["reverse_port_state"] == sc.REVERSE_PORT_NO_POOL
     assert own["instance"] == a["instance"] and own["projects_hash"] == sc.projects_hash(["projA"])
     assert own["stop_at"] == own["last_used"] + sc.IDLE_MINUTES_DEFAULT * 60
     assert a["token"] not in json.dumps(status) and a["tunnel_token"] not in json.dumps(status)
@@ -2235,7 +2238,9 @@ async def test_status_and_list_running(world):
     assert {(i["user_id"], i["view"]) for i in listed} == {(ALICE, "own"), (ALICE, "act_as")}
     first = next(i for i in listed if i["view"] == "own")
     assert first == {"user_id": ALICE, "view": "own", "instance": a["instance"], "host": a["host"],
-                     "token": a["token"], "state": "running"}
+                     "token": a["token"], "state": "running", "reverse_port": sc.DEFAULT_REVERSE_PORT,
+                     "reverse_port_state": sc.REVERSE_PORT_NO_POOL}
+    assert set(first) - set(sc.LIST_OPTIONAL_KEYS) == {"user_id", "view", "instance", "host", "token", "state"}
 
 
 @pytest.mark.parametrize("old_switch", ["shared", "per_user", ""])

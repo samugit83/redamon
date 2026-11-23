@@ -557,6 +557,7 @@ services:
       KALI_SANDBOX_IDLE_MINUTES: ${KALI_SANDBOX_IDLE_MINUTES:-}
       KALI_SANDBOX_MAX_CONCURRENT: ${KALI_SANDBOX_MAX_CONCURRENT:-}
       KALI_SANDBOX_PORT_POOL: ${KALI_SANDBOX_PORT_POOL:-}
+      KALI_SANDBOX_PORT_HOLD_HOURS: ${KALI_SANDBOX_PORT_HOLD_HOURS:-}
       # Existing knob, now applied to each person's sandbox terminal.
       TERMINAL_MAX_SESSIONS: ${TERMINAL_MAX_SESSIONS:-}
       # Inbound API auth: the orchestrator validates this on every request (except

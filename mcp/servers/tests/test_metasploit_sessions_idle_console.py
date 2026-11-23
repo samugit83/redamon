@@ -1,12 +1,12 @@
-"""In a per-user Kali sandbox, `GET /sessions` never starts msfconsole (group 1, S12, WI-S12-6).
+"""In a Kali sandbox, `GET /sessions` never starts msfconsole (group 1, S12, WI-S12-6).
 
-The agent's hold watcher (agentic/sandbox_hold.py) reads every per-user sandbox's session
-manager once a minute to see whether it holds a session or a job. `get_msf_console()` starts
-msfconsole on first use: 15-18 s and a few hundred MB, inside a 1 GiB sandbox envelope. So in
-a per-user sandbox (`REDAMON_SANDBOX_MODE=per_user`, set by the orchestrator) a console that was
-never started answers the empty lists at once and stays unstarted: it holds no session, job or
-non-MSF session (registering one starts the console). Once a console exists, the answer is
-its data, as before. The shared container is unchanged: it still starts the console.
+The agent's hold watcher (agentic/sandbox_hold.py) reads every sandbox's session manager
+once a minute to see whether it holds a session or a job. `get_msf_console()` starts
+msfconsole on first use: 15-18 s and a few hundred MB, inside a 1 GiB sandbox envelope. So a
+console that was never started answers the empty lists at once and stays unstarted: it holds
+no session, job or non-MSF session (registering one starts the console). Once a console
+exists, the answer is its data, as before. Every sandbox is one person's: the switch the
+shared container once read (`REDAMON_SANDBOX_MODE`) changes nothing (FU-8).
 
 metasploit_server is loaded by path with fastmcp stubbed (see test_metasploit_progress.py).
 
@@ -84,7 +84,7 @@ class SessionsWithoutConsole(unittest.TestCase):
         self.assertEqual((status, body), (200, LIVE_DATA))
         self.assertEqual(self.starts, [1])
 
-    def test_shared_container_still_starts_the_console(self):
+    def test_the_old_mode_switch_changes_nothing(self):
         msf._msf_console = None
         for env in ({"REDAMON_SANDBOX_MODE": "shared"}, {}):
             with self.subTest(env=env), mock.patch.dict(os.environ, env, clear=False):
@@ -92,8 +92,9 @@ class SessionsWithoutConsole(unittest.TestCase):
                     os.environ.pop("REDAMON_SANDBOX_MODE", None)
                 self.starts.clear()
                 status, body = _get("/sessions")
-                self.assertEqual(self.starts, [1])
-                self.assertEqual((status, body), (200, LIVE_DATA))
+                self.assertEqual(self.starts, [], "a read must not start msfconsole")
+                self.assertEqual(status, 200)
+                self.assertEqual((body["sessions"], body["jobs"], body["non_msf_sessions"]), ([], [], []))
 
     def test_progress_is_unchanged(self):
         """Only the session list skips the start; nothing else changes here."""

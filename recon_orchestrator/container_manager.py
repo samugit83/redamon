@@ -1438,8 +1438,8 @@ class ContainerManager:
                     # Mount /tmp for Docker-in-Docker temp files (avoids spaces in paths)
                     "/tmp/redamon": {"bind": "/tmp/redamon", "mode": "rw"},
                     # JS Recon shared volumes with webapp
-                    "redamon_js_recon_uploads": {"bind": "/data/js-recon-uploads", "mode": "ro"},
-                    "redamon_js_recon_custom": {"bind": "/data/js-recon-custom", "mode": "ro"},
+                    self._compose_object("js_recon_uploads"): {"bind": "/data/js-recon-uploads", "mode": "ro"},
+                    self._compose_object("js_recon_custom"): {"bind": "/data/js-recon-custom", "mode": "ro"},
                     # Official nuclei-templates volume (read-only) for the AI tag
                     # selector to read TEMPLATES-STATS.json. Populated by
                     # ensure_templates_volume() before any nuclei pass.
@@ -2006,10 +2006,22 @@ class ContainerManager:
     # =======================================================================
     CAPTURE_PROXY_NAME = "redamon-capture-proxy"
     TRAFFIC_INGEST_NAME = "redamon-traffic-ingest"
-    # Compose network names: `redamon` is explicitly named "redamon-network";
-    # `pentest-net` has no explicit name so Compose derives "redamon_pentest-net".
-    _CAPTURE_PROXY_NETWORK = "redamon_pentest-net"
+    # `redamon` is explicitly named "redamon-network"; `pentest-net` has no
+    # explicit name, so compose names it "<project>_pentest-net" after the stack's
+    # compose project (api.py sets compose_project from the orchestrator's own
+    # labels). A clone under another project name has no "redamon_pentest-net", or
+    # worse, another stack's. The js_recon volumes are named the same way.
+    _PENTEST_NETWORK_KEY = "pentest-net"
+    _DEFAULT_COMPOSE_PROJECT = "redamon"
     _CAPTURE_INGEST_NETWORK = "redamon-network"
+    compose_project: Optional[str] = None
+
+    def _compose_object(self, key: str) -> str:
+        """The name compose gives a network or volume of this stack declared with no `name:`."""
+        return f"{self.compose_project or self._DEFAULT_COMPOSE_PROJECT}_{key}"
+
+    def _capture_proxy_network(self) -> str:
+        return self._compose_object(self._PENTEST_NETWORK_KEY)
 
     def _capture_image(self) -> str:
         return os.environ.get("CAPTURE_PROXY_IMAGE", "redamon-capture-proxy:latest")
@@ -2168,7 +2180,7 @@ class ContainerManager:
                      # per-user Kali sandbox's included (the proxy is on every one).
                      "--set", "rawtcp=false",
                      "--listen-port", str(port), "-s", "/app/capture_addon.py"],
-            network=self._CAPTURE_PROXY_NETWORK,
+            network=self._capture_proxy_network(),
             # Loopback publish so host-net recon containers reach 127.0.0.1:<port>.
             ports={f"{port}/tcp": ("127.0.0.1", port)},
             environment={
@@ -2850,8 +2862,8 @@ class ContainerManager:
                     self.sca_intel_volume: {"bind": "/sca-intel", "mode": "ro"},
                     "/tmp/redamon": {"bind": "/tmp/redamon", "mode": "rw"},
                     # JS Recon shared volumes with webapp (uploaded files + custom patterns)
-                    "redamon_js_recon_uploads": {"bind": "/data/js-recon-uploads", "mode": "ro"},
-                    "redamon_js_recon_custom": {"bind": "/data/js-recon-custom", "mode": "ro"},
+                    self._compose_object("js_recon_uploads"): {"bind": "/data/js-recon-uploads", "mode": "ro"},
+                    self._compose_object("js_recon_custom"): {"bind": "/data/js-recon-custom", "mode": "ro"},
                     # Official nuclei-templates volume (read-only) for the AI tag
                     # selector to read TEMPLATES-STATS.json.
                     "nuclei-templates": {"bind": "/opt/nuclei-templates-official", "mode": "ro"},

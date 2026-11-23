@@ -875,6 +875,8 @@ async def lifespan(app: FastAPI):
     # Per-user Kali sandboxes: wired, then adopted once, before the app serves a
     # request (uvicorn accepts none until this function yields).
     own_project = await asyncio.to_thread(_own_compose_project, container_manager.client)
+    # Before anything starts the capture proxy: it joins this stack's pentest-net.
+    container_manager.compose_project = own_project
     sandbox_manager = _build_sandbox_manager(container_manager, own_project)
     _wire_sandbox_manager(container_manager, sandbox_manager)
     templates = asyncio.create_task(sandbox_templates.refresh_loop(sandbox_manager))
@@ -1129,7 +1131,7 @@ async def sandbox_ensure(req: SandboxEnsureRequest):
     mgr = _adopted_sandbox_manager()
     answer = await _sandbox_call(mgr.ensure(req.user_id, req.projects, view=req.view,
                                             need_project=req.need_project, wait=req.wait,
-                                            touch=req.touch))
+                                            touch=req.touch, custom_templates=req.custom_templates))
     return JSONResponse(status_code=200 if answer.get("state") == "running" else 202, content=answer)
 
 

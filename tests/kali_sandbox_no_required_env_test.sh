@@ -3,7 +3,7 @@
 # No per-user Kali sandbox variable is ever required (group 1, master plan §7).
 # Run:  bash tests/kali_sandbox_no_required_env_test.sh
 #
-# The three KALI_SANDBOX_* variables are optional knobs of the recon orchestrator,
+# The four KALI_SANDBOX_* variables are optional knobs of the recon orchestrator,
 # with their defaults in recon_orchestrator/sandbox_contract.py:
 #   - in the compose files each appears once, in the recon-orchestrator
 #     `environment:` block, as an empty pass-through `${VAR:-}` (the orchestrator
@@ -16,7 +16,7 @@
 #     key from the server .env, so the orchestrator's default holds again), and no
 #     line that assigns one a value;
 #   - .env.example names each, on commented lines only;
-#   - the contract names exactly these three, so a fourth variable joins this list
+#   - the contract names exactly these four, so a fifth variable joins this list
 #     on purpose, and the temporary switch KALI_SANDBOX_MODE is named nowhere.
 # It also checks the three host folders the orchestrator binds into sandboxes are
 # mounted into the orchestrator (it reads their host paths from Docker's mount table).
@@ -44,7 +44,7 @@ pass() { PASS=$((PASS+1)); printf '  \033[0;32mPASS\033[0m %s\n' "$1"; }
 fail() { FAIL=$((FAIL+1)); printf '  \033[0;31mFAIL\033[0m %s\n' "$1"; }
 section() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
 
-VARS="KALI_SANDBOX_IDLE_MINUTES KALI_SANDBOX_MAX_CONCURRENT KALI_SANDBOX_PORT_POOL"
+VARS="KALI_SANDBOX_IDLE_MINUTES KALI_SANDBOX_MAX_CONCURRENT KALI_SANDBOX_PORT_POOL KALI_SANDBOX_PORT_HOLD_HOURS"
 
 # Every compose file but the base: the root overlays, the single-host deploy
 # overlay and the orchestrator's standalone file.

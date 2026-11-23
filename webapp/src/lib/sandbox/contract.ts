@@ -48,6 +48,21 @@ export const ENSURE_RUNNING_KEYS = [
 ] as const
 export const ENSURE_STARTING_KEYS = ['state', 'instance', 'fresh'] as const
 
+// Why an answer's `reverse_port` is what it is: a pool port was given, no pool is
+// configured, or the pool had no port free for this person and view (all in use or
+// held for someone else). Without a pool port it is 4444, which only the person's own
+// tunnel reaches.
+export const REVERSE_PORT_ASSIGNED = 'assigned'
+export const REVERSE_PORT_NO_POOL = 'no_pool'
+export const REVERSE_PORT_POOL_FULL = 'pool_full'
+export const REVERSE_PORT_STATES = ['assigned', 'no_pool', 'pool_full'] as const
+// Keys this orchestrator always sends and an older one did not: keep them when present,
+// never require them (reversePortState reads one). Not in ENSURE_RUNNING_KEYS, which a
+// reader requires whole.
+export const ENSURE_RUNNING_OPTIONAL_KEYS = ['reverse_port_state'] as const
+export const STATUS_OPTIONAL_KEYS = ['reverse_port_state'] as const
+export const LIST_OPTIONAL_KEYS = ['reverse_port', 'reverse_port_state'] as const
+
 // Agent -> webapp internal routes (master key), the browser's status route, and the
 // agent routes the webapp calls (master key).
 export const INTERNAL_ROUTE_ENSURE = '/api/internal/agent/sandbox/ensure'
@@ -131,6 +146,7 @@ export type StopReason = (typeof STOP_REASONS)[number]
 export type SandboxStatusState = (typeof SANDBOX_STATUS_STATES)[number]
 export type SandboxStatusReason = (typeof SANDBOX_STATUS_REASONS)[number]
 export type KaliExecErrorCode = (typeof KALI_EXEC_ERROR_CODES)[number]
+export type ReversePortState = (typeof REVERSE_PORT_STATES)[number]
 export type SandboxErrorCode =
   | typeof ERR_INVALID_PROJECT_ID
   | typeof ERR_INVALID_USER_ID
@@ -186,6 +202,12 @@ export interface EnsureRequest {
   need_project: string | null
   wait: boolean
   touch: boolean
+  /**
+   * The custom nuclei templates `user_id` may use: paths relative to the templates folder
+   * of their own templates and the instance's. A start copies exactly these into the
+   * sandbox; absent, it copies none.
+   */
+  custom_templates?: string[]
 }
 
 export interface EnsureRunning {
@@ -204,6 +226,8 @@ export interface EnsureRunning {
   stop_at: number | null
   stop_reason: StopReason | null
   warn: boolean
+  /** Absent from an older orchestrator: read it with reversePortState. */
+  reverse_port_state?: ReversePortState
 }
 
 /** The 202 of a call that did not wait (`wait: false` or `touch`). */
@@ -242,6 +266,8 @@ export interface SandboxInstanceStatus {
   stop_reason: StopReason | null
   warn: boolean
   reverse_port: number
+  /** null while a starting instance has no port allocated yet. */
+  reverse_port_state?: ReversePortState | null
 }
 
 export interface SandboxStatusAnswer {
@@ -256,6 +282,8 @@ export interface SandboxListEntry {
   host: string
   token: string
   state: SandboxState
+  reverse_port?: number
+  reverse_port_state?: ReversePortState
 }
 
 export interface SandboxListAnswer {
@@ -264,6 +292,13 @@ export interface SandboxListAnswer {
 
 export interface StoppedAnswer {
   stopped: number
+}
+
+/** An answer's `reverse_port_state`, or null (unknown) when it is missing or not a known state. */
+export function reversePortState(value: unknown): ReversePortState | null {
+  return typeof value === 'string' && (REVERSE_PORT_STATES as readonly string[]).includes(value)
+    ? (value as ReversePortState)
+    : null
 }
 
 /** The partial-answer line of the Sessions panel and the Operations view. */
