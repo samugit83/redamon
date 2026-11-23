@@ -46,10 +46,14 @@ async def sweep_session_bodies(tool_executor, state) -> int:
     if not paths or tool_executor is None:
         return 0
     command = "rm -rf -- " + " ".join(shlex.quote(p) for p in paths)
+    import sandbox_router
+
     try:
-        result = await tool_executor.execute(
-            "kali_shell", {"command": command}, state.get("current_phase") or "informational",
-            skip_phase_check=True)
+        # No model reads this call's result: it must not use up the chat's restart note.
+        with sandbox_router.without_restart_note():
+            result = await tool_executor.execute(
+                "kali_shell", {"command": command}, state.get("current_phase") or "informational",
+                skip_phase_check=True)
         if not (result or {}).get("success"):
             logger.warning("body sweep: kali_shell did not succeed for %d path(s)", len(paths))
     except Exception as exc:  # noqa: BLE001 - a sweep must never break the run's end

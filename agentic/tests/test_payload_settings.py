@@ -53,19 +53,36 @@ class _PoolSandbox(unittest.TestCase):
 
 
 class NoPublishedPortGuidanceTests(unittest.TestCase):
-    """A run with no sandbox yet, or one that publishes no port: the ASK branch never
-    steers the agent to the host's LAN IP."""
+    """A run whose sandbox is not known yet, or one that publishes no port: never the
+    host's LAN IP. Not knowing the sandbox is not "no port" (D-E): it asks nothing yet."""
 
-    def test_the_default_offers_no_direct_reverse_shell(self):
+    def setUp(self):
         import sandbox_router
 
         sandbox_router._reset()
         self.addCleanup(sandbox_router._reset)
+
+    def _render(self, sandbox):
+        import sandbox_router
+
         with patch.object(utils, "get_setting", _fake_settings({})), \
+             patch.object(sandbox_router, "current_handle", lambda project_id=None: sandbox), \
              patch.dict(os.environ, {"HOST_LAN_IP": "192.168.1.50"}, clear=False):
-            out = utils.get_session_config_prompt()
+            return utils.get_session_config_prompt()
+
+    def test_a_sandbox_not_known_yet_is_said_so(self):
+        out = self._render(None)
+        self.assertIn("Your Kali sandbox: not known yet.", out)
+        self.assertNotIn("PAYLOAD DIRECTION NOT CONFIGURED", out)
+        self.assertNotIn("NO DIRECT REVERSE SHELL", out)
+        self.assertNotIn("192.168.1.50", out)
+
+    def test_a_sandbox_without_a_port_offers_no_direct_reverse_shell(self):
+        from one_sandbox import handle
+
+        out = self._render(handle())
         self.assertIn("PAYLOAD DIRECTION NOT CONFIGURED", out)
-        self.assertIn("YOUR KALI SANDBOX PUBLISHES NO PORT", out)
+        self.assertIn("NO DIRECT REVERSE SHELL", out)
         self.assertNotIn("192.168.1.50", out)
         self.assertNotIn("host machine's LAN IP", out)
 
@@ -145,18 +162,30 @@ class DetectedHostIpSuggestionTests(_PoolSandbox):
                 out = utils.get_session_config_prompt()
         self.assertIn("ASK THE USER for it", out)
 
-    def test_suppressed_when_ngrok_tunnel_enabled(self):
-        # Tunnel enabled -> the ask-branch is a broken-tunnel state; a LAN-IP
-        # suggestion would contradict the "fix your tunnel" guidance.
+    def _tunnels_off(self):
+        import time
+        from one_sandbox import handle
+
+        utils._forget_all_tunnel_status()
+        self.addCleanup(utils._forget_all_tunnel_status)
+        utils._tunnel_status[handle(reverse_port=POOL_PORT).key] = (
+            time.monotonic(), {"ngrok": {"active": False}, "chisel": {"active": False}})
+
+    def test_suggested_when_an_enabled_ngrok_tunnel_is_off(self):
+        # The pool port reaches the sandbox without the tunnel, so its LHOST is still the
+        # host's address; the banner says the tunnel is off, not that a token is wrong.
+        self._tunnels_off()
         out = self._render({"NGROK_TUNNEL_ENABLED": True},
                            {"HOST_LAN_IP": "192.168.1.50"})
-        self.assertNotIn("192.168.1.50", out)
-        self.assertIn("ASK THE USER for it", out)
+        self.assertIn("192.168.1.50", out)
+        self.assertIn("ngrok Tunnel: OFF", out)
 
-    def test_suppressed_when_chisel_tunnel_enabled(self):
+    def test_suggested_when_an_enabled_chisel_tunnel_is_off(self):
+        self._tunnels_off()
         out = self._render({"CHISEL_TUNNEL_ENABLED": True},
                            {"HOST_LAN_IP": "192.168.1.50"})
-        self.assertNotIn("192.168.1.50", out)
+        self.assertIn("192.168.1.50", out)
+        self.assertIn("Chisel Tunnel: OFF", out)
 
 
 class ModeRegressionTests(_PoolSandbox):
@@ -179,13 +208,13 @@ class ModeRegressionTests(_PoolSandbox):
         self.assertIn("Mode: BIND", out)
         self.assertNotIn("DO NOT GUESS OR AUTO-DETECT", out)
 
-    def test_lhost_without_lport_falls_to_ask_with_guidance(self):
-        # Discordant config (LHOST set, LPORT missing) -> ASK, and the host-IP
-        # guidance still shows so the user knows which value to complete.
+    def test_lhost_without_lport_is_reverse_on_the_pool_port(self):
+        # The sandbox's pool port is LPORT (D-F): an empty project LPORT is not missing.
         out = self._render({"LHOST": "203.0.113.9"})
-        self.assertIn("PAYLOAD DIRECTION NOT CONFIGURED", out)
-        self.assertIn("LPORT is missing", out)
-        self.assertIn("as LHOST the host's address the target can reach", out)
+        self.assertIn("Mode: REVERSE", out)
+        self.assertIn(f"set LPORT {POOL_PORT}", out)
+        self.assertNotIn("PAYLOAD DIRECTION NOT CONFIGURED", out)
+        self.assertNotIn("LPORT is missing", out)
 
 
 if __name__ == "__main__":

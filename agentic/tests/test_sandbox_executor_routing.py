@@ -19,6 +19,7 @@ person's MCP client is a fake that records what it was sent.
 Run: ./agentic/run_tests.sh tests/test_sandbox_executor_routing.py
 """
 import asyncio
+import contextlib
 import importlib
 import json
 import os
@@ -156,6 +157,13 @@ class Recorder:
         Recorder.calls.append(("GET", url, None, dict(headers or {})))
         return SimpleNamespace(status_code=200, json=lambda: {
             "active": True, "output": "line", "line_count": 1, "elapsed_seconds": 1})
+
+    @contextlib.asynccontextmanager
+    async def stream(self, method, url, headers=None, json=None):
+        """The progress poll's bounded read (sandbox_http.read_answer)."""
+        Recorder.calls.append((method, url, json, dict(headers or {})))
+        yield httpx.Response(200, json={"active": True, "output": "line", "line_count": 1,
+                                        "elapsed_seconds": 1})
 
 
 FAKE_HTTPX = SimpleNamespace(AsyncClient=Recorder, TimeoutException=httpx.TimeoutException,
@@ -316,7 +324,10 @@ class TestRoutesToThePerson(Routing):
         result = await self.run_as("bob", run, tenant="alice")
         self.assertTrue(result["success"], result)
         self.assertEqual([c["tool"] for c in self.shared.calls], ["create_issue"])
-        self.assertEqual(self.gateway.requests, [], "a user MCP tool never asks for a sandbox")
+        # The run's start may read the list (D-E: what the prompt knows of the sandbox), which
+        # starts nothing; the tool itself takes no sandbox and no lease.
+        self.assertEqual([p for _m, p, _b, _h in self.gateway.requests if p != contract.INTERNAL_ROUTE_LIST], [],
+                         "a user MCP tool never asks for a sandbox")
 
 
 # =============================================================================
@@ -451,7 +462,10 @@ class TestRefusalsAndFailures(Routing):
         self.assertTrue(result["success"], result)
         instances = {k[2] for k in self.clients.by_key}
         self.assertEqual(len(instances), 2)
+        # The output is the tool's own; the chat's model is told about the new instance
+        # beside it (D-G).
         self.assertEqual(result["output"], f"ok from {self.clients.of('bob').label}")
+        self.assertTrue(result["sandbox_note"].startswith("[Kali sandbox restarted]"), result)
         self.assertEqual(self.clients.of("bob").token, self.gateway.token("bob"))
         self.assertEqual(len(self.gateway.ensures()), 2)
 
@@ -475,6 +489,8 @@ class TestRefusalsAndFailures(Routing):
                 return await self.call("kali_shell", {"command": "again"})
 
         result = await self.run_as("bob", bob)
+        # The error stays the contract's exact text (kali_exec maps it to its reason), with
+        # no note: a failed call leaves it for the chat's next one.
         self.assertEqual(result, {"success": False, "output": None, "error": contract.SANDBOX_STOPPED})
         self.assertEqual(len(self.gateway.ensures()), 2, "one re-acquire, never a loop")
 

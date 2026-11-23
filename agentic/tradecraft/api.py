@@ -119,8 +119,10 @@ async def check_url(body: CheckUrlRequest) -> Any:
     async def call() -> CheckUrlResult:
         # The jobs' fetcher, so the browser tier works here too (a JavaScript site, "always
         # use the browser", "wait for element", a GitBook's rendered menu), in the Kali
-        # sandbox of the account the request names.
-        with jobs.sandbox_person(body.user_id), net.use_fetcher(jobs.default_fetcher()):
+        # sandbox of the account the request names: its act-as view when an administrator
+        # acts as it, never the account's own view and never the administrator's.
+        with jobs.sandbox_person(body.user_id, acting=bool(body.real_actor_user_id)), \
+                net.use_fetcher(jobs.default_fetcher()):
             return await check_url_mod.check_url(body)
 
     return await _within_deadline("check_url", call, lambda: CheckUrlResult(ok=False, error_code="timeout"))
@@ -137,8 +139,9 @@ async def read_now(body: ReadNowRequest) -> Any:
     async def call() -> ReadNowResult:
         # The jobs' fetcher, as Check URL: a page reads as the agent's tool reads it, the browser
         # tier included (a JavaScript site, "always use the browser"; never with a login), in
-        # the Kali sandbox of the account the request names.
-        with jobs.sandbox_person(body.user_id), net.use_fetcher(jobs.default_fetcher()):
+        # the Kali sandbox of the account the request names, in its act-as view under act-as.
+        with jobs.sandbox_person(body.user_id, acting=bool(body.real_actor_user_id)), \
+                net.use_fetcher(jobs.default_fetcher()):
             return await read_now_mod.read_now(body)
 
     return await _within_deadline("read_now", call, lambda: ReadNowResult(error_code="timeout"))

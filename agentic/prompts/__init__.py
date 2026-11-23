@@ -566,12 +566,14 @@ def session_config_needed(phase: str, is_statefull: bool, attack_path_type: str)
     uncached suffix). Keeping the gate in one place prevents the two call sites
     from drifting. Conditions:
       1. exploitation phase + statefull mode (CVE exploit, brute force)
-      2. phishing attack path in ANY phase — payloads are generated before the
+      2. post-exploitation phase + statefull mode: `sessions -u` and local
+         exploits start handlers of their own and need the same LHOST/LPORT
+      3. phishing attack path in ANY phase — payloads are generated before the
          exploitation phase (msfvenom during informational; the "exploitation"
          in phishing is when the target opens the file)
     """
     return (
-        (phase == "exploitation" and is_statefull)
+        (phase in ("exploitation", "post_exploitation") and is_statefull)
         or attack_path_type == "phishing_social_engineering"
     )
 

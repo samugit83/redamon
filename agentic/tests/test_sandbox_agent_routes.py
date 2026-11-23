@@ -243,7 +243,8 @@ class TheTunnelStatus(_Base):
 
     def test_no_running_sandbox_reads_inactive_and_starts_none(self):
         resp = self.status()
-        self.assertEqual(resp.json(), {"ngrok": {"active": False}, "chisel": {"active": False}})
+        self.assertEqual(resp.json(), {"ngrok": {"active": False, "status": "off"},
+                                       "chisel": {"active": False, "status": "off"}})
         self.assertEqual(self.fleet.ensures(), [], "a status read never ensures")
         self.assertEqual(self.fleet.leases(), [])
 
@@ -267,8 +268,35 @@ class TheTunnelStatus(_Base):
         draining = self.fleet.add("alice", state="draining")
         draining.tunnel = bob.tunnel
         resp = self.status("?user_id=alice")
-        self.assertEqual(resp.json(), {"ngrok": {"active": False}, "chisel": {"active": False}})
+        self.assertEqual(resp.json(), {"ngrok": {"active": False, "status": "off"},
+                                       "chisel": {"active": False, "status": "off"}})
         self.assertEqual(self.tunnel_calls(bob) + self.tunnel_calls(acting) + self.tunnel_calls(draining), [])
+
+    def test_active_is_the_process_and_status_says_whether_it_forwards(self):
+        """The webapp reads `active` as "the tunnel process runs" (personTunnelRuns): a
+        chisel still connecting or refused is active, with its status and no endpoint;
+        only "on" carries host and port. The manager's reason reaches it printable and short."""
+        bob = self.fleet.add("bob")
+        bob.tunnel = {"ngrok": {"active": True, "status": "connecting"},
+                      "chisel": {"active": True, "status": "error: remote port 4444 refused\x1b[31m" + "x" * 400,
+                                 "host": "vps.example"}}
+        answer = self.status().json()
+        self.assertEqual(answer["ngrok"], {"active": True, "status": "connecting"})
+        self.assertEqual(answer["chisel"]["active"], True)
+        self.assertNotIn("host", answer["chisel"])
+        self.assertTrue(answer["chisel"]["status"].startswith("error: remote port 4444 refused[31m"))
+        self.assertNotIn("\x1b", answer["chisel"]["status"])
+        self.assertLessEqual(len(answer["chisel"]["status"]), len("error: ") + 160)
+        bob.tunnel = {"ngrok": {"active": True, "status": "on", "host": "0.tcp.ngrok.io", "port": 12345},
+                      "chisel": {"active": False, "status": "off"}}
+        self.assertEqual(self.status().json(), {
+            "ngrok": {"active": True, "status": "on", "host": "0.tcp.ngrok.io", "port": 12345},
+            "chisel": {"active": False, "status": "off"}})
+        bob.tunnel = {"ngrok": {"active": True, "status": "on", "host": "<script>", "port": 1},
+                      "chisel": {"active": True, "status": "rm -rf /"}}
+        self.assertEqual(self.status().json(), {
+            "ngrok": {"active": True, "status": "error: unreadable endpoint"},
+            "chisel": {"active": True, "status": "error: unreadable status"}})
 
     def test_a_tunnel_answer_outside_its_shape_reads_inactive(self):
         bob = self.fleet.add("bob")
@@ -575,25 +603,29 @@ class TheTunnelLookups(unittest.IsolatedAsyncioTestCase):
         await utils._settle_tunnel_refreshes()
         self.assertEqual(self.requests, [])
 
-    async def test_chisel_asks_the_webapp_for_the_persons_own_config(self):
+    async def test_chisel_is_read_from_the_runs_sandbox_through_its_tunnel_manager(self):
+        """Chisel is ACTIVE when the sandbox says so (FU-15), never because the person's
+        stored settings name a server: the webapp is not asked."""
         handle = _handle()
-        answer = mock.Mock(status_code=200, json=lambda: {"chiselServerUrl": "https://vps.example:8443"})
-        answer.raise_for_status = lambda: None
-        self.legacy.side_effect = None
-        self.legacy.return_value = answer
+        self.status = {"ngrok": {"active": False},
+                       "chisel": {"active": True, "status": "on", "host": "vps.example"}}
         with mock.patch.object(router, "current_handle", return_value=handle):
+            self.assertIsNone(utils._query_chisel_tunnel(), "the first build dials nothing")
+            await utils._settle_tunnel_refreshes()
             info = utils._query_chisel_tunnel()
         self.assertEqual(info, {"host": "vps.example", "port": 4444, "hostname": "vps.example"},
                          "chisel forwards the handler port only (tunnel_manager.py: R:4444)")
-        self.assertEqual(self.legacy.call_args.kwargs["params"], {"userId": "bob"})
+        self.legacy.assert_not_called()
 
-    async def test_a_failed_chisel_lookup_logs_no_user_id(self):
-        handle = _handle(person="person-id-in-a-url")
-        self.legacy.side_effect = RuntimeError("GET http://webapp/api/global/tunnel-config?userId=person-id-in-a-url")
-        with mock.patch.object(router, "current_handle", return_value=handle), \
-                self.assertLogs(utils.logger, level="DEBUG") as logs:
+    async def test_a_chisel_that_failed_to_connect_is_not_active(self):
+        handle = _handle()
+        self.status = {"chisel": {"active": True, "status": "error: remote port 4444 refused",
+                                  "host": "vps.example"}}
+        with mock.patch.object(router, "current_handle", return_value=handle):
+            utils._query_chisel_tunnel()
+            await utils._settle_tunnel_refreshes()
             self.assertIsNone(utils._query_chisel_tunnel())
-        self.assertNotIn("person-id-in-a-url", "\n".join(logs.output))
+        self.legacy.assert_not_called()
 
 
 class TheReverseShellHints(unittest.TestCase):
@@ -635,15 +667,18 @@ class TheReverseShellHints(unittest.TestCase):
         self.assertIn("Chisel Tunnel: ACTIVE", text)
         self.assertIn("chisel forwards only `vps.example:4444`", text)
         self.assertNotIn("8080", text)
-        self.assertNotIn("SRVPORT", text)
+        # SRVPORT is named only to forbid it (one reachable port): never given a value.
+        self.assertNotRegex(text, r"set SRVPORT\s+\S")
+        self.assertIn("Never set SRVHOST/SRVPORT", text)
         self.assertNotIn("kali-sandbox:", text)
 
     def test_a_run_without_a_sandbox_yet_gets_no_lan_ip_hint(self):
-        # Nothing of a sandbox is published before it starts: no host LAN IP as LHOST.
+        # A sandbox not known yet is not one without a port (D-E): no LAN IP, no question.
         text = self.prompt(None)
         self.assertNotIn("192.168.1.50", text)
         self.assertNotIn("from the host into the container", text)
-        self.assertIn("NO DIRECT REVERSE SHELL", text)
+        self.assertIn("not known yet", text)
+        self.assertNotIn("NO DIRECT REVERSE SHELL", text)
 
 
 if __name__ == "__main__":

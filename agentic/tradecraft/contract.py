@@ -297,6 +297,9 @@ class CheckUrlRequest(_Model):
     type_options: dict[str, Any] = Field(default_factory=dict)
     settings: dict[str, Any] = Field(default_factory=dict)
     secrets: Secrets = Field(default_factory=Secrets)
+    # The administrator acting as the account; null otherwise. The check then runs in the
+    # account's act-as sandbox, as JobStartRequest's job does.
+    real_actor_user_id: Optional[IdStr] = None
 
 
 class IndexInfo(_Model):
@@ -373,6 +376,8 @@ class ReadNowRequest(_Model):
     url: str = Field(min_length=1, max_length=2048)
     read_settings: dict[str, Any] = Field(default_factory=dict)
     secrets: Secrets = Field(default_factory=Secrets)
+    # As CheckUrlRequest's: the read runs in the account's act-as sandbox.
+    real_actor_user_id: Optional[IdStr] = None
 
 
 class ReadNowResult(_Model):

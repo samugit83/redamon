@@ -218,6 +218,9 @@ async def execute_tool_node(
         step_data["tool_output"] = result.get("output") or ""
         step_data["success"] = result.get("success", False)
         step_data["error_message"] = result.get("error")
+        # The Kali restart note (D-G): beside the output, for the think node's model only.
+        if result.get("sandbox_note"):
+            step_data["sandbox_note"] = result["sandbox_note"]
     else:
         step_data["tool_output"] = ""
         step_data["success"] = False

@@ -16,6 +16,7 @@ Run in-container: ./agentic/run_tests.sh tests/test_msf_progress_auth.py
 """
 import ast
 import asyncio
+import contextlib
 import os
 import sys
 import unittest
@@ -25,6 +26,8 @@ from unittest import mock
 _AGENTIC_DIR = Path(__file__).resolve().parents[1]
 if str(_AGENTIC_DIR) not in sys.path:
     sys.path.insert(0, str(_AGENTIC_DIR))
+
+import httpx  # noqa: E402
 
 import sandbox_contract as contract  # noqa: E402
 import tools  # noqa: E402
@@ -73,6 +76,12 @@ class _RecordingClient:
 
     async def get(self, url, **kwargs):
         return self._record("GET", url, kwargs)
+
+    @contextlib.asynccontextmanager
+    async def stream(self, method, url, **kwargs):
+        """The progress poll's bounded read (sandbox_http.read_answer)."""
+        resp = self._record(method, url, kwargs)
+        yield httpx.Response(resp.status_code, json=resp._body)
 
     async def post(self, url, **kwargs):
         return self._record("POST", url, kwargs)

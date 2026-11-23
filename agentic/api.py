@@ -3502,7 +3502,10 @@ async def register_non_msf_session(body: dict, sandbox: _SandboxParam = None,
 # PER-USER KALI SANDBOXES — tunnel status, tunnel push, forget a person (B.12)
 # =============================================================================
 
-_TUNNEL_INACTIVE = {"ngrok": {"active": False}, "chisel": {"active": False}}
+_TUNNEL_INACTIVE = {"ngrok": {"active": False, "status": "off"}, "chisel": {"active": False, "status": "off"}}
+#: The tunnel manager's reason after "error: " is the sandbox root's text: it reaches the
+#: webapp printable and short.
+_TUNNEL_REASON_MAX = 160
 _TUNNEL_CONFIGURE_PATH = "/tunnel/configure"
 #: The tunnel manager stops the old tunnels (up to ~8 s) before it starts new ones.
 _TUNNEL_PUSH_S = 20.0
@@ -3511,11 +3514,44 @@ _TUNNEL_FIELDS = ("ngrokAuthtoken", "chiselServerUrl", "chiselAuth")
 _TUNNEL_FIELD_MAX = 4096
 
 
-def _tunnel_answer(ngrok, chisel) -> dict:
-    return {
-        "ngrok": {"active": True, "host": ngrok["host"], "port": ngrok["port"]} if ngrok else {"active": False},
-        "chisel": {"active": True, "host": chisel["host"], "port": chisel["port"]} if chisel else {"active": False},
-    }
+def _tunnel_status_text(value) -> Optional[str]:
+    """The manager's tunnel status, bounded: "on", "connecting", "off" or "error: <reason>";
+    None for anything else."""
+    if value in ("on", "connecting", "off"):
+        return value
+    if not isinstance(value, str) or not value.startswith("error"):
+        return None
+    reason = "".join(ch for ch in value[len("error"):].lstrip(": ") if ch.isprintable()).strip()
+    return f"error: {reason[:_TUNNEL_REASON_MAX]}" if reason else "error"
+
+
+def _tunnel_answer(data) -> dict:
+    """The webapp's view of one instance's tunnels. `active` is the manager's own (its
+    process runs: personTunnelRuns reads it so, and a tunnel still connecting or failing
+    must not read as switched off); `status` says whether it forwards, and host/port come
+    only while it does. A manager older than `status` answers as before. The prompts read
+    the same answer through utils.tunnels_from_status: a tunnel only while "on"."""
+    from utils import tunnels_from_status
+
+    endpoints = dict(zip(("ngrok", "chisel"), tunnels_from_status(data)))
+    answer = {}
+    for name in ("ngrok", "chisel"):
+        value = data.get(name) if isinstance(data, dict) else None
+        value = value if isinstance(value, dict) else {}
+        endpoint = endpoints[name]
+        if "status" not in value:
+            answer[name] = ({"active": True, "host": endpoint["host"], "port": endpoint["port"]}
+                            if endpoint else {"active": False})
+            continue
+        entry = {"active": value.get("active") is True,
+                 "status": _tunnel_status_text(value.get("status")) or "error: unreadable status"}
+        if entry["status"] == "on":
+            if endpoint:
+                entry.update(host=endpoint["host"], port=endpoint["port"])
+            else:
+                entry["status"] = "error: unreadable endpoint"
+        answer[name] = entry
+    return answer
 
 
 async def _tunnel_manager_call(handle, method: str, path: str, body=None,
@@ -3552,13 +3588,13 @@ async def get_tunnel_status(request: Request,
                and h.state == "running"]
     if not current:
         return dict(_TUNNEL_INACTIVE)
-    from utils import refresh_tunnel_status, tunnels_from_status
+    from utils import refresh_tunnel_status
     # Bounded, and remembered for the run's prompts (which never dial a sandbox).
     data = await refresh_tunnel_status(current[0])
     if data is None:
         return JSONResponse(status_code=502, content={
             "error": "The sandbox's tunnel manager did not answer", "code": "tunnel_status_unavailable"})
-    return _tunnel_answer(*tunnels_from_status(data))
+    return _tunnel_answer(data)
 
 
 def _tunnel_config(raw) -> Optional[dict]:

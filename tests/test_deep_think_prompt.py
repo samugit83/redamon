@@ -220,57 +220,34 @@ class TestPhaseDefinitions:
 # ---------------------------------------------------------------------------
 
 class TestSessionConfigGating:
-    """Verify session config is only injected when appropriate."""
+    """Verify session config is only injected when appropriate: the one gate both think
+    calls (the main prompt and Deep Think) and get_phase_tools use."""
+
+    @staticmethod
+    def needs(phase, is_statefull, attack_path):
+        from prompts import session_config_needed
+        return session_config_needed(phase, is_statefull, attack_path)
 
     def test_exploitation_statefull_needs_session(self):
-        phase = "exploitation"
-        is_statefull = True
-        attack_path = "cve_exploit"
-        needs_session = (
-            (phase == "exploitation" and is_statefull)
-            or attack_path == "phishing_social_engineering"
-        )
-        assert needs_session is True
+        assert self.needs("exploitation", True, "cve_exploit") is True
 
     def test_informational_does_not_need_session(self):
-        phase = "informational"
-        is_statefull = True
-        attack_path = "cve_exploit"
-        needs_session = (
-            (phase == "exploitation" and is_statefull)
-            or attack_path == "phishing_social_engineering"
-        )
-        assert needs_session is False
+        assert self.needs("informational", True, "cve_exploit") is False
 
     def test_phishing_any_phase_needs_session(self):
         for phase in ["informational", "exploitation", "post_exploitation"]:
-            attack_path = "phishing_social_engineering"
-            is_statefull = False
-            needs_session = (
-                (phase == "exploitation" and is_statefull)
-                or attack_path == "phishing_social_engineering"
-            )
-            assert needs_session is True, f"phishing should need session in {phase}"
+            assert self.needs(phase, False, "phishing_social_engineering") is True, \
+                f"phishing should need session in {phase}"
 
     def test_exploitation_stateless_no_session(self):
-        phase = "exploitation"
-        is_statefull = False
-        attack_path = "cve_exploit"
-        needs_session = (
-            (phase == "exploitation" and is_statefull)
-            or attack_path == "phishing_social_engineering"
-        )
-        assert needs_session is False
+        assert self.needs("exploitation", False, "cve_exploit") is False
 
-    def test_post_exploitation_no_session(self):
-        phase = "post_exploitation"
-        is_statefull = True
-        attack_path = "cve_exploit"
-        needs_session = (
-            (phase == "exploitation" and is_statefull)
-            or attack_path == "phishing_social_engineering"
-        )
-        assert needs_session is False
+    def test_post_exploitation_statefull_needs_session(self):
+        # `sessions -u` and local exploits start handlers of their own (FU-12).
+        assert self.needs("post_exploitation", True, "cve_exploit") is True
+
+    def test_post_exploitation_stateless_no_session(self):
+        assert self.needs("post_exploitation", False, "cve_exploit") is False
 
 
 # ---------------------------------------------------------------------------
@@ -283,11 +260,20 @@ class TestSessionConfigContent:
     @patch('utils._query_ngrok_tunnel', return_value=None)
     @patch('utils._query_chisel_tunnel', return_value=None)
     def test_reverse_mode_no_tunnel(self, mock_chisel, mock_ngrok):
-        """With LHOST/LPORT set and no tunnel, should show reverse mode."""
+        """With LHOST set, no tunnel and a sandbox pool port: reverse mode on that port (a
+        sandbox not known yet shows no mode at all)."""
+        import sandbox_contract
+        import sandbox_router
         from utils import get_session_config_prompt
-        result = get_session_config_prompt()
+        pool = sandbox_router.SandboxHandle(
+            user_id="bob", view="own", instance="a1b2c3",
+            host=sandbox_contract.container_name("bob", "own", "a1b2c3"), token="t" * 43,
+            tunnel_token="", ports=sandbox_contract.PORTS, reverse_port=45002)
+        with patch('sandbox_router.current_handle', return_value=pool):
+            result = get_session_config_prompt()
         assert "REVERSE" in result
         assert "10.0.0.1" in result
+        assert "set LPORT 45002" in result
 
     @patch('utils._query_chisel_tunnel', return_value={'host': '18.102.183.71', 'port': 4444, 'srv_port': 8080})
     @patch('utils._query_ngrok_tunnel', return_value=None)

@@ -301,13 +301,14 @@ class WhoGetsTheGuard(unittest.TestCase):
         cfg, _ = mcp_registry.to_mcp_servers_dict([user, *_build_system_mcp_servers(host, "t" * 43)])
         self.assertIs(cfg["srv-x"]["httpx_client_factory"], mcp_registry.user_server_http_client)
         for sid in mcp_registry.SYSTEM_SERVER_IDS:
-            self.assertNotIn("httpx_client_factory", cfg[sid])
+            # Unguarded (the sandbox is in the pool), but never the SDK's redirect-following default.
+            self.assertIs(cfg[sid]["httpx_client_factory"], mcp_registry.system_server_http_client)
 
     def test_a_payload_cannot_mark_itself_a_system_server(self):
         forged = mcp_registry.MCPServer.model_validate({**_server(f"http://{IN_POOL}:8000/sse"),
                                                         "_system": True, "system": True})
         cfg, _ = mcp_registry.to_mcp_servers_dict([forged])
-        self.assertIn("httpx_client_factory", cfg["srv-x"])
+        self.assertIs(cfg["srv-x"]["httpx_client_factory"], mcp_registry.user_server_http_client)
 
     def test_a_per_user_sandbox_keeps_its_own_unguarded_servers(self):
         import sandbox_router
@@ -318,7 +319,7 @@ class WhoGetsTheGuard(unittest.TestCase):
         cfg = sandbox_router.server_configs_for(handle)
         self.assertEqual(set(cfg), set(mcp_registry.SYSTEM_SERVER_IDS))
         for entry in cfg.values():
-            self.assertNotIn("httpx_client_factory", entry)
+            self.assertIs(entry["httpx_client_factory"], mcp_registry.system_server_http_client)
 
 
 class CustomModelClients(unittest.TestCase):

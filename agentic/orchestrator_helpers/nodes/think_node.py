@@ -88,6 +88,7 @@ from prompts.classification import build_skill_menu
 from prompt_safety import wrap_untrusted
 from utils import get_session_config_prompt
 from tools import set_tenant_context, set_phase_context, set_graph_view_context
+from sandbox_router import model_note
 
 logger = logging.getLogger(__name__)
 
@@ -307,6 +308,51 @@ def scope_guardrail_section() -> str:
     return section
 
 
+#: Why the gate asks for each payload value (is_session_config_complete names them).
+_SESSION_PARAM_CONTEXT = {
+    "LHOST": ("LHOST is the address of this RedAmon host that the target can reach (never the "
+              "Kali sandbox's own Docker IP). LPORT is already known: your Kali sandbox's "
+              "reverse-shell port."),
+    "BIND_PORT_ON_TARGET": ("Your Kali sandbox has no reverse-shell port and no tunnel is on, so "
+                            "only a bind payload can work: BIND_PORT_ON_TARGET is the port the "
+                            "target will open (e.g. 4444). For a reverse payload instead, turn on "
+                            "a tunnel in Settings → Tunneling."),
+}
+
+
+def missing_session_params(qa_history) -> list:
+    """The payload values the LHOST/LPORT gate still has to ask for: what
+    is_session_config_complete misses (nothing while the sandbox is not known yet), less
+    what the person already answered in this chat."""
+    config_complete, missing_params = is_session_config_complete()
+    if config_complete:
+        return []
+    answered_params = set()
+    for qa in qa_history or []:
+        answer = qa.get("answer", {})
+        answer_text = answer.get("answer", "") if answer else ""
+        question_obj = qa.get("question", {})
+        question_text = (question_obj.get("question", "") if question_obj else "").upper()
+        if answer_text:
+            if "LHOST" in question_text:
+                answered_params.add("LHOST")
+            if "LPORT" in question_text:
+                answered_params.add("LPORT")
+            if "BIND" in question_text:
+                answered_params.update(("LPORT or BIND_PORT_ON_TARGET", "BIND_PORT_ON_TARGET"))
+    return [p for p in missing_params if p not in answered_params]
+
+
+def session_params_question(missing: list, phase: str) -> dict:
+    context = " ".join(_SESSION_PARAM_CONTEXT[p] for p in missing if p in _SESSION_PARAM_CONTEXT)
+    return UserQuestionRequest(
+        question=f"Please provide the following required parameters for session-based exploitation: {', '.join(missing)}",
+        context=context or "Session-based exploitation requires these parameters to be configured.",
+        format="text",
+        phase=phase,
+    ).model_dump()
+
+
 async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_creds, streaming_callbacks=None, graph_view_cyphers=None) -> dict:
     """
     Core ReAct reasoning node.
@@ -500,12 +546,8 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
             # Build session config (tunnel/LHOST/LPORT) for deep think context
             _attack_path = state.get("attack_path_type", "")
             _is_statefull = get_setting('POST_EXPL_PHASE_TYPE', 'statefull') == 'statefull'
-            _needs_session = (
-                (phase == "exploitation" and _is_statefull)
-                or _attack_path == "phishing_social_engineering"
-            )
             _session_config = ""
-            if _needs_session:
+            if session_config_needed(phase, _is_statefull, _attack_path):
                 _sc = get_session_config_prompt()
                 if _sc:
                     _session_config = f"\n{_sc}\n"
@@ -923,7 +965,8 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
             tool_name=pending_step.get("tool_name", "unknown"),
             tool_args=json_dumps_safe(pending_step.get("tool_args") or {}),
             success=pending_step.get("success", False),
-            tool_output=wrap_untrusted(tool_output_raw[:get_setting('TOOL_OUTPUT_MAX_CHARS', 20000)]),
+            tool_output=model_note(pending_step)
+            + wrap_untrusted(tool_output_raw[:get_setting('TOOL_OUTPUT_MAX_CHARS', 20000)]),
         )
         system_prompt = system_prompt + "\n" + output_section
         logger.info(f"[{user_id}/{project_id}/{session_id}] Injected output analysis section for tool: {pending_step.get('tool_name')}")
@@ -950,7 +993,7 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
             tool_outputs_parts.append(
                 f"### Tool {i+1}: {s.get('tool_name', 'unknown')} ({status})\n"
                 f"Args: {json_dumps_safe(s.get('tool_args', {}))}\n"
-                f"Output:\n{wrap_untrusted(output)}"
+                f"Output:\n{model_note(s)}{wrap_untrusted(output)}"
             )
 
         plan_section = PENDING_PLAN_OUTPUTS_SECTION.format(
@@ -2291,40 +2334,12 @@ async def think_node(state: AgentState, config, *, llm, guidance_queues, neo4j_c
         decision.tool_name == "metasploit_console" and
         not updates.get("awaiting_user_question")):
 
-        config_complete, missing_params = is_session_config_complete()
-
-        if not config_complete:
-            qa_history = state.get("qa_history", [])
-            answered_params = set()
-            for qa in qa_history:
-                answer = qa.get("answer", {})
-                answer_text = answer.get("answer", "") if answer else ""
-                question_obj = qa.get("question", {})
-                question_text = question_obj.get("question", "") if question_obj else ""
-
-                if answer_text:
-                    if "LHOST" in question_text.upper():
-                        answered_params.add("LHOST")
-                    if "LPORT" in question_text.upper():
-                        answered_params.add("LPORT")
-                    if "BIND" in question_text.upper():
-                        answered_params.add("LPORT or BIND_PORT_ON_TARGET")
-
-            still_missing = [p for p in missing_params if p not in answered_params]
-
-            if still_missing:
-                logger.info(f"[{user_id}/{project_id}/{session_id}] Forcing ask_user: missing session params {still_missing}")
-                updates["_decision"]["action"] = "ask_user"
-                updates["pending_question"] = UserQuestionRequest(
-                    question=f"Please provide the following required parameters for session-based exploitation: {', '.join(still_missing)}",
-                    context="Session-based exploitation requires these parameters to be configured. "
-                            "LHOST is your attacker IP address where the target will connect back. "
-                            "LPORT is the port you will listen on. "
-                            "For bind payloads, BIND_PORT is the port the target will open.",
-                    format="text",
-                    phase=phase,
-                ).model_dump()
-                updates["awaiting_user_question"] = True
+        still_missing = missing_session_params(state.get("qa_history", []))
+        if still_missing:
+            logger.info(f"[{user_id}/{project_id}/{session_id}] Forcing ask_user: missing session params {still_missing}")
+            updates["_decision"]["action"] = "ask_user"
+            updates["pending_question"] = session_params_question(still_missing, phase)
+            updates["awaiting_user_question"] = True
 
     # Tool confirmation gate — only when setting enabled and no other gate active
     if (get_setting('REQUIRE_TOOL_CONFIRMATION', True)

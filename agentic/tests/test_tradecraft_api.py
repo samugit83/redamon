@@ -305,6 +305,31 @@ def test_deadline_answers_timeout(client, monkeypatch):
     assert client.post("/tradecraft/v2/read-now", json=fixture("ReadNowRequest"), headers=H).json()["error_code"] == "timeout"
 
 
+@pytest.mark.parametrize("route, model, module, function", [
+    ("check-url", "CheckUrlRequest", "check_url_mod", "check_url"),
+    ("read-now", "ReadNowRequest", "read_now_mod", "read_now"),
+])
+def test_an_administrator_acting_as_the_account_works_in_its_act_as_sandbox(client, monkeypatch, route, model,
+                                                                         module, function):
+    """FU-18: Check URL and Read now render in the account's `act_as` view when an administrator
+    acts as it (the request names them), as every other Kali path does; never the account's
+    own view, which mounts what act-as access refuses, and never the administrator's."""
+    import sandbox_router
+    from tradecraft.contract import CheckUrlResult
+
+    seen = []
+
+    async def where(_body):
+        seen.append((sandbox_router.sandbox_user(), sandbox_router.sandbox_view()))
+        return CheckUrlResult(ok=False, error_code="timeout") if model == "CheckUrlRequest" else ReadNowResult()
+
+    monkeypatch.setattr(getattr(tc_api, module), function, where)
+    acting = {**fixture(model), "real_actor_user_id": "admin_fake"}
+    assert client.post(f"/tradecraft/v2/{route}", json=acting, headers=H).status_code == 200
+    assert client.post(f"/tradecraft/v2/{route}", json=fixture(model), headers=H).status_code == 200
+    assert seen == [("user_owner_fake", "act_as"), ("user_owner_fake", "own")]
+
+
 def test_the_deadlines_are_the_contracts():
     assert tc_api.DEADLINES_SEC == {"check_url": 60, "preview_focus": 120, "read_now": 45}
 

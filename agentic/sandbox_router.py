@@ -26,6 +26,7 @@ import inspect
 import logging
 import os
 import re
+import time
 import uuid
 import weakref
 from collections import OrderedDict
@@ -62,6 +63,14 @@ _CODE = re.compile(r"[a-z_]{1,64}")
 _PATH = re.compile(r"(?:/[!-\[\]-~]*)?")
 _DETAIL_MAX = 300
 
+#: The prompts describe a person's sandbox before the run's first Kali call from what the
+#: agent last learned of it. A remembered instance is checked against the list again after
+#: KNOWN_RECHECK_S; a person with none is looked up at most every KNOWN_RETRY_S.
+KNOWN_MAX = 4096
+KNOWN_RECHECK_S = 120.0
+KNOWN_RETRY_S = 30.0
+SEEN_MAX = 4096
+
 #: Replaced by the tests with an httpx.MockTransport; None is httpx's own transport.
 _transport: Optional[httpx.AsyncBaseTransport] = None
 
@@ -74,6 +83,9 @@ current_sandbox_user: ContextVar[Optional[str]] = ContextVar("current_sandbox_us
 #: ``act``, a triage run with ``real_actor_user_id``).
 current_sandbox_acting: ContextVar[bool] = ContextVar("current_sandbox_acting", default=False)
 _current_scope: ContextVar[Optional["_RunScope"]] = ContextVar("sandbox_run_scope", default=None)
+#: True inside work the run does for itself (the body sweep at its end): its calls neither
+#: get the restart note nor use it up, since no model reads what they return.
+_hold_note: ContextVar[bool] = ContextVar("sandbox_hold_note", default=False)
 
 
 # =============================================================================
@@ -161,6 +173,15 @@ class SandboxHandle:
     kind: Optional[str] = None
     state: str = "running"
     fresh: bool = False
+    #: One of the contract's REVERSE_PORT_STATES (D-B), or None: not reported (an older
+    #: orchestrator).
+    reverse_port_state: Optional[str] = None
+    #: False when the answer carried no reverse port at all (a list entry from an older
+    #: orchestrator): the port is then unknown, not "none".
+    reverse_port_known: bool = True
+    #: The instance the agent knew for this person and view before this one, when it
+    #: differs (a restart or a replacement): (instance, reverse_port, reverse_port_state).
+    previous: Optional[Tuple[str, int, Optional[str]]] = field(default=None, repr=False)
     stop_at: Optional[float] = None
     stop_reason: Optional[str] = None
     warn: bool = False
@@ -199,6 +220,28 @@ _live: Dict[str, "weakref.WeakSet[SandboxHandle]"] = {}
 #: The instance each (person, view) was last answered with.
 _current: Dict[Tuple[str, str], str] = {}
 _renewals: set = set()
+
+
+@dataclass
+class _Known:
+    """What the agent last learned of one (person, view)'s instance, for the prompts:
+    ``snapshot`` is a lease-less copy marked released, so no call can be sent with it.
+    ``gone`` once the instance stopped; it is still the one a restart is compared with."""
+    snapshot: SandboxHandle
+    at: float
+    gone: bool = False
+
+
+_known: "OrderedDict[Tuple[str, str], _Known]" = OrderedDict()
+#: Bumped for a (person, view) each time its instance is known to have stopped (a drop, a
+#: retire): a list answer read before that names the stopped instance and is ignored.
+_known_gen: "OrderedDict[Tuple[str, str], int]" = OrderedDict()
+#: The list lookups in flight, and when each (person, view) was last looked up.
+_lookups: Dict[Tuple[str, str], asyncio.Task] = {}
+_looked_up: "OrderedDict[Tuple[str, str], float]" = OrderedDict()
+#: The instance each unit of work (person, view, chat session) last called, with its
+#: reverse port: a call that lands on another one carries the restart note.
+_seen: "OrderedDict[Tuple[str, str, str], Tuple[str, int, Optional[str]]]" = OrderedDict()
 
 
 def _who(user_id: str, view: str) -> str:
@@ -343,6 +386,30 @@ def _valid_token(token) -> bool:
     return isinstance(token, str) and _TOKEN.fullmatch(token) is not None
 
 
+def _reverse_port_of(data: Mapping) -> Tuple[int, Optional[str], bool]:
+    """(port, state, known) of an ensure, list or status entry, as the webapp's
+    readReversePort reads it: ``no_pool`` and ``pool_full`` mean no port whatever port is
+    sent; ``assigned`` without a usable port (missing, or DEFAULT_REVERSE_PORT) is unknown;
+    a state sent as null (an instance whose port is not allocated yet) is unknown. With no
+    state key at all, DEFAULT_REVERSE_PORT means none, any other port is assigned, and no
+    port is unknown. Never an error: an older orchestrator sends no state, a list entry
+    before D-B no port."""
+    if "reverse_port_state" in data and data["reverse_port_state"] is None:
+        return contract.DEFAULT_REVERSE_PORT, None, False
+    port = data.get("reverse_port")
+    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+        port = None
+    state = contract.reverse_port_state(data.get("reverse_port_state"))
+    none = contract.DEFAULT_REVERSE_PORT
+    if state == contract.REVERSE_PORT_ASSIGNED:
+        return (port, state, True) if port is not None and port != none else (none, None, False)
+    if state is not None:
+        return none, state, True
+    if port is None:
+        return none, None, False
+    return port, (contract.REVERSE_PORT_ASSIGNED if port != none else None), True
+
+
 def _running_handle(person: str, view: str, project_id: Optional[str], data: Mapping) -> Optional[SandboxHandle]:
     """The handle a 200 answer gives, or None when the answer is not exactly
     this person's view: another person, another view, a host that is not their
@@ -356,9 +423,7 @@ def _running_handle(person: str, view: str, project_id: Optional[str], data: Map
     projects = data.get("projects")
     if project_id is not None and (not isinstance(projects, list) or project_id not in projects):
         return None
-    reverse = data.get("reverse_port")
-    if not isinstance(reverse, int) or isinstance(reverse, bool) or not 1 <= reverse <= 65535:
-        reverse = contract.DEFAULT_REVERSE_PORT
+    reverse, reverse_state, reverse_known = _reverse_port_of(data)
     tunnel = data.get("tunnel_token")
     stop_at = data.get("stop_at")
     stop_reason = data.get("stop_reason")
@@ -366,7 +431,8 @@ def _running_handle(person: str, view: str, project_id: Optional[str], data: Map
         user_id=person, view=view, instance=instance, host=data["host"],
         token=data["token"], tunnel_token=tunnel if _valid_token(tunnel) else "",
         # The ports are the contract's: an answer cannot move a call to another port.
-        ports=contract.PORTS, reverse_port=reverse,
+        ports=contract.PORTS, reverse_port=reverse, reverse_port_state=reverse_state,
+        reverse_port_known=reverse_known,
         project_id=project_id, fresh=data.get("fresh") is True,
         stop_at=float(stop_at) if isinstance(stop_at, (int, float)) and not isinstance(stop_at, bool) else None,
         stop_reason=stop_reason if isinstance(stop_reason, str) and stop_reason in contract.STOP_REASONS else None,
@@ -378,7 +444,7 @@ def _starting_handle(person: str, view: str, project_id: Optional[str], data: Ma
     return SandboxHandle(
         user_id=person, view=view, instance=instance,
         host=contract.container_name(person, view, instance), token="", tunnel_token="",
-        ports=contract.PORTS, reverse_port=contract.DEFAULT_REVERSE_PORT,
+        ports=contract.PORTS, reverse_port=contract.DEFAULT_REVERSE_PORT, reverse_port_known=False,
         project_id=project_id, state="starting", fresh=data.get("fresh") is True)
 
 
@@ -539,6 +605,8 @@ def _retire(handle: SandboxHandle, *, whole_instance: bool) -> None:
             _cancel_quietly(h._renew_task)
     if whole_instance or not _in_use(handle.key):
         _drop_client(handle.key)
+    if whole_instance:
+        _mark_gone(handle.user_id, handle.view, handle.instance)
 
 
 def _register(handle: SandboxHandle) -> None:
@@ -551,6 +619,225 @@ def _note_current(handle: SandboxHandle) -> None:
     for key in [k for k in _clients if k[:2] == (handle.user_id, handle.view) and k[2] != handle.instance]:
         if not _in_use(key):
             _drop_client(key)
+
+
+# =============================================================================
+# What the agent knows of a person's sandbox outside a call (D-E, D-G)
+# =============================================================================
+
+def _snapshot(handle: SandboxHandle) -> SandboxHandle:
+    """A copy for the prompts alone: no lease, no project, and released, so client_for
+    refuses it. It keeps the host and tokens the tunnel-status read needs."""
+    return SandboxHandle(
+        user_id=handle.user_id, view=handle.view, instance=handle.instance, host=handle.host,
+        token=handle.token, tunnel_token=handle.tunnel_token, ports=handle.ports,
+        reverse_port=handle.reverse_port, reverse_port_state=handle.reverse_port_state,
+        reverse_port_known=handle.reverse_port_known, released=True)
+
+
+def _remember(handle: SandboxHandle) -> None:
+    """The person's view runs this instance now (a running ensure answer, or the list)."""
+    key = (handle.user_id, handle.view)
+    _known[key] = _Known(_snapshot(handle), time.monotonic())
+    _known.move_to_end(key)
+    while len(_known) > KNOWN_MAX:
+        _known.popitem(last=False)
+
+
+def _mark_gone(user_id: str, view: Optional[str] = None, instance: Optional[str] = None) -> None:
+    for key, entry in list(_known.items()):
+        if key[0] == user_id and (view is None or key[1] == view) and (
+                instance is None or entry.snapshot.instance == instance):
+            entry.gone = True
+    for v in contract.VIEWS if view is None else (view,):
+        key = (user_id, v)
+        _known_gen[key] = _known_gen.get(key, 0) + 1
+        _known_gen.move_to_end(key)
+    while len(_known_gen) > KNOWN_MAX:
+        _known_gen.popitem(last=False)
+
+
+def _gen(key: Tuple[str, str]) -> int:
+    return _known_gen.get(key, 0)
+
+
+def _merge_listed(handle: SandboxHandle, since: int) -> None:
+    """A running instance the list names: it refreshes what is known of the same instance
+    (an ensure's entry carries its tunnel token, which the list never does) and replaces
+    any other. ``since`` is the key's generation when the list was asked for: an instance
+    known to have stopped after that is not brought back."""
+    if _gen((handle.user_id, handle.view)) != since:
+        return
+    entry = _known.get((handle.user_id, handle.view))
+    if entry is not None and not entry.gone and entry.snapshot.instance == handle.instance:
+        entry.at = time.monotonic()
+        if not entry.snapshot.reverse_port_known and handle.reverse_port_known:
+            entry.snapshot.reverse_port = handle.reverse_port
+            entry.snapshot.reverse_port_state = handle.reverse_port_state
+            entry.snapshot.reverse_port_known = True
+        return
+    _remember(handle)
+
+
+async def _look_up(person: str, view: str) -> None:
+    """The person's running instance for this view from the gateway's list, which starts
+    nothing. An ensure answered meanwhile wins; an outage leaves what is known as it was."""
+    key = (person, view)
+    before, since = _known.get(key), _gen(key)
+    try:
+        status, data = await _gateway("GET", f"{WEBAPP_API_URL}/api/internal/agent/sandbox/list")
+    except (_Unreachable, _GatewayError) as exc:
+        logger.info("[sandbox] %s view=%s: the list was not read (%s)", _who(person, view), view, exc)
+        return
+    if status != 200 or not isinstance(data, dict) or not isinstance(data.get("sandboxes"), list):
+        return
+    if _known.get(key) is not before or _gen(key) != since:
+        return
+    mine = [h for h in _listed_handles(data)
+            if h.user_id == person and h.view == view and h.state == "running"]
+    if not mine:
+        _mark_gone(person, view)
+        return
+    current = _current.get(key)
+    _merge_listed(next((h for h in mine if h.instance == current), mine[0]), since)
+
+
+def _schedule_lookup(person: str, view: str) -> None:
+    """One background list lookup per (person, view) at a time, at most every
+    KNOWN_RETRY_S, on the running loop in a context of its own (the run's scope and handle
+    never ride along). Without a running loop nothing is scheduled."""
+    key = (person, view)
+    if key in _lookups:
+        return
+    now = time.monotonic()
+    last = _looked_up.get(key)
+    if last is not None and now - last < KNOWN_RETRY_S:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _looked_up[key] = now
+    _looked_up.move_to_end(key)
+    while len(_looked_up) > KNOWN_MAX:
+        _looked_up.popitem(last=False)
+    task = loop.create_task(_look_up(person, view), context=contextvars.Context())
+    _lookups[key] = task
+    task.add_done_callback(lambda _t, key=key: _lookups.pop(key, None))
+
+
+def _want_lookup(person: str, view: str) -> bool:
+    entry = _known.get((person, view))
+    return entry is None or entry.gone or time.monotonic() - entry.at > KNOWN_RECHECK_S
+
+
+def known_sandbox(project_id: Optional[str] = None) -> Optional[SandboxHandle]:
+    """The sandbox the prompts describe for this work's person and view (D-E): the run's
+    usable handle; else the instance last learned for that person and view (from an
+    ensure answer, or the gateway's list, read in the background without starting one);
+    else None, "not known yet". Never another person's or another view's.
+
+    What it returns may be a released snapshot: read its port, state and tunnels, never
+    call through it."""
+    handle = current_handle(project_id)
+    if handle is not None:
+        return handle
+    person = sandbox_user()
+    if not contract.valid_user_id(person):
+        return None
+    view = sandbox_view()
+    if _want_lookup(person, view):
+        _schedule_lookup(person, view)
+    entry = _known.get((person, view))
+    return None if entry is None or entry.gone else entry.snapshot
+
+
+async def _settle_lookups() -> None:
+    """Tests: wait for the list lookups in flight."""
+    tasks = [t for t in list(_lookups.values()) if not t.done()]
+    if tasks:
+        await asyncio.wait(tasks)
+
+
+def _port_sentence(port: int, state: Optional[str], known: bool) -> str:
+    if not known:
+        return " Its reverse-shell port is not known yet: read the payload settings block before setting LPORT."
+    if state == contract.REVERSE_PORT_ASSIGNED and port != contract.DEFAULT_REVERSE_PORT:
+        return f" Its reverse-shell port is `{port}`: use it as LPORT."
+    why = {contract.REVERSE_PORT_POOL_FULL: " (the port pool is full)",
+           contract.REVERSE_PORT_NO_POOL: " (no port pool is configured)"}.get(state, "")
+    return (f" It has no reverse-shell port{why}: no target can connect back to it without a "
+            "tunnel, so use a BIND payload unless the person turns a tunnel on.")
+
+
+@contextmanager
+def without_restart_note():
+    """The calls inside do not take the chat's restart note (see ``_hold_note``)."""
+    token = _hold_note.set(True)
+    try:
+        yield
+    finally:
+        _hold_note.reset(token)
+
+
+def new_instance_note(handle: Optional[SandboxHandle]) -> str:
+    """The note a tool output starts with when this work's call landed on a new instance
+    (D-G): one this acquire created (``fresh``), or another one than this chat (or job)
+    called last, or than the agent knew for the person and view. "" otherwise, on every
+    later call on the same instance, and inside ``without_restart_note``, which records
+    nothing."""
+    if handle is None or handle.state != "running" or _hold_note.get():
+        return ""
+    key = (handle.user_id, handle.view, _session_id())
+    last = _seen.get(key)
+    _seen[key] = (handle.instance, handle.reverse_port, handle.reverse_port_state)
+    _seen.move_to_end(key)
+    while len(_seen) > SEEN_MAX:
+        _seen.popitem(last=False)
+    if last is not None:
+        if last[0] == handle.instance:
+            return ""
+        before = last
+    elif handle.previous is not None:
+        before = handle.previous
+    elif handle.fresh:
+        before = None
+    else:
+        return ""
+
+    port = handle.reverse_port
+    assigned = (handle.reverse_port_known and handle.reverse_port_state == contract.REVERSE_PORT_ASSIGNED
+                and port != contract.DEFAULT_REVERSE_PORT)
+    if before is None:
+        head = ("[Kali sandbox started] This call ran in a new instance of your Kali sandbox, "
+                "started for it: no Metasploit session, job or handler from an earlier instance "
+                "is in it.")
+    else:
+        head = ("[Kali sandbox restarted] This call ran in a new instance of your Kali sandbox: "
+                "the one you used before stopped or was replaced, and its Metasploit sessions, "
+                "jobs and handlers are gone. Do not use their ids; run the exploit again if you "
+                "still need a session.")
+    tunnels = ("" if handle.view != contract.VIEW_OWN else
+               " Its tunnels (ngrok, chisel) are off until the person turns them on again in "
+               "Settings → Tunneling; the payload settings block shows their live state.")
+    if (assigned and before is not None and before[2] == contract.REVERSE_PORT_ASSIGNED
+            and before[1] != contract.DEFAULT_REVERSE_PORT):
+        if before[1] == port:
+            ports = f" Its reverse-shell port is unchanged: `{port}`."
+        else:
+            ports = (f" Its reverse-shell port is now `{port}` (it was `{before[1]}`): use "
+                     f"`{port}` as LPORT from now on.")
+    else:
+        ports = _port_sentence(port, handle.reverse_port_state, handle.reverse_port_known)
+    return head + tunnels + ports
+
+
+def model_note(step) -> str:
+    """The restart note a chat step carries (`sandbox_note`, set by tools for a chat run's
+    call), as the text the model reads right before the step's output, outside its
+    untrusted envelope: RedAmon wrote it. "" for a step without one."""
+    note = step.get("sandbox_note") if isinstance(step, dict) else None
+    return f"{note}\n\n" if isinstance(note, str) and note else ""
 
 
 async def _release_now(handle: SandboxHandle) -> None:
@@ -612,8 +899,14 @@ async def _acquire(user_id: str, view: str, project_id: Optional[str], kind: str
 
         handle.kind = kind
         handle.lease_id = str(uuid.uuid4())
+        prior = _known.get((person, view))
+        if prior is not None and prior.snapshot.instance != handle.instance:
+            known = prior.snapshot
+            handle.previous = (known.instance, known.reverse_port,
+                               known.reverse_port_state if known.reverse_port_known else None)
         _register(handle)
         _note_current(handle)
+        _remember(handle)
         taken, data = await _lease_call(person, handle.instance, handle.lease_id, kind)
         if taken in ("gone", "draining", "refused"):
             # The instance went away between the answer and the lease: ask again once.
@@ -724,8 +1017,14 @@ class _RunScope:
 @asynccontextmanager
 async def run_scope(session_id: str = ""):
     """Wrap one chat run: its first ``run`` acquire takes the lease, the end releases it,
-    also when the run is cancelled."""
+    also when the run is cancelled.
+
+    A run whose person has no known instance starts a list lookup now, in the background:
+    the first step's prompt then knows the sandbox (D-E) without a Kali call."""
     scope = _RunScope(session_id)
+    person, view = sandbox_user(), sandbox_view()
+    if contract.valid_user_id(person) and _want_lookup(person, view):
+        _schedule_lookup(person, view)
     token = _current_scope.set(scope)
     try:
         yield scope
@@ -809,10 +1108,11 @@ def _listed_handles(data: Mapping) -> List[SandboxHandle]:
                 or not _valid_token(entry.get("token"))
                 or entry.get("state") not in ("running", "draining")):
             continue
+        reverse, reverse_state, reverse_known = _reverse_port_of(entry)
         handles.append(SandboxHandle(
             user_id=person, view=view, instance=instance, host=entry["host"],
             token=entry["token"], tunnel_token="", ports=contract.PORTS,
-            reverse_port=contract.DEFAULT_REVERSE_PORT,
+            reverse_port=reverse, reverse_port_state=reverse_state, reverse_port_known=reverse_known,
             state="running" if entry["state"] == "running" else "draining"))
     return handles
 
@@ -820,6 +1120,7 @@ def _listed_handles(data: Mapping) -> List[SandboxHandle]:
 async def running_sandboxes() -> List[SandboxHandle]:
     """Every live instance (running or draining), as lease-less handles, from the
     gateway's list. Raises SandboxUnavailable when the list cannot be read."""
+    since = dict(_known_gen)
     try:
         status, data = await _gateway("GET", f"{WEBAPP_API_URL}/api/internal/agent/sandbox/list")
     except (_Unreachable, _GatewayError) as exc:
@@ -829,6 +1130,8 @@ async def running_sandboxes() -> List[SandboxHandle]:
     handles = _listed_handles(data)
     for handle in handles:
         _register(handle)
+        if handle.state == "running":
+            _merge_listed(handle, since.get((handle.user_id, handle.view), 0))
     return handles
 
 
@@ -843,7 +1146,8 @@ async def lease_listed(handle: SandboxHandle, kind: str) -> Optional[SandboxHand
     leased = SandboxHandle(
         user_id=handle.user_id, view=handle.view, instance=handle.instance, host=handle.host,
         token=handle.token, tunnel_token=handle.tunnel_token, ports=handle.ports,
-        reverse_port=handle.reverse_port, kind=kind, state=handle.state,
+        reverse_port=handle.reverse_port, reverse_port_state=handle.reverse_port_state,
+        reverse_port_known=handle.reverse_port_known, kind=kind, state=handle.state,
         lease_id=str(uuid.uuid4()))
     outcome, data = await _lease_call(handle.user_id, handle.instance, leased.lease_id, kind)
     if outcome != "ok":
@@ -939,6 +1243,7 @@ async def drop(user_id: str) -> None:
         _drop_client(key)
     for view in contract.VIEWS:
         _current.pop((user_id, view), None)
+    _mark_gone(user_id)
     current = asyncio.current_task()
     renewals = [t for t in renewals if t is not current]
     if renewals:
@@ -1071,7 +1376,7 @@ def forget_job(job_id: str) -> None:
 
 def _reset() -> None:
     """Forget everything."""
-    for task in list(_renewals):
+    for task in list(_renewals) + list(_lookups.values()):
         _cancel_quietly(task)
     _listeners.clear()
     _clients.clear()
@@ -1079,12 +1384,17 @@ def _reset() -> None:
     _live.clear()
     _current.clear()
     _jobs.clear()
+    _known.clear()
+    _known_gen.clear()
+    _lookups.clear()
+    _looked_up.clear()
+    _seen.clear()
 
 
 async def shutdown() -> None:
     """Cancel every lease renewal and wait for it to end (the agent's shutdown). The
     leases are not released: they expire by themselves within LEASE_TTL_S."""
-    tasks = [t for t in list(_renewals) if not t.done()]
+    tasks = [t for t in list(_renewals) + list(_lookups.values()) if not t.done()]
     for task in tasks:
         task.cancel()
     if tasks:

@@ -15,6 +15,7 @@ import os
 import stat
 import threading
 import logging
+from contextvars import ContextVar
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
@@ -417,6 +418,89 @@ def user_server_http_client(headers=None, timeout=None, auth=None):
         headers=headers, auth=auth)
 
 
+#: The most one answer of a Kali sandbox's tool server may send. Each tool call opens its
+#: own SSE session (langchain-mcp-adapters), so this bounds one call. It is above
+#: tools.SANDBOX_OUTPUT_MAX_CHARS with room for JSON escaping, so legitimate output reaches
+#: that cap (and its marker) first.
+SYSTEM_ANSWER_MAX_BYTES = 64 * 1024 * 1024
+#: Set by the executor around one sandbox call: the stream records here that it cut the
+#: answer. The SDK reports the cut as a closed connection, which would otherwise read as a
+#: dead session and send the command again.
+sandbox_answer_cut: ContextVar[Optional[list]] = ContextVar("sandbox_answer_cut", default=None)
+#: Replaced by the tests with an httpx.MockTransport; None is httpx's own.
+_system_transport = None
+
+
+class SandboxAnswerCut(Exception):
+    """A sandbox's answer was not read on: ``reason`` is ``too_large`` or ``encoding``."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(f"sandbox answer cut ({reason})")
+
+
+def _cut(reason: str) -> SandboxAnswerCut:
+    seen = sandbox_answer_cut.get()
+    if seen is not None:
+        seen.append(reason)
+    return SandboxAnswerCut(reason)
+
+
+def _capped_transport(inner, limit: int):
+    """`inner` with every answer refused when compressed (httpx inflates whatever it is
+    given) and cut past `limit` raw bytes."""
+    import httpx
+
+    class _CappedStream(httpx.AsyncByteStream):
+        def __init__(self, stream):
+            self._stream = stream
+
+        async def __aiter__(self):
+            total = 0
+            async for chunk in self._stream:
+                total += len(chunk)
+                if total > limit:
+                    raise _cut("too_large")
+                yield chunk
+
+        async def aclose(self):
+            await self._stream.aclose()
+
+    class _CappedTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            response = await inner.handle_async_request(request)
+            encodings = [v.strip().lower() for h in response.headers.get_list("content-encoding")
+                         for v in h.split(",") if v.strip()]
+            if any(v != "identity" for v in encodings):
+                await response.aclose()
+                raise _cut("encoding")
+            return httpx.Response(response.status_code, headers=response.headers,
+                                  stream=_CappedStream(response.stream),
+                                  extensions=response.extensions)
+
+        async def aclose(self):
+            await inner.aclose()
+
+    return _CappedTransport()
+
+
+def system_server_http_client(headers=None, timeout=None, auth=None):
+    """The HTTP client of a Kali sandbox's own tool servers (an McpHttpClientFactory). A
+    sandbox's root decides what its ports answer, and the agent serves every tenant, so:
+    no redirect (the SDK's default follows every one, which would point the agent, on its
+    own network, at any address), no compressed answer, and at most
+    SYSTEM_ANSWER_MAX_BYTES per answer. The sandbox is in the address pool a user server's
+    client refuses, so it does not take that client's peer guard."""
+    import httpx
+
+    inner = _system_transport if _system_transport is not None else httpx.AsyncHTTPTransport()
+    return httpx.AsyncClient(
+        transport=_capped_transport(inner, SYSTEM_ANSWER_MAX_BYTES),
+        follow_redirects=False,
+        timeout=timeout if timeout is not None else httpx.Timeout(30.0, read=300.0),
+        headers={**(headers or {}), "Accept-Encoding": "identity"}, auth=auth)
+
+
 def to_mcp_servers_dict(
     servers: List[MCPServer],
 ) -> Tuple[Dict[str, Dict[str, Any]], List[ValidationError]]:
@@ -449,8 +533,8 @@ def to_mcp_servers_dict(
             }
             if headers:
                 entry["headers"] = headers
-            if not srv._system:
-                entry["httpx_client_factory"] = user_server_http_client
+            entry["httpx_client_factory"] = (system_server_http_client if srv._system
+                                             else user_server_http_client)
             config[srv.id] = entry
 
         elif srv.transport == "stdio":

@@ -499,7 +499,7 @@ class TestClients(RouterTest):
                 for sid, cfg in configs.items():
                     self.assertEqual(cfg["headers"], {"Authorization": f"Bearer {handle.token}"})
                     self.assertEqual(cfg["url"], f"http://{handle.host}:{contract.PORTS[sid]}/sse")
-                    self.assertNotIn(SHARED_TOKEN, json.dumps(cfg))
+                    self.assertNotIn(SHARED_TOKEN, json.dumps(cfg, default=repr))
                 self.assertEqual(router.headers_for(handle), {"Authorization": f"Bearer {handle.token}"})
             self.assertNotEqual(alice.token, bob.token)
             # The same connect and read timeouts as today's system servers.

@@ -179,6 +179,9 @@ async def _execute_single_step(
         step["tool_output"] = result.get("output") or ""
         step["success"] = result.get("success", False)
         step["error_message"] = result.get("error")
+        # The Kali restart note (D-G): beside the output, for the think node's model only.
+        if result.get("sandbox_note"):
+            step["sandbox_note"] = result["sandbox_note"]
     else:
         step["tool_output"] = ""
         step["success"] = False

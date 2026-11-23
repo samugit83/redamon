@@ -38,9 +38,11 @@ import job_runner
 import output_offload
 from neo4j_read_pool import run_neo4j_read
 from kali_auth import note_kali_refusal
+import mcp_registry
 import sandbox_contract
 import sandbox_router
 import sandbox_runs
+from sandbox_http import SandboxAnswerRefused, read_answer
 from sandbox_runs import RunTagInterceptor
 
 if TYPE_CHECKING:
@@ -354,6 +356,10 @@ SYSTEM_MCP_TOOL_NAMES = frozenset({
 # the job's whole runner. There is no other path to a Kali tool.
 
 PROGRESS_POLL_S = 5.0
+#: A progress answer is the last 100 lines of the tool's output (metasploit_server,
+#: network_recon_server's Hydra stream).
+PROGRESS_MAX_BYTES = 1024 * 1024
+PROGRESS_READ_S = 2.0
 
 
 class _BoundSandbox:
@@ -416,6 +422,51 @@ def _sandbox_refusal(exc) -> dict:
     else:
         text = sandbox_router.unavailable_message(exc)
     return {"success": False, "output": None, "error": text}
+
+
+def _with_restart_note(outcome: dict, handle, bound, kind: str) -> dict:
+    """A chat run's successful call that landed on a new instance (started, restarted,
+    replaced) carries the restart note (D-G) in `sandbox_note`, which the think nodes show
+    the model before the output: it may still count on sessions, handlers, tunnels or a
+    port of the old one. `output` and `error` stay byte-exact for every other reader
+    (kali_exec's "[ERROR]" check and sandbox reason, the embedded-error detection, the
+    stream). A job's, an exec's, a failed call's or a refusal's result carries none and
+    leaves the note for the chat's next call."""
+    if bound is not None or kind != sandbox_router.RUN_KIND or not outcome.get("success"):
+        return outcome
+    note = sandbox_router.new_instance_note(handle)
+    return {**outcome, "sandbox_note": note} if note else outcome
+
+
+#: The most of one Kali sandbox tool answer the agent keeps (a sandbox's root decides what
+#: its tool servers answer, and this process serves every tenant). It must stay under the
+#: wire cap, mcp_registry.SYSTEM_ANSWER_MAX_BYTES (64 MiB): fastmcp sends a `-> str`
+#: tool's text twice (content and structuredContent), JSON-escaped with non-ASCII as raw
+#: UTF-8, measured at 2.1 bytes a character for nmap text, 2.3 for JSONL and 3.0 for HTML
+#: with non-ASCII. 10 Mi characters is at most 60 MiB on the wire. Real output stays well
+#: below: the model reads TOOL_OUTPUT_MAX_CHARS of it, and a large one is offloaded whole.
+SANDBOX_OUTPUT_MAX_CHARS = 10 * 1024 * 1024
+
+
+def _answer_cut_text(reason: str) -> str:
+    """The error of a call whose answer the sandbox client refused (mcp_registry)."""
+    if reason == "encoding":
+        return ("[ERROR] The Kali sandbox sent this tool's answer compressed, which RedAmon "
+                "does not read; the command was not sent again.")
+    return (f"[ERROR] The Kali sandbox's answer to this tool was larger than "
+            f"{mcp_registry.SYSTEM_ANSWER_MAX_BYTES} bytes and was not read; the command was "
+            "not sent again. Have the command write its output to a file in the project "
+            "workspace and read it in parts with fs_read or fs_grep.")
+
+
+def _cap_sandbox_output(text):
+    if not isinstance(text, str) or len(text) <= SANDBOX_OUTPUT_MAX_CHARS:
+        return text
+    return (text[:SANDBOX_OUTPUT_MAX_CHARS]
+            + f"\n\n[OUTPUT TRUNCATED by RedAmon: the Kali sandbox answered {len(text)} characters; "
+              f"only the first {SANDBOX_OUTPUT_MAX_CHARS} are kept. For output this large, have the "
+              "command write it to a file in the project workspace and read it in parts with "
+              "fs_read or fs_grep.]")
 
 
 def _named_tool(tools_list, name: str):
@@ -2936,7 +2987,7 @@ class PhaseAwareToolExecutor:
                 sandbox_runs.note_run_sandbox(run_key, handle)
                 outcome = await self._call_in_sandbox(tool_name, handle, invoke, output_override)
                 if outcome is not _SANDBOX_GONE:
-                    return outcome
+                    return _with_restart_note(outcome, handle, bound, kind)
                 # The sandbox went away (stopped, replaced, unreachable): once more on a
                 # fresh handle, never a loop, and never for a run that has ended (its
                 # sandbox is let go; the command must not be sent again elsewhere).
@@ -2995,17 +3046,27 @@ class PhaseAwareToolExecutor:
         if tool is None:
             return {"success": False, "output": None, "error": f"Tool '{tool_name}' not found"}
         seen_gen = client.generation
+        cut: list = []
+        cut_token = mcp_registry.sandbox_answer_cut.set(cut)
         try:
             return self._tool_success(
-                tool_name, await _await_within_deadline(tool_name, invoke(tool)), output_override)
+                tool_name, _cap_sandbox_output(await _await_within_deadline(tool_name, invoke(tool))),
+                output_override)
         except ToolDeadlineExceeded as exc:
             logger.error(f"Tool deadline exceeded: {tool_name} after {int(exc.seconds)}s")
             return {"success": False, "output": None, "error": str(exc)}
         except Exception as exc:
+            if cut:
+                # The answer was cut, not lost: the SDK reports it as a closed connection,
+                # and sending the command again would run it twice.
+                logger.error(f"Tool answer refused: {tool_name} ({cut[0]})")
+                return {"success": False, "output": None, "error": _answer_cut_text(cut[0])}
             if not _is_mcp_transport_error(exc):
                 logger.error(f"Tool execution failed: {tool_name} - {exc}")
                 return {"success": False, "output": None, "error": str(exc)}
             failure = exc
+        finally:
+            mcp_registry.sandbox_answer_cut.reset(cut_token)
         if not handle.usable:
             return _SANDBOX_GONE
         logger.warning(f"MCP transport error on {tool_name} in a sandbox (gen {seen_gen}): "
@@ -3020,12 +3081,18 @@ class PhaseAwareToolExecutor:
         retry_tool = _named_tool(new_tools, tool_name)
         if retry_tool is None:
             return {"success": False, "output": None, "error": str(failure)}
+        cut_token = mcp_registry.sandbox_answer_cut.set(cut)
         try:
             return self._tool_success(
-                tool_name, await _await_within_deadline(tool_name, invoke(retry_tool)), output_override)
+                tool_name, _cap_sandbox_output(await _await_within_deadline(tool_name, invoke(retry_tool))),
+                output_override)
         except Exception as retry_exc:
+            if cut:
+                return {"success": False, "output": None, "error": _answer_cut_text(cut[0])}
             logger.error(f"Retry after MCP reconnect still failed for {tool_name}: {retry_exc}")
             return {"success": False, "output": None, "error": str(retry_exc)}
+        finally:
+            mcp_registry.sandbox_answer_cut.reset(cut_token)
 
     # ------------------------------------------------------------------ today's call path
 
@@ -3181,13 +3248,15 @@ class PhaseAwareToolExecutor:
                     url = kali_base_for_run(progress_port, run_sandbox, "/progress")
                     if url is None:
                         continue
-                    resp = await client.get(url, headers=kali_auth_headers_for_run(run_sandbox))
-                    if resp.status_code == 401 and not refusal_logged:
-                        refusal_logged = note_kali_refusal(resp.status_code, url)
-                    if resp.status_code == 200:
+                    # Bounded: the sandbox's root decides what this port answers.
+                    resp = await read_answer(client, "GET", url, headers=kali_auth_headers_for_run(run_sandbox),
+                                             max_bytes=PROGRESS_MAX_BYTES, deadline_s=PROGRESS_READ_S)
+                    if resp.status == 401 and not refusal_logged:
+                        refusal_logged = note_kali_refusal(resp.status, url)
+                    if resp.status == 200:
                         progress = resp.json()
 
-                        if progress.get("active"):
+                        if isinstance(progress, dict) and progress.get("active"):
                             current_output = progress.get("output", "")
                             line_count = progress.get("line_count", 0)
                             elapsed = progress.get("elapsed_seconds", 0)
@@ -3212,8 +3281,8 @@ class PhaseAwareToolExecutor:
                                 last_output = current_output
                                 last_line_count = line_count
 
-                except httpx.TimeoutException:
-                    # Progress polling timeout is fine, continue
+                except (httpx.TimeoutException, SandboxAnswerRefused):
+                    # A slow or oversized progress answer is skipped; the tool goes on.
                     pass
                 except httpx.HTTPError as e:
                     # Connection errors during polling are best-effort, log and continue
