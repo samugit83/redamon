@@ -135,8 +135,13 @@ async def scenario():
             check("project A's handler job and real shell session are live",
                   bool(sessions) and bool((data or {}).get("jobs")))
             if owner_param:
-                check("the console linked the new session to project A's chat",
-                      bool(sessions) and sessions[0].get("chat_session_id") == "chat-a")
+                # GET /sessions answers the session manager's cached rows, each carrying the chat link
+                # as it stood at the cache's last refresh: the first listing that shows the session
+                # may predate its link, which a later refresh adds.
+                linked = wait_for(lambda: next((s.get("chat_session_id") for s in listing().get("sessions", [])
+                                                if s.get("id") == sid and s.get("chat_session_id")), None), 30, 1.0)
+                check(f"the console linked the new session to project A's chat -> {linked or 'no link within 30 s'}",
+                      linked == "chat-a")
 
             check("project B: `sessions -l` refused", refused(await c.msf(PROJECT_B, "sessions -l")))
             first, both = await c.drive(PROJECT_B, sid)

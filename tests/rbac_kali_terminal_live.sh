@@ -3,8 +3,10 @@
 # Live check of RBAC step 1.14 (HD-04, HD-25, NF-04, DV-21; E2E row P0-07, API part), run
 # against the LIVE stack after the webapp and agent are rebuilt:
 #   - a member created after the upgrade (no legacy grant) is refused a terminal ticket, while
-#     the same member's chat ticket is minted; a legacy holder (grant set by SQL) gets one, and
-#     audit_log records agent.terminal_opened for it;
+#     the same member's chat ticket is minted; a legacy holder (grant set by SQL, as this stack
+#     holds one: the override the legacy grants' conversion writes once it has run, else the
+#     legacy_grants column) gets one, and audit_log records agent.terminal_opened for it, naming
+#     that path as its `via`;
 #   - inside the agent container (tests/rbac_kali_terminal_live_ws.py): the chat ticket does
 #     not open /ws/kali-terminal, the terminal ticket does not open /ws/cypherfix-triage, the
 #     holder's own Kali sandbox's terminal refuses an upgrade without its instance's bearer, the
@@ -57,6 +59,29 @@ webapp_node() { # script: run a fixture script inside the webapp container, read
 db_sql() { # SQL on stdin -> psql in the postgres container; prints only the returned values
   (cd "$ROOT" && docker compose exec -T postgres \
     sh -c 'psql -X -q -t -A -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"') 2>/dev/null
+}
+# How a holder of the legacy kali_terminal grant holds it on this stack (legacyOverrides.ts): once
+# the first boot with the permissions switch on has converted the legacy grants (its marker row
+# exists), only override grants count, a kept grant being the override written below; before that,
+# or with the switch off, the legacy_grants column counts. -> override | legacy
+legacy_grant_path() {
+  local flags marker
+  flags="$( (cd "$ROOT" && docker compose exec -T webapp \
+    sh -c 'printf "%s %s" "${RBAC_IDENTITY_ENABLED:-}" "${RBAC_PERMISSIONS_ENABLED:-}"') 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  marker="$(printf "select count(*) from audit_log where action = 'system.rbac_legacy_overrides_backfill';\n" | db_sql)"
+  # flags.ts: the permissions switch reads off without the identity switch.
+  if [[ "$flags" =~ ^[[:space:]]*(true|1|yes)[[:space:]]+(true|1|yes)[[:space:]]*$ ]] && [[ "$marker" =~ ^[1-9][0-9]*$ ]]; then
+    echo override
+  else
+    echo legacy
+  fi
+}
+grant_kali_terminal() { # user-id via -> the user id once the grant is written
+  if [ "$2" = override ]; then
+    printf "insert into user_permission_overrides (user_id, permission, effect, expires_at, reason, granted_by_id) values ('%s', 'platform:kali_terminal', 'grant', (now() at time zone 'UTC') + interval '90 days', 'kept from 7.7.x', 'system') on conflict (user_id, permission) do nothing returning user_id;\n" "$1" | db_sql
+  else
+    printf "update users set legacy_grants = array['kali_terminal'] where id = '%s' returning id;\n" "$1" | db_sql
+  fi
 }
 env_value() { # KEY: from the environment, else the repo-root .env; never printed
   if [ -n "${!1:-}" ]; then printf '%s' "${!1}"; return; fi
@@ -165,9 +190,10 @@ code="$(mint "$LEGACY_JAR" "${SEED[PB_ID]}" kali-terminal)"
 ok=0; [ "$code" = 403 ] && ok=1
 check "member B is refused too, before it holds the grant -> $code" "$ok"
 
-granted="$(printf "update users set legacy_grants = array['kali_terminal'] where id = '%s' returning id;\n" "${SEED[MEMBER_B_ID]}" | db_sql)"
+GRANT_VIA="$(legacy_grant_path)"
+granted="$(grant_kali_terminal "${SEED[MEMBER_B_ID]}" "$GRANT_VIA")"
 ok=0; [ "$granted" = "${SEED[MEMBER_B_ID]}" ] && ok=1
-check "the kali_terminal legacy grant set on member B by SQL" "$ok"
+check "member B made a legacy kali_terminal holder by SQL, as this stack holds one: $GRANT_VIA" "$ok"
 [ "$ok" = 1 ] || exit 1
 
 code="$(mint "$NEW_JAR" "${SEED[PA_ID]}" agent)"
@@ -183,8 +209,8 @@ ok=0; [ "$code" = 400 ] && grep -q unknown_socket "$TMP/body" && ok=1
 check "an unknown socket -> $code" "$ok"
 
 row="$(printf "select count(*) || chr(9) || coalesce(max(after->>'via'), '') from audit_log where action = 'agent.terminal_opened' and actor_id = '%s' and target_type = 'project' and target_id = '%s';\n" "${SEED[MEMBER_B_ID]}" "${SEED[PB_ID]}" | db_sql)"
-ok=0; [ "$row" = $'1\tlegacy' ] && ok=1
-check "audit_log: one agent.terminal_opened for the holder, via legacy" "$ok" "got: ${row:-none}"
+ok=0; [ "$row" = "1"$'\t'"$GRANT_VIA" ] && ok=1
+check "audit_log: one agent.terminal_opened for the holder, via $GRANT_VIA" "$ok" "got: ${row:-none}"
 row="$(printf "select count(*) from audit_log where action = 'agent.terminal_opened' and actor_id = '%s';\n" "${SEED[MEMBER_A_ID]}" | db_sql)"
 ok=0; [ "$row" = 0 ] && ok=1
 check "audit_log: no terminal row for the refused member" "$ok" "got: ${row:-none}"

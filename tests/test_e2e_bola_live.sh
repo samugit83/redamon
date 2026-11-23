@@ -41,7 +41,8 @@
 # tests/rbac_kali_terminal_live.sh); the escape hatch never applies to these accounts.
 #
 # Requires the stack up (webapp on :3000). Seeds + cleans up its own fixtures, before
-# and after the run; the fixture scripts are fed to the webapp container on stdin, so
+# and after the run, their sandboxes and output folders first (the orchestrator's
+# account_deleted stop); the fixture scripts are fed to the webapp container on stdin, so
 # they work against an image built before they changed. Response bodies are never printed.
 #
 # Run: bash tests/test_e2e_bola_live.sh
@@ -53,7 +54,30 @@ TMP="$(mktemp -d)"
 fixture_node() { # script: run a fixture script inside the webapp container, read from stdin
   (cd "$ROOT" && docker compose exec -T -w /app webapp node --input-type=module -) < "$ROOT/webapp/scripts/$1"
 }
-trap 'rm -rf "$TMP"; fixture_node e2e-bola-cleanup.mjs >/dev/null 2>&1 || true' EXIT
+env_value() { # KEY: from the environment, else the repo-root .env; never printed
+  if [ -n "${!1:-}" ]; then printf '%s' "${!1}"; return; fi
+  grep -m1 "^$1=" "$ROOT/.env" 2>/dev/null | cut -d= -f2- | sed "s/^[\"']//; s/[\"']\$//"
+}
+# The orchestrator's API, called as the webapp calls it. The key reaches curl on stdin. Prints
+# the answer's body, then its HTTP status on a line of its own.
+orch_call() { # method path [json-body]
+  local key port args=(-s -m 300 -K - -X "$1" -H 'Content-Type: application/json' -w '\n%{http_code}')
+  [ -n "${3:-}" ] && args+=(--data-binary "$3")
+  key="$(env_value ORCHESTRATOR_API_KEY)"
+  port="$(env_value RECON_ORCH_PORT | grep -xE '[0-9]+' || echo 8010)"
+  printf 'header = "X-Orchestrator-Key: %s"\n' "${key:-changeme}" | curl "${args[@]}" "http://127.0.0.1:$port$2"
+}
+# The fixture cleanup deletes the accounts by SQL, which the orchestrator never hears of: their
+# sandboxes (A's chat ticket mint warms A's) and output folders go first, as an account deletion
+# takes them (the one stop reason that also deletes the folders).
+retire_fixture_sandboxes() {
+  local u
+  for u in $(cd "$ROOT" && docker compose exec -T postgres psql -U redamon -d redamon -qtA -c \
+      "SELECT id FROM users WHERE email IN ('bola-a@e2e.local', 'bola-b@e2e.local', 'bola-admin@e2e.local', 'bola-legacy@e2e.local')" 2>/dev/null); do
+    [[ "$u" =~ ^[A-Za-z0-9_-]+$ ]] && orch_call POST "/sandboxes/$u/stop" '{"reason":"account_deleted"}' >/dev/null 2>&1
+  done
+}
+trap 'rm -rf "$TMP"; retire_fixture_sandboxes; fixture_node e2e-bola-cleanup.mjs >/dev/null 2>&1 || true' EXIT
 
 PASS=0; FAIL=0
 ok()   { echo "  PASS: $1"; PASS=$((PASS+1)); }
@@ -109,6 +133,7 @@ echo "== Sharing in force (switch and instance policy): $SHARING =="
 
 echo "== Removing an earlier run's fixtures =="
 # A fresh account every run: the escape hatch covers only accounts older than the upgrade.
+retire_fixture_sandboxes
 fixture_node e2e-bola-cleanup.mjs | sed 's/^/  /'
 [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "cleanup failed"; exit 1; }
 
@@ -274,6 +299,14 @@ upload() { # jar template-id [overwrite] -> http code; uploads x.yaml into $TPL_
   curl "${args[@]}" "$BASE/api/nuclei-templates"
 }
 SESSION_COUNTS="[len(b.get(k) or []) for k in ('sessions', 'jobs', 'non_msf_sessions')]"
+# A drive names its target as the pair (sandbox instance, number), `?sandbox=` required: without it
+# the route answers 400 before any lookup (sessionDrive.ts). Each kill names a well-formed pair no
+# console holds, so it reaches the lookup in the caller's view and is refused there: the lookup's
+# 404, and no drive audit row (one is written before anything is forwarded to the console).
+kill_probe() { # desc jar sessions|jobs
+  check_body "$1" 404 "$(req "$2" POST "/api/agent/$3/999999/kill?sandbox=000000")" \
+    'has:"error":"Not found"' lacks:sandbox_required lacks:invalid_sandbox
+}
 
 echo "== F-01 shell sessions are per project (HD-01, HD-02) =="
 c="$(req "$TMP/a.jar" GET /api/agent/sessions)"; counts="$(json "$SESSION_COUNTS")"
@@ -282,8 +315,8 @@ if [ "$c" = 200 ] && [ "$counts" = "[0, 0, 0]" ]; then
 else
   bad "new member A's session list (expected 200 and [0, 0, 0] sessions/jobs/listeners, got $c ${counts:-unparsed})"
 fi
-check_body "new member A kills a session outside its view -> 404 before the console" 404 "$(req "$TMP/a.jar" POST /api/agent/sessions/999999/kill)"
-check_body "new member A kills a job -> 404 before the console"                     404 "$(req "$TMP/a.jar" POST /api/agent/jobs/999999/kill)"
+kill_probe "new member A kills a session outside its view -> 404 at the lookup, before the console" "$TMP/a.jar" sessions
+kill_probe "new member A kills a job -> 404 at the lookup, before the console"                     "$TMP/a.jar" jobs
 # The legacy shell_sessions grant opens every session and job: L's list is the admin's.
 # The agent may refresh its list between the two reads, so a mismatch is read again once.
 same=0
@@ -295,7 +328,10 @@ for _ in 1 2; do
 done
 if [ "$same" = 1 ]; then ok "legacy holder L's session list is the admin's (every session, job and listener: $lcounts)"
 else bad "legacy holder L's session list (got $lc ${lcounts:-unparsed}, the admin's $ac ${acounts:-unparsed})"; fi
-check_body "legacy holder L kills a session the console does not hold -> 404" 404 "$(req "$TMP/l.jar" POST /api/agent/sessions/999999/kill)"
+kill_probe "legacy holder L kills a session the console does not hold -> 404 at the lookup" "$TMP/l.jar" sessions
+DRIVES="$(cd "$ROOT" && docker compose exec -T postgres psql -U redamon -d redamon -qtA -c \
+  "SELECT count(*) FROM audit_log WHERE action IN ('agent.session_kill', 'agent.job_kill') AND actor_id IN ('$A_ID', '$L_ID')" 2>/dev/null | tr -d '[:space:]')"
+check "the refused kills reached no console (no drive audit row of A or L)" 0 "$DRIVES"
 
 echo "== F-04 / F-05 a tunnel is its person's own, opened only with platform:tunnels (HD-05, HD-06) =="
 TUNNEL_CHANGE='{"chiselServerUrl":"http://127.0.0.1:9","githubEnterpriseHost":"127.0.0.1"}'

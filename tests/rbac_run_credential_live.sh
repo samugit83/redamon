@@ -66,6 +66,29 @@ db_sql() { # SQL on stdin -> psql in the postgres container; prints only the ret
   (cd "$ROOT" && docker compose exec -T postgres \
     sh -c 'psql -X -q -t -A -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"') 2>/dev/null
 }
+# How a holder of the legacy kali_terminal grant holds it on this stack (legacyOverrides.ts): once
+# the first boot with the permissions switch on has converted the legacy grants (its marker row
+# exists), only override grants count, a kept grant being the override written below; before that,
+# or with the switch off, the legacy_grants column counts. -> override | legacy
+legacy_grant_path() {
+  local flags marker
+  flags="$( (cd "$ROOT" && docker compose exec -T webapp \
+    sh -c 'printf "%s %s" "${RBAC_IDENTITY_ENABLED:-}" "${RBAC_PERMISSIONS_ENABLED:-}"') 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  marker="$(printf "select count(*) from audit_log where action = 'system.rbac_legacy_overrides_backfill';\n" | db_sql)"
+  # flags.ts: the permissions switch reads off without the identity switch.
+  if [[ "$flags" =~ ^[[:space:]]*(true|1|yes)[[:space:]]+(true|1|yes)[[:space:]]*$ ]] && [[ "$marker" =~ ^[1-9][0-9]*$ ]]; then
+    echo override
+  else
+    echo legacy
+  fi
+}
+grant_kali_terminal() { # user-id via -> the user id once the grant is written
+  if [ "$2" = override ]; then
+    printf "insert into user_permission_overrides (user_id, permission, effect, expires_at, reason, granted_by_id) values ('%s', 'platform:kali_terminal', 'grant', (now() at time zone 'UTC') + interval '90 days', 'kept from 7.7.x', 'system') on conflict (user_id, permission) do nothing returning user_id;\n" "$1" | db_sql
+  else
+    printf "update users set legacy_grants = array['kali_terminal'] where id = '%s' returning id;\n" "$1" | db_sql
+  fi
+}
 env_value() { # KEY: from the environment, else the repo-root .env; never printed
   if [ -n "${!1:-}" ]; then printf '%s' "${!1}"; return; fi
   grep -m1 "^$1=" "$ROOT/.env" 2>/dev/null | cut -d= -f2- | sed "s/^[\"']//; s/[\"']\$//"
@@ -155,9 +178,10 @@ pid1="$(docker exec "$SBX" sh -c \
 ok=0; [ "$pid1" = "MCP_AUTH_TOKEN REDAMON_SANDBOX_KEY TUNNEL_AUTH_TOKEN " ] && ok=1
 check "PID 1 keeps only its instance's two inbound tokens and its key -> ${pid1:-?}" "$ok"
 
-granted="$(printf "update users set legacy_grants = array['kali_terminal'] where id = '%s' returning id;\n" "${SEED[MEMBER_B_ID]}" | db_sql)"
+GRANT_VIA="$(legacy_grant_path)"
+granted="$(grant_kali_terminal "${SEED[MEMBER_B_ID]}" "$GRANT_VIA")"
 ok=0; [ "$granted" = "${SEED[MEMBER_B_ID]}" ] && ok=1
-check "the kali_terminal legacy grant set on member B by SQL" "$ok"
+check "member B made a legacy kali_terminal holder by SQL, as this stack holds one: $GRANT_VIA" "$ok"
 [ "$ok" = 1 ] || exit 1
 
 JAR="$TMP/jar"
