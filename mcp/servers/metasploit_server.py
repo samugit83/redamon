@@ -23,6 +23,7 @@ import os
 import re
 import json
 import atexit
+import collections
 import contextlib
 import select
 import socket
@@ -177,6 +178,49 @@ _REX_BIND_FAILED_RE = re.compile(r"Rex::BindFailed[^\n]*?\(\s*(\[[^\]]*\]|[^()\s
 # https://0.0.0.0:8443", "Started bind TCP handler against 10.0.0.5:4444".
 _HANDLER_STARTED_RE = re.compile(
     r"Started .+? handler (on|against) (?:[a-z][a-z0-9+.-]*://)?(\[[^\]]*\]|[^\s/]+?):(\d+)", re.I)
+# A command that starts a handler as a background job: `handler`, `to_handler`, or an
+# exploit or run with -j. Its job and "Started ... handler" lines come seconds later on a
+# cold console (module loading), well past the command's quiet period, so the command
+# waits for them: else the model fires its exploit before anything listens.
+_JOB_COMMAND_RE = re.compile(r"^\s*(?:handler|to_handler)\b|^\s*(?:exploit|run)\b.*\s-j\b", re.I)
+_LISTENER_JOB_RE = re.compile(r"(?:Exploit|Payload handler) running as background job \d+", re.I)
+_OTHER_JOB_RE = re.compile(r"(?:Auxiliary|Post) module running as background job \d+", re.I)
+_JOB_FAILED_RE = re.compile(r"Exploit failed|Handler failed to start", re.I)
+LISTENER_WAIT_S = float(os.getenv("MSF_LISTENER_WAIT_S", "20"))
+# Once the handler listens, the lines that follow it at once (a second handler, a
+# warning) are read for this long more.
+LISTENER_TAIL_S = 0.5
+# Output that arrives after its command returned: kept, and handed to the next command.
+LATE_OUTPUT_MAX_LINES = 400
+LATE_OUTPUT_MARK = "[output that arrived after the previous command returned]"
+LATE_OUTPUT_END = "[end of that output]"
+# The asynchronous lines msfconsole prints (a job, a handler, a session opened or
+# closed): kept even when a read for the session list consumes them.
+_EVENT_PREFIXES = ("[*]", "[+]", "[-]", "[!]")
+
+
+def starts_a_listener(command: str, output: str) -> bool:
+    """Whether ``command`` (with the output it has printed so far) starts a handler
+    whose start the command must wait for: an exploit or handler job, never an
+    auxiliary or post module's."""
+    text = output or ""
+    if _LISTENER_JOB_RE.search(text):
+        return True
+    if _OTHER_JOB_RE.search(text):
+        return False
+    return any(_JOB_COMMAND_RE.search(part) for part in (command or "").split(";"))
+
+
+def _listener_settled(text: str) -> bool:
+    """A started handler job has said it listens, or failed, for every job it started."""
+    if _OTHER_JOB_RE.search(text) and not _LISTENER_JOB_RE.search(text):
+        return True
+    jobs = len(_LISTENER_JOB_RE.findall(text))
+    started = sum(1 for m in _HANDLER_STARTED_RE.finditer(text))
+    failed = len(_JOB_FAILED_RE.findall(text))
+    return started + failed >= max(1, jobs)
+
+
 # "Meterpreter session 1 opened (10.214.0.2:4444 -> 203.0.113.9:51234) at ...": the
 # local end is the handler's port for a reverse payload, the remote one a bind payload's.
 _SESSION_OPENED_RE = re.compile(
@@ -368,6 +412,9 @@ class PersistentMsfConsole:
         # An "opened" line read after the last cache refresh: a session the cache has not
         # caught up with yet.
         self._last_session_open_at: float = 0.0
+        # Output that arrived after its command returned, for the next command (under
+        # self.lock, as every drain of the queue).
+        self._late_lines: collections.deque = collections.deque(maxlen=LATE_OUTPUT_MAX_LINES)
 
     def start(self) -> bool:
         """Start the persistent msfconsole process."""
@@ -627,12 +674,9 @@ class PersistentMsfConsole:
         with self._progress_lock:
             self._current_command = command
 
-        # Clear any pending output
-        while not self.output_queue.empty():
-            try:
-                self.output_queue.get_nowait()
-            except queue.Empty:
-                break
+        # What arrived since the last command returned goes in front of this one's output.
+        self._drain_pending()
+        late = self._take_late()
 
         # Send command(s) - split by semicolons to support chaining
         # msfconsole doesn't parse semicolons in stdin, so we convert them to newlines
@@ -651,7 +695,61 @@ class PersistentMsfConsole:
 
         # Collect output
         output = self._wait_for_output(timeout=timeout, quiet_period=quiet_period)
-        return output if output else "(no output)"
+        if starts_a_listener(command, output) and not _listener_settled(output):
+            output = self._wait_for_listener(output)
+        output = output if output else "(no output)"
+        if late:
+            output = f"{LATE_OUTPUT_MARK}\n{late}\n{LATE_OUTPUT_END}\n{output}"
+        return output
+
+    def _wait_for_listener(self, output: str) -> str:
+        """Read on until every handler job the command started listens or failed, at
+        most LISTENER_WAIT_S; past it, say so plainly."""
+        lines = output.split("\n") if output else []
+        with self._progress_lock:
+            self._execution_active = True
+        deadline = time.monotonic() + LISTENER_WAIT_S
+        settled_at = None
+        try:
+            while True:
+                now = time.monotonic()
+                if settled_at is None and _listener_settled("\n".join(lines)):
+                    settled_at = now
+                if settled_at is not None and now - settled_at >= LISTENER_TAIL_S:
+                    return "\n".join(lines)
+                if settled_at is None and now >= deadline:
+                    lines.append(f"[REDAMON] The handler did not start listening within {LISTENER_WAIT_S:g} s; "
+                                 f"check `jobs` before firing the exploit.")
+                    return "\n".join(lines)
+                try:
+                    line = self.output_queue.get(timeout=0.1).rstrip()
+                except queue.Empty:
+                    continue
+                lines.append(line)
+                with self._progress_lock:
+                    self._current_output.append(line)
+        finally:
+            with self._progress_lock:
+                self._execution_active = False
+
+    def _keep_late(self, line: str) -> None:
+        stripped = line.rstrip()
+        if self._is_meaningful_output(stripped):
+            self._late_lines.append(stripped)
+
+    def _drain_pending(self) -> None:
+        """Move what waits in the queue (the tail of an earlier command) into the
+        late output; never discard it."""
+        while True:
+            try:
+                self._keep_late(self.output_queue.get_nowait())
+            except queue.Empty:
+                return
+
+    def _take_late(self) -> str:
+        text = "\n".join(self._late_lines)
+        self._late_lines.clear()
+        return text
 
     def stop(self, force: bool = False):
         """Stop the msfconsole process."""
@@ -695,7 +793,7 @@ class PersistentMsfConsole:
         ran), or from the cache when the console is busy."""
         if self.lock.acquire(timeout=10):
             try:
-                raw = self._quick_execute("jobs -l", timeout=10, quiet_period=1.0)
+                raw = self._quick_execute("jobs -l", timeout=10, quiet_period=1.0, keep_events=True)
                 with self._detail_lock:
                     self._job_details = self._parse_jobs_output(raw)
                 return self._parse_jobs_output(raw, with_opts=True)
@@ -838,12 +936,13 @@ class PersistentMsfConsole:
             self._execution_active = False
             self._current_command = ""
             self._execution_start_time = 0
-        # Clear output queue
+        # The old console's output, late or not, ends with it.
         while not self.output_queue.empty():
             try:
                 self.output_queue.get_nowait()
             except queue.Empty:
                 break
+        self._late_lines.clear()
         print("[MSF] Old process terminated, ready for fresh start")
 
     def get_progress(self) -> dict:
@@ -864,21 +963,20 @@ class PersistentMsfConsole:
     # SESSION MANAGEMENT — quick execute, detail refresh, interaction
     # =========================================================================
 
-    def _quick_execute(self, command: str, timeout: float = 15, quiet_period: float = 3.0) -> str:
+    def _quick_execute(self, command: str, timeout: float = 15, quiet_period: float = 3.0,
+                       keep_events: bool = False) -> str:
         """
         Execute a quick command without acquiring self.lock.
         Caller MUST hold self.lock before calling this method.
         Does not update progress tracking (used for internal session queries).
+        ``keep_events``: a read for the session or job list also hands msfconsole's
+        asynchronous lines it consumes (a handler started, a session opened) to the
+        next command.
         """
         if not self.process or self.process.poll() is not None:
             return "[ERROR] msfconsole not running"
 
-        # Clear pending output
-        while not self.output_queue.empty():
-            try:
-                self.output_queue.get_nowait()
-            except queue.Empty:
-                break
+        self._drain_pending()
 
         # Send command
         try:
@@ -901,6 +999,8 @@ class PersistentMsfConsole:
                 output_lines.append(stripped)
                 if self._is_meaningful_output(stripped):
                     last_output_time = time.time()
+                if keep_events and stripped.lstrip().startswith(_EVENT_PREFIXES):
+                    self._keep_late(stripped)
             except queue.Empty:
                 elapsed = time.time() - start_time
                 time_since_last = time.time() - last_output_time
@@ -918,12 +1018,8 @@ class PersistentMsfConsole:
         after an agent exploit), send 'background' to return to msf>.
         Caller MUST hold self.lock.
         """
-        # Drain any pending output from previous commands
-        while not self.output_queue.empty():
-            try:
-                self.output_queue.get_nowait()
-            except queue.Empty:
-                break
+        # Pending output of previous commands is kept for the next one.
+        self._drain_pending()
         # Send a blank line to trigger a prompt redraw
         self.process.stdin.write("\n")
         self.process.stdin.flush()
@@ -936,6 +1032,9 @@ class PersistentMsfConsole:
             except queue.Empty:
                 if prompt_lines:
                     break
+        for line in prompt_lines:
+            if line.lstrip().startswith(_EVENT_PREFIXES):
+                self._keep_late(line)
         prompt_text = ' '.join(prompt_lines).lower().strip()
         if not prompt_text:
             return  # No prompt detected, assume msf> (safe default)
@@ -958,11 +1057,7 @@ class PersistentMsfConsole:
             print(f"[MSF] Console stuck in raw shell (prompt: {prompt_text!r}) — sending 'exit' to recover msf>")
             self._quick_execute("exit", timeout=5, quiet_period=1.0)
             # After exiting the OS shell, we might be at meterpreter > — check and background
-            while not self.output_queue.empty():
-                try:
-                    self.output_queue.get_nowait()
-                except queue.Empty:
-                    break
+            self._drain_pending()
             self.process.stdin.write("\n")
             self.process.stdin.flush()
             post_lines = []
@@ -997,8 +1092,8 @@ class PersistentMsfConsole:
             try:
                 # Ensure we're at msf> prompt, not inside a session
                 self._ensure_msf_prompt()
-                raw_sessions = self._quick_execute("sessions -l", timeout=10, quiet_period=1.0)
-                raw_jobs = self._quick_execute("jobs -l", timeout=10, quiet_period=1.0)
+                raw_sessions = self._quick_execute("sessions -l", timeout=10, quiet_period=1.0, keep_events=True)
+                raw_jobs = self._quick_execute("jobs -l", timeout=10, quiet_period=1.0, keep_events=True)
                 parsed_sessions = self._parse_sessions_output(raw_sessions)
                 parsed_jobs = self._parse_jobs_output(raw_jobs)
                 with self._detail_lock:
@@ -1208,7 +1303,7 @@ class PersistentMsfConsole:
 
             # Cache miss — force an inline lookup
             if session_type is None:
-                raw = self._quick_execute("sessions -l", timeout=10, quiet_period=2.0)
+                raw = self._quick_execute("sessions -l", timeout=10, quiet_period=2.0, keep_events=True)
                 parsed = self._parse_sessions_output(raw)
                 with self._detail_lock:
                     self._session_details = parsed
@@ -1232,12 +1327,8 @@ class PersistentMsfConsole:
                 # unescaped trailing backslash would swallow the closing quote.
                 escaped_cmd = command.replace('\\', '\\\\').replace('"', '\\"')
 
-                # Clear pending output
-                while not self.output_queue.empty():
-                    try:
-                        self.output_queue.get_nowait()
-                    except queue.Empty:
-                        break
+                # Pending output of earlier commands is kept for the next one.
+                self._drain_pending()
 
                 # Send command
                 try:

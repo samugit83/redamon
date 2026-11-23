@@ -188,7 +188,7 @@ class AHandlerOnTheSharedPortSaysSo(unittest.TestCase):
                       f"(LPORT {POOL_PORT})", out)
         # The holder was looked up in the sandbox, the jobs read fresh, the command ran for its chat.
         console.port_holder.assert_called_once_with(POOL_PORT)
-        console._quick_execute.assert_called_once_with("jobs -l", timeout=10, quiet_period=1.0)
+        console._quick_execute.assert_called_once_with("jobs -l", timeout=10, quiet_period=1.0, keep_events=True)
         self.assertEqual(console.execute.call_args.kwargs["chat"], "chat-a")
 
     def test_the_tunnels_bind_port_names_the_job_holding_it(self):
