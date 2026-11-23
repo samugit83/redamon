@@ -419,11 +419,28 @@ class TerminalIsNotPublishedOnTheHost(unittest.TestCase):
         self.assertEqual(contract.published_ports(None), {})
         self.assertEqual(contract.published_ports(4500), {"4500/tcp": ("127.0.0.1", 4500)})
         self.assertEqual(contract.PORTS["terminal"], 8016)
-        # The pool can never hand out a port the sandbox serves itself, 8016 included.
+        # The pool can never hand out a port the sandbox serves itself, 8016 included:
+        # _usable_ports leaves them out, and both the allocation and the adoption's
+        # check of a free port for a portless sandbox take their ports from it alone.
         manager = (REPO / "recon_orchestrator" / "sandbox_manager.py").read_text(encoding="utf-8")
-        allocate = manager[manager.index("async def _allocate_port"):]
-        allocate = allocate[:allocate.index("\n    def ")]
-        self.assertIn("taken |= set(sc.PORTS.values()) | set(sc.HEALTH_PROBE_PORTS)", allocate)
+
+        def body(signature):
+            text = manager[manager.index(signature):]
+            return text[:text.index("\n    def ", 1)]
+
+        usable = body("    def _usable_ports(")
+        self.assertIn("taken |= set(sc.PORTS.values()) | set(sc.HEALTH_PROBE_PORTS)", usable)
+        self.assertIn("return [p for p in pool.ports() if p not in taken]", usable)
+        allocate = body("    async def _allocate_port(")
+        self.assertIn("usable = self._usable_ports(pool, now,", allocate)
+        self.assertIn("own = [p for p in usable if", allocate)
+        self.assertIn("free = [p for p in usable if", allocate)
+        self.assertNotIn("for p in pool.ports()", allocate)
+        port_for = body("    def _port_for(")
+        self.assertIn("for p in self._usable_ports(pool, now, labelled)", port_for)
+        self.assertNotIn("for p in pool.ports()", port_for)
+        adopt = body("    async def adopt(")
+        self.assertIn("self._port_for(inst.key, labelled, promised)", adopt)
         self.assertIn(8016, contract.HEALTH_PROBE_PORTS)
 
     def test_the_agent_reaches_it_on_the_persons_sandbox_network(self):
