@@ -53,6 +53,7 @@ export function DefaultSetPanel({ canEdit, unconfirmedRoot }: { canEdit: boolean
     }
   }, [])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: load() also serves Retry, so it starts from the loading state
   useEffect(() => { load() }, [load])
 
   const lead = 'The permission set a member gets until an administrator assigns one: new members, and members never assigned a set.'

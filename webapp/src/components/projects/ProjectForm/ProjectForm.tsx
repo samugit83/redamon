@@ -289,7 +289,10 @@ async function fetchDefaults(): Promise<{ defaults: Partial<ProjectFormData>; er
 export function useScanErrorToast(label: string, error: string | null | undefined, lastStartError?: () => ScanStartError | null) {
   const toast = useToast()
   const latest = useRef({ toast, lastStartError })
-  latest.current = { toast, lastStartError }
+  // Declared before the effect that reads it: effects run in order, so the read sees this render's values.
+  useEffect(() => {
+    latest.current = { toast, lastStartError }
+  })
   useEffect(() => {
     if (!error) return
     const start = latest.current.lastStartError?.()
@@ -309,7 +312,10 @@ export function useRunFailureToast(
 ) {
   const toast = useToast()
   const latest = useRef({ toast, runs })
-  latest.current = { toast, runs }
+  // Declared before the effect that reads it: effects run in order, so the read sees this render's values.
+  useEffect(() => {
+    latest.current = { toast, runs }
+  })
   const seen = useRef<Record<string, string>>({})
   const signature = runs.map(r => `${r.key}=${r.status ?? ''}`).join('|')
   useEffect(() => {

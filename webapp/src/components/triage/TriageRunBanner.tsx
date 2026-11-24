@@ -39,11 +39,9 @@ export interface LiveTriageRun {
  */
 export function useLiveTriageRun(projectId: string | null, active: boolean): LiveTriageRun | null {
   const [run, setRun] = useState<LiveTriageRun | null>(null)
+  if ((!active || !projectId) && run !== null) setRun(null)
   useEffect(() => {
-    if (!active || !projectId) {
-      setRun(null)
-      return
-    }
+    if (!active || !projectId) return
     let live = true
     fetch(`/api/triage/preflight?projectId=${encodeURIComponent(projectId)}`)
       .then(res => (res.ok ? res.json() : null))

@@ -6,7 +6,7 @@
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
-import type { ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
 
 const confirm = vi.fn()
 const alertError = vi.fn()
@@ -142,7 +142,11 @@ describe('NodeFiltersView', () => {
 
   test('unsaved edits ask before leaving, with the discard prompt the other forms use', async () => {
     let guard: ReturnType<typeof useNavigationGuard> = null
-    const Probe = () => { guard = useNavigationGuard(); return null }
+    const Probe = () => {
+      const current = useNavigationGuard()
+      useEffect(() => { guard = current })
+      return null
+    }
     render(
       <NavigationGuardProvider>
         <Probe />

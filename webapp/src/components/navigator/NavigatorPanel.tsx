@@ -96,7 +96,6 @@ export function NavigatorPanel({
   const [view, setView] = useState<'chat' | 'history'>('chat')
   const [draft, setDraft] = useState('')
   const [menuOpen, setMenuOpen] = useState(false)
-  const [coolingDown, setCoolingDown] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   const status = useQuery({
@@ -145,6 +144,7 @@ export function NavigatorPanel({
   useEffect(() => {
     if (openedFor.current !== projectId) {
       void openThread(null)
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- a project switch shows the chat only when the person has not chosen yet, which only the openedFor ref knows after commit
       setView('chat')
     }
   }, [projectId, openThread])
@@ -164,15 +164,15 @@ export function NavigatorPanel({
   const variant: IntroVariant | null = !projectId ? 'no_project'
     : status.data && !status.data.allowed ? ((status.data.reason as IntroVariant) ?? 'navigator_not_available') : null
   const actingAsNoModel = status.data?.actingAs === true && status.data.modelConfigured === false
+  // rate_limited: the input comes back after the bucket's retryAfterSeconds, when the error is cleared.
+  const { error: chatError, clearError } = chat
+  const coolingDown = chatError?.code === 'rate_limited'
   const inputDisabled = !projectId || !allowed || chat.streaming || actingAsNoModel || coolingDown
 
-  // rate_limited: the input comes back after the bucket's retryAfterSeconds.
-  const { error: chatError, clearError } = chat
   useEffect(() => {
     if (chatError?.code !== 'rate_limited') return
-    setCoolingDown(true)
-    const t = setTimeout(() => { setCoolingDown(false); clearError() }, Math.max(1, chatError.retryAfterSeconds ?? 60) * 1000)
-    return () => { clearTimeout(t); setCoolingDown(false) }
+    const t = setTimeout(() => clearError(), Math.max(1, chatError.retryAfterSeconds ?? 60) * 1000)
+    return () => clearTimeout(t)
   }, [chatError, clearError])
   // Turned off mid-session: read the switch now, so the launcher goes without waiting for its poll.
   useEffect(() => {

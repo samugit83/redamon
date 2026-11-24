@@ -513,7 +513,7 @@ export async function POST(request: NextRequest) {
         const CHUNK_SIZE = 500
         const remediationBatch = remediations.map(rem => {
           const { id: _id, projectId: _pid, createdAt: _ca, updatedAt: _ua, ...fields } = rem
-          return { ...fields, projectId: newProject.id } as any
+          return { ...fields, projectId: newProject.id } as Prisma.RemediationCreateManyInput
         })
 
         for (let i = 0; i < remediationBatch.length; i += CHUNK_SIZE) {

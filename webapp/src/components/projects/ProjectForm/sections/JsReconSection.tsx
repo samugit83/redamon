@@ -312,7 +312,7 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
   const [trufflehog, setTrufflehog] = useState<TrufflehogAvailability>({ state: 'checking' })
   const trufflehogResultsLabelId = useId()
 
-  const jsReconEnabled = (data as any).jsReconEnabled ?? false
+  const jsReconEnabled = data.jsReconEnabled ?? false
   useEffect(() => {
     if (!isOpen || !jsReconEnabled) return
     let cancelled = false
@@ -324,12 +324,12 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
   // rather than repeating it.
   const stealthForcesValidationOff = !!data.stealthMode
     && registryField('jsReconValidateKeys')?.stealth?.set === false
-  const validateKeysStored = (data as any).jsReconValidateKeys ?? true
+  const validateKeysStored = data.jsReconValidateKeys ?? true
   const validateKeysEffective = validateKeysStored && !stealthForcesValidationOff
 
-  const trufflehogEnabled = (data as any).jsReconTrufflehogEnabled ?? true
+  const trufflehogEnabled = data.jsReconTrufflehogEnabled ?? true
   const trufflehogMissing = trufflehog.state === 'image_missing'
-  const storedResults = (data as any).jsReconTrufflehogResults
+  const storedResults = data.jsReconTrufflehogResults
   const trufflehogResults: string[] = Array.isArray(storedResults) ? storedResults : DEFAULT_TRUFFLEHOG_RESULTS
   const toggleTrufflehogResult = (value: string) => {
     const next = trufflehogResults.includes(value)
@@ -337,7 +337,7 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
       : [...trufflehogResults, value]
     // Canonical order, so ticking and unticking never reorders the stored list.
     const ordered = DEFAULT_TRUFFLEHOG_RESULTS.filter(v => next.includes(v))
-    updateField('jsReconTrufflehogResults' as any, ordered as any)
+    updateField('jsReconTrufflehogResults', ordered)
   }
 
   const isEditMode = mode === 'edit' && projectId
@@ -478,7 +478,7 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
           <span className={styles.badgeActive}>Active</span>
         </h2>
         <div className={styles.sectionHeaderRight}>
-          {onRun && (data as any).jsReconEnabled && (
+          {onRun && data.jsReconEnabled && (
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); onRun() }}
@@ -490,8 +490,8 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
           )}
           <div onClick={(e) => e.stopPropagation()}>
             <Toggle
-              checked={(data as any).jsReconEnabled ?? false}
-              onChange={(checked) => updateField('jsReconEnabled' as any, checked)}
+              checked={data.jsReconEnabled ?? false}
+              onChange={(checked) => updateField('jsReconEnabled', checked)}
             />
           </div>
           <ChevronDown
@@ -511,7 +511,7 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
             fingerprints frameworks with versions, and identifies DOM-based XSS sinks.
           </p>
 
-          {(data as any).jsReconEnabled && (
+          {data.jsReconEnabled && (
             <>
               {/* Analysis Scope */}
               <div className={styles.subSection}>
@@ -522,8 +522,8 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                     <input
                       type="number"
                       className="textInput"
-                      value={(data as any).jsReconMaxFiles ?? 10000}
-                      onChange={(e) => updateField('jsReconMaxFiles' as any, parseInt(e.target.value) || 10000)}
+                      value={data.jsReconMaxFiles ?? 10000}
+                      onChange={(e) => updateField('jsReconMaxFiles', parseInt(e.target.value) || 10000)}
                       min={10}
                       max={10000}
                     />
@@ -534,8 +534,8 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                     <input
                       type="number"
                       className="textInput"
-                      value={(data as any).jsReconTimeout ?? 900}
-                      onChange={(e) => updateField('jsReconTimeout' as any, parseInt(e.target.value) || 900)}
+                      value={data.jsReconTimeout ?? 900}
+                      onChange={(e) => updateField('jsReconTimeout', parseInt(e.target.value) || 900)}
                       min={60}
                     />
                     <span className={styles.fieldHint}>Overall scan timeout</span>
@@ -547,8 +547,8 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                     <input
                       type="number"
                       className="textInput"
-                      value={(data as any).jsReconConcurrency ?? 10}
-                      onChange={(e) => updateField('jsReconConcurrency' as any, parseInt(e.target.value) || 10)}
+                      value={data.jsReconConcurrency ?? 10}
+                      onChange={(e) => updateField('jsReconConcurrency', parseInt(e.target.value) || 10)}
                       min={1}
                       max={30}
                     />
@@ -558,8 +558,8 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                     <label className={styles.fieldLabel}>Min Confidence</label>
                     <select
                       className="textInput"
-                      value={(data as any).jsReconMinConfidence ?? 'low'}
-                      onChange={(e) => updateField('jsReconMinConfidence' as any, e.target.value)}
+                      value={data.jsReconMinConfidence ?? 'low'}
+                      onChange={(e) => updateField('jsReconMinConfidence', e.target.value)}
                     >
                       <option value="low">Low (show all findings)</option>
                       <option value="medium">Medium (reduce noise)</option>
@@ -579,8 +579,8 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                     <p className={styles.toggleDescription}>Analyze .chunk.js and .bundle.js files excluded by Katana. These contain application code with embedded secrets.</p>
                   </div>
                   <Toggle
-                    checked={(data as any).jsReconIncludeChunks ?? true}
-                    onChange={(checked) => updateField('jsReconIncludeChunks' as any, checked)}
+                    checked={data.jsReconIncludeChunks ?? true}
+                    onChange={(checked) => updateField('jsReconIncludeChunks', checked)}
                   />
                 </div>
                 <div className={styles.toggleRow}>
@@ -589,8 +589,8 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                     <p className={styles.toggleDescription}>Fetch Next.js (/_next/static/chunks/) and Nuxt.js (/_nuxt/) bundles that Katana excludes. Often contain API keys and Firebase configs.</p>
                   </div>
                   <Toggle
-                    checked={(data as any).jsReconIncludeFrameworkJs ?? true}
-                    onChange={(checked) => updateField('jsReconIncludeFrameworkJs' as any, checked)}
+                    checked={data.jsReconIncludeFrameworkJs ?? true}
+                    onChange={(checked) => updateField('jsReconIncludeFrameworkJs', checked)}
                   />
                 </div>
                 <div className={styles.toggleRow}>
@@ -599,8 +599,8 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                     <p className={styles.toggleDescription}>Analyze historical JS files from Wayback Machine/GAU. Old builds often contain hardcoded keys removed from production. Requires GAU enabled.</p>
                   </div>
                   <Toggle
-                    checked={(data as any).jsReconIncludeArchivedJs ?? true}
-                    onChange={(checked) => updateField('jsReconIncludeArchivedJs' as any, checked)}
+                    checked={data.jsReconIncludeArchivedJs ?? true}
+                    onChange={(checked) => updateField('jsReconIncludeArchivedJs', checked)}
                   />
                 </div>
               </div>
@@ -614,8 +614,8 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                     <p className={styles.toggleDescription}>90+ patterns for AWS keys, Stripe, Firebase, GitHub tokens, database URIs, JWTs, and more. TruffleHog can run beside them: see Key Validation below.</p>
                   </div>
                   <Toggle
-                    checked={(data as any).jsReconRegexPatterns ?? true}
-                    onChange={(checked) => updateField('jsReconRegexPatterns' as any, checked)}
+                    checked={data.jsReconRegexPatterns ?? true}
+                    onChange={(checked) => updateField('jsReconRegexPatterns', checked)}
                   />
                 </div>
                 <div className={styles.toggleRow}>
@@ -624,8 +624,8 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                     <p className={styles.toggleDescription}>Discover exposed .map files that leak original unminified source code and scan them for secrets</p>
                   </div>
                   <Toggle
-                    checked={(data as any).jsReconSourceMaps ?? true}
-                    onChange={(checked) => updateField('jsReconSourceMaps' as any, checked)}
+                    checked={data.jsReconSourceMaps ?? true}
+                    onChange={(checked) => updateField('jsReconSourceMaps', checked)}
                   />
                 </div>
                 <div className={styles.toggleRow}>
@@ -634,8 +634,8 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                     <p className={styles.toggleDescription}>Check if scoped npm packages (@org/pkg) exist on public registry. Missing = critical RCE vector</p>
                   </div>
                   <Toggle
-                    checked={(data as any).jsReconDependencyCheck ?? true}
-                    onChange={(checked) => updateField('jsReconDependencyCheck' as any, checked)}
+                    checked={data.jsReconDependencyCheck ?? true}
+                    onChange={(checked) => updateField('jsReconDependencyCheck', checked)}
                   />
                 </div>
                 <div className={styles.toggleRow}>
@@ -644,8 +644,8 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                     <p className={styles.toggleDescription}>Extract REST, GraphQL, WebSocket endpoints, admin/debug routes, and API documentation paths</p>
                   </div>
                   <Toggle
-                    checked={(data as any).jsReconExtractEndpoints ?? true}
-                    onChange={(checked) => updateField('jsReconExtractEndpoints' as any, checked)}
+                    checked={data.jsReconExtractEndpoints ?? true}
+                    onChange={(checked) => updateField('jsReconExtractEndpoints', checked)}
                   />
                 </div>
                 <div className={styles.toggleRow}>
@@ -654,26 +654,26 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                     <p className={styles.toggleDescription}>Off by default. When on, each extracted endpoint on an in-scope host is probed and only confirmed-dead ones are dropped before graph write. Third-party hosts named in the JS (analytics, social widgets, CDNs) and RoE-excluded hosts are never contacted. Headers below apply only to endpoint probes.</p>
                   </div>
                   <Toggle
-                    checked={(data as any).jsReconValidateEndpoints ?? false}
-                    onChange={(checked) => updateField('jsReconValidateEndpoints' as any, checked)}
+                    checked={data.jsReconValidateEndpoints ?? false}
+                    onChange={(checked) => updateField('jsReconValidateEndpoints', checked)}
                   />
                 </div>
-                {((data as any).jsReconValidateEndpoints ?? false) && (
+                {(data.jsReconValidateEndpoints ?? false) && (
                   <div className={styles.fieldRow}>
                     <div className={styles.fieldGroup}>
                       <label className={styles.fieldLabel}>Accepted Status Codes</label>
                       <input
                         type="text"
                         className="textInput"
-                        value={((data as any).jsReconEndpointAcceptStatus ?? DEFAULT_ENDPOINT_ACCEPT_STATUS).join(', ')}
+                        value={(data.jsReconEndpointAcceptStatus ?? DEFAULT_ENDPOINT_ACCEPT_STATUS).join(', ')}
                         onChange={(e) => updateField(
-                          'jsReconEndpointAcceptStatus' as any,
+                          'jsReconEndpointAcceptStatus',
                           e.target.value
                             .split(',')
                             .map((value) => value.trim())
                             .filter(Boolean)
                             .map((value) => Number(value))
-                            .filter(Number.isFinite) as any,
+                            .filter(Number.isFinite),
                         )}
                       />
                       <span className={styles.fieldHint}>Comma-separated HTTP status codes accepted as live endpoints</span>
@@ -683,13 +683,13 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                       <textarea
                         className="textInput"
                         rows={4}
-                        value={((data as any).jsReconEndpointCustomHeaders ?? []).join('\n')}
+                        value={(data.jsReconEndpointCustomHeaders ?? []).join('\n')}
                         onChange={(e) => updateField(
-                          'jsReconEndpointCustomHeaders' as any,
+                          'jsReconEndpointCustomHeaders',
                           e.target.value
                             .split('\n')
                             .map((line) => line.trim())
-                            .filter(Boolean) as any,
+                            .filter(Boolean),
                         )}
                         placeholder={`Cookie: session=...\nAuthorization: Bearer ...`}
                       />
@@ -702,8 +702,8 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                         min={1}
                         max={20}
                         className="textInput"
-                        value={(data as any).jsReconEndpointConcurrency ?? 10}
-                        onChange={(e) => updateField('jsReconEndpointConcurrency' as any, parseInt(e.target.value) || 10)}
+                        value={data.jsReconEndpointConcurrency ?? 10}
+                        onChange={(e) => updateField('jsReconEndpointConcurrency', parseInt(e.target.value) || 10)}
                       />
                       <span className={styles.fieldHint}>Parallel endpoint probes (1-20, default 10)</span>
                     </div>
@@ -715,8 +715,8 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                     <p className={styles.toggleDescription}>Find innerHTML, eval(), document.write, prototype pollution, and other XSS/injection vectors</p>
                   </div>
                   <Toggle
-                    checked={(data as any).jsReconDomSinks ?? true}
-                    onChange={(checked) => updateField('jsReconDomSinks' as any, checked)}
+                    checked={data.jsReconDomSinks ?? true}
+                    onChange={(checked) => updateField('jsReconDomSinks', checked)}
                   />
                 </div>
                 <div className={styles.toggleRow}>
@@ -725,8 +725,8 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                     <p className={styles.toggleDescription}>Detect React, Next.js, Vue, Angular, jQuery and 7 more frameworks with version extraction for CVE targeting</p>
                   </div>
                   <Toggle
-                    checked={(data as any).jsReconFrameworkDetect ?? true}
-                    onChange={(checked) => updateField('jsReconFrameworkDetect' as any, checked)}
+                    checked={data.jsReconFrameworkDetect ?? true}
+                    onChange={(checked) => updateField('jsReconFrameworkDetect', checked)}
                   />
                 </div>
                 <div className={styles.toggleRow}>
@@ -735,8 +735,8 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                     <p className={styles.toggleDescription}>Extract TODO, FIXME, HACK markers and comments containing password/secret/token keywords</p>
                   </div>
                   <Toggle
-                    checked={(data as any).jsReconDevComments ?? true}
-                    onChange={(checked) => updateField('jsReconDevComments' as any, checked)}
+                    checked={data.jsReconDevComments ?? true}
+                    onChange={(checked) => updateField('jsReconDevComments', checked)}
                   />
                 </div>
                 <div className={styles.toggleRow}>
@@ -747,8 +747,8 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                     </p>
                   </div>
                   <Toggle
-                    checked={(data as any).jsReconAiSdkDetectionEnabled ?? true}
-                    onChange={(checked) => updateField('jsReconAiSdkDetectionEnabled' as any, checked)}
+                    checked={data.jsReconAiSdkDetectionEnabled ?? true}
+                    onChange={(checked) => updateField('jsReconAiSdkDetectionEnabled', checked)}
                   />
                 </div>
               </div>
@@ -765,19 +765,19 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                     )}
                   </div>
                   <Toggle
-                    checked={(data as any).jsReconValidateKeys ?? true}
-                    onChange={(checked) => updateField('jsReconValidateKeys' as any, checked)}
+                    checked={data.jsReconValidateKeys ?? true}
+                    onChange={(checked) => updateField('jsReconValidateKeys', checked)}
                   />
                 </div>
-                {(data as any).jsReconValidateKeys && (
+                {data.jsReconValidateKeys && (
                   <div className={styles.fieldRow}>
                     <div className={styles.fieldGroup}>
                       <label className={styles.fieldLabel}>Validation Timeout (seconds)</label>
                       <input
                         type="number"
                         className="textInput"
-                        value={(data as any).jsReconValidationTimeout ?? 5}
-                        onChange={(e) => updateField('jsReconValidationTimeout' as any, parseInt(e.target.value) || 5)}
+                        value={data.jsReconValidationTimeout ?? 5}
+                        onChange={(e) => updateField('jsReconValidationTimeout', parseInt(e.target.value) || 5)}
                         min={1}
                         max={30}
                       />
@@ -815,7 +815,7 @@ export function JsReconSection({ data, updateField, projectId, mode, onRun }: Js
                     {/* Missing image: it cannot be turned on, but one already on can still be turned off. */}
                     <Toggle
                       checked={trufflehogEnabled}
-                      onChange={(checked) => updateField('jsReconTrufflehogEnabled' as any, checked)}
+                      onChange={(checked) => updateField('jsReconTrufflehogEnabled', checked)}
                       disabled={trufflehogMissing && !trufflehogEnabled}
                       aria-label="Run TruffleHog"
                     />

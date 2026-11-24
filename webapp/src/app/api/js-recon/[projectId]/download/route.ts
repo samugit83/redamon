@@ -5,7 +5,7 @@ import { createHash } from 'crypto'
 // Reuse the graph API's Neo4j driver
 import { getGraphSession } from '../../../graph/neo4j'
 import { notMuted } from '@/lib/graphMute'
-import { jsReconSecretFromRecord } from '@/lib/secrets/jsReconSecret'
+import { type JsReconSecretRow, jsReconSecretFromRecord } from '@/lib/secrets/jsReconSecret'
 import { internalError } from '@/lib/routeErrors'
 
 const PROJECT_ID_RE = /^[a-zA-Z0-9_-]+$/
@@ -31,21 +31,28 @@ interface CacheEntry {
 const cache = new Map<string, CacheEntry>()
 const TTL = 10_000 // 10s
 
+/** One answer row: graph properties as stored, plus the id and stamp the ETag hashes. */
+interface JsReconRow {
+  nodeId: unknown
+  updatedAt: unknown
+  [field: string]: unknown
+}
+
 interface JsReconResponse {
   scan_metadata: { js_files_analyzed: number }
-  secrets: any[]
-  endpoints: any[]
-  dependencies: any[]
-  source_maps: any[]
-  dom_sinks: any[]
-  frameworks: any[]
-  dev_comments: any[]
-  emails: any[]
-  ip_addresses: any[]
-  dev_references: any[]
-  object_references: any[]
-  cloud_assets: any[]
-  external_domains: any[]
+  secrets: JsReconSecretRow[]
+  endpoints: JsReconRow[]
+  dependencies: JsReconRow[]
+  source_maps: JsReconRow[]
+  dom_sinks: JsReconRow[]
+  frameworks: JsReconRow[]
+  dev_comments: JsReconRow[]
+  emails: JsReconRow[]
+  ip_addresses: JsReconRow[]
+  dev_references: JsReconRow[]
+  object_references: JsReconRow[]
+  cloud_assets: JsReconRow[]
+  external_domains: JsReconRow[]
   summary: {
     total_secrets: number
     total_endpoints: number
@@ -205,17 +212,17 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     )
 
     // Map findings by type
-    const dependencies: any[] = []
-    const source_maps: any[] = []
-    const dom_sinks: any[] = []
-    const frameworks: any[] = []
-    const dev_comments: any[] = []
-    const emails: any[] = []
-    const ip_addresses: any[] = []
-    const dev_references: any[] = []
-    const object_references: any[] = []
-    const cloud_assets: any[] = []
-    const external_domains: any[] = []
+    const dependencies: JsReconRow[] = []
+    const source_maps: JsReconRow[] = []
+    const dom_sinks: JsReconRow[] = []
+    const frameworks: JsReconRow[] = []
+    const dev_comments: JsReconRow[] = []
+    const emails: JsReconRow[] = []
+    const ip_addresses: JsReconRow[] = []
+    const dev_references: JsReconRow[] = []
+    const object_references: JsReconRow[] = []
+    const cloud_assets: JsReconRow[] = []
+    const external_domains: JsReconRow[] = []
     let jsFilesCount = 0
 
     for (const record of findingsResult.records) {
@@ -365,10 +372,10 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     }
 
     // Map secrets
-    const secrets = secretsResult.records.map((r: any) => jsReconSecretFromRecord(k => r.get(k)))
+    const secrets = secretsResult.records.map(r => jsReconSecretFromRecord(k => r.get(k)))
 
     // Map endpoints
-    const endpoints = endpointsResult.records.map((r: any) => ({
+    const endpoints = endpointsResult.records.map(r => ({
       nodeId: r.get('nodeId') ?? null,
       method: r.get('method'),
       path: r.get('path'),
@@ -398,7 +405,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       )
     }
 
-    const liveCount = secrets.filter((s: any) => s.validation?.status === 'validated').length
+    const liveCount = secrets.filter(s => s.validation?.status === 'validated').length
 
     const data: JsReconResponse = {
       scan_metadata: { js_files_analyzed: jsFilesCount },

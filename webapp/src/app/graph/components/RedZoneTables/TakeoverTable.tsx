@@ -111,7 +111,7 @@ export const TakeoverTable = memo(function TakeoverTable({ projectId }: Props) {
 
   const meta =
     data?.meta && rows.length
-      ? `${(data.meta as any).confirmed ?? 0} confirmed / ${(data.meta as any).likely ?? 0} likely / ${(data.meta as any).manualReview ?? 0} manual`
+      ? `${data.meta.confirmed ?? 0} confirmed / ${data.meta.likely ?? 0} likely / ${data.meta.manualReview ?? 0} manual`
       : undefined
 
   return (

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { readApiError, toApiError, type ApiError } from '@/lib/apiError'
 import { providerFailureDetail } from '@/lib/llmFeatures'
+import type { GraphLink, GraphNode } from '../types'
 
 export interface GraphView {
   id: string
@@ -134,7 +135,7 @@ export function useGraphViews(projectId: string | null) {
 
   const executeCypher = useCallback(async (
     cypherQuery: string,
-  ): Promise<{ nodes: any[]; links: any[] } | Failure> => {
+  ): Promise<{ nodes: GraphNode[]; links: GraphLink[] } | Failure> => {
     if (!projectId) return { error: 'No project selected', status: 0 }
     try {
       const res = await fetch('/api/graph-views/execute', {

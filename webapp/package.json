@@ -7,7 +7,7 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint .",
     "type-check": "tsc --noEmit",
     "test": "vitest run --no-file-parallelism",
     "test:coverage": "vitest run --no-file-parallelism --coverage",

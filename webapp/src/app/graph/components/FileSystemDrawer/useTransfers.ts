@@ -11,7 +11,7 @@
  * transfers still sending bytes (their sessions are deleted) and stops
  * following the others, whose jobs keep running on the server.
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { errorMessage, fetchJson } from '@/lib/apiError'
 import {
   isAbortError, sweepAbandonedUploads, TransferCancelledError, uploadBlob, waitForJob,
@@ -106,6 +106,8 @@ interface Runtime {
 }
 
 interface Engine {
+  /** The callback a finished transfer is handed to; the hook keeps it current. */
+  setOnDone: (fn: ((t: Transfer) => void) | undefined) => void
   attach: () => void
   dispose: () => void
   abortSending: () => void
@@ -115,7 +117,8 @@ interface Engine {
   dismiss: TransfersApi['dismiss']
 }
 
-function createEngine(publish: (list: Transfer[]) => void, onDone: (t: Transfer) => void): Engine {
+function createEngine(publish: (list: Transfer[]) => void): Engine {
+  let onDone: ((t: Transfer) => void) | undefined
   const store = new Map<string, Transfer>()
   const runtime = new Map<string, Runtime>()
   const queue: string[] = []
@@ -151,7 +154,7 @@ function createEngine(publish: (list: Transfer[]) => void, onDone: (t: Transfer)
         status: 'done', waiting: false, savedPath: job.progress?.path || joinPath(t.destDir, t.name),
         stoppedBecause: job.progress?.stoppedBecause,
       })
-      if (done) onDone(done)
+      if (done) onDone?.(done)
     } else if (job.status === 'cancelled') {
       patch(id, { status: 'cancelled', waiting: false })
     } else {
@@ -233,6 +236,10 @@ function createEngine(publish: (list: Transfer[]) => void, onDone: (t: Transfer)
   const nextId = () => `transfer-${++seq}`
 
   return {
+    setOnDone(fn) {
+      onDone = fn
+    },
+
     attach() {
       alive = true
       // Sessions an earlier page of this tab could not delete as it closed.
@@ -315,12 +322,10 @@ function createEngine(publish: (list: Transfer[]) => void, onDone: (t: Transfer)
 
 export function useTransfers({ onDone }: { onDone?: (t: Transfer) => void } = {}): TransfersApi {
   const [transfers, setTransfers] = useState<Transfer[]>([])
-  const onDoneRef = useRef(onDone)
+  const [engine] = useState(() => createEngine(setTransfers))
   useEffect(() => {
-    onDoneRef.current = onDone
+    engine.setOnDone(onDone)
   })
-
-  const [engine] = useState(() => createEngine(setTransfers, (t) => onDoneRef.current?.(t)))
 
   useEffect(() => {
     engine.attach()

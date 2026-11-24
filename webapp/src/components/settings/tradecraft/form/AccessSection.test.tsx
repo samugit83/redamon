@@ -5,7 +5,7 @@
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 const auth = vi.hoisted(() => ({ value: null as null | { user: { actingAs: { id: string; name: string; email: string } | null } } }))
 vi.mock('@/providers/AuthProvider', () => ({ useOptionalAuth: () => auth.value }))
@@ -26,7 +26,7 @@ const STORED: MaskedCredentials = {
 let latest: AccessDraft
 function Host({ credentials, tokenSet = false }: { credentials?: MaskedCredentials; tokenSet?: boolean }) {
   const [draft, setDraft] = useState(() => accessDraftOf(credentials))
-  latest = draft
+  useEffect(() => { latest = draft })
   return <AccessSection draft={draft} onChange={setDraft} tokenSet={tokenSet} />
 }
 const open = () => fireEvent.click(screen.getByRole('button', { name: /^Access/ }))

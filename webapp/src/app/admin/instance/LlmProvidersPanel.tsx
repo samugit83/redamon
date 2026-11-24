@@ -112,6 +112,7 @@ export function LlmProvidersPanel() {
     }
   }, [])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: load() also serves Retry, so it starts from the loading state
   useEffect(() => { load() }, [load])
 
   const title = 'Instance LLM providers'

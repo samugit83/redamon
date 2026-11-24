@@ -325,6 +325,7 @@ export function ActivitySection() {
   }, [])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: load() also serves Retry, so it starts from the loading state
     void load()
   }, [load])
 
@@ -391,6 +392,7 @@ export function MyPermissionsSection({ account }: { account: AuthUser }) {
   }, [account.id])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: load() also serves Retry, so it starts from the loading state
     void load()
   }, [load])
 

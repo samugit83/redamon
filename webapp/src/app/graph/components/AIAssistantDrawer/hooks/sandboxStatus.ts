@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { SANDBOX_STATUS_REASONS, SANDBOX_STATUS_STATES, type SandboxStatusPayload } from '@/lib/sandbox/contract'
 
 /**
@@ -44,7 +44,7 @@ export function useSandboxStatus(opts: SandboxStatusOptions) {
   const [sandboxWord, setSandboxWord] = useState<string | null>(null)
   // The socket handler captures its callbacks once: everything they read lives in refs.
   const optsRef = useRef(opts)
-  optsRef.current = opts
+  useLayoutEffect(() => { optsRef.current = opts })
   const scopeRef = useRef({ sessionId, projectId })
   const runRef = useRef(0)
   const shownRunRef = useRef<number | null>(null)
@@ -52,10 +52,14 @@ export function useSandboxStatus(opts: SandboxStatusOptions) {
 
   // A run can stop loading with no frame after `starting` (a dropped socket), so
   // the line never outlives the loading state, its session or its project.
-  useEffect(() => { if (!isLoading) setSandboxWord(null) }, [isLoading])
+  const [seen, setSeen] = useState({ isLoading, sessionId, projectId })
+  if (seen.isLoading !== isLoading || seen.sessionId !== sessionId || seen.projectId !== projectId) {
+    const scopeChanged = seen.sessionId !== sessionId || seen.projectId !== projectId
+    setSeen({ isLoading, sessionId, projectId })
+    if (!isLoading || scopeChanged) setSandboxWord(null)
+  }
   useEffect(() => {
     scopeRef.current = { sessionId, projectId }
-    setSandboxWord(null)
     runRef.current += 1
     queryRef.current = null
   }, [sessionId, projectId])

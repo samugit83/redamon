@@ -82,11 +82,10 @@ import styles from './page.module.css'
  */
 function useTriageRisks(projectId: string | null): RiskFinding[] | undefined {
   const [risks, setRisks] = useState<RiskFinding[] | undefined>(undefined)
+  // No project, no list: cleared while rendering, so the next project starts from none.
+  if (!projectId && risks !== undefined) setRisks(undefined)
   useEffect(() => {
-    if (!projectId) {
-      setRisks(undefined)
-      return
-    }
+    if (!projectId) return
     let cancelled = false
     fetch(`/api/triage/findings?projectId=${encodeURIComponent(projectId)}`)
       .then(res => (res.ok ? res.json() : { findings: [] }))

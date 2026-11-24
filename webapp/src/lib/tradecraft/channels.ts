@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useEffectEvent } from 'react'
 
 /**
  * A browser-wide notice that a project's tradecraft choices or skill switches were saved, so the
@@ -40,10 +40,9 @@ function isChange(v: unknown): v is TradecraftCountsChange {
 
 /** Calls `onChange` for every notice about `projectId` (any project when it is null). */
 export function useTradecraftCountsChanged(projectId: string | null, onChange: Listener): void {
-  const ref = useRef(onChange)
-  ref.current = onChange
+  const notify = useEffectEvent(onChange)
   useEffect(() => {
-    const listener: Listener = (c) => { if (!projectId || c.projectId === projectId) ref.current(c) }
+    const listener: Listener = (c) => { if (!projectId || c.projectId === projectId) notify(c) }
     let ch: BroadcastChannel | null = null
     if (hasChannel()) {
       try {

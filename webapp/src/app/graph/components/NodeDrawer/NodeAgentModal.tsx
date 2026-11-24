@@ -15,9 +15,15 @@ export function NodeAgentModal({ isOpen, nodeLabel, onClose, onSubmit }: NodeAge
   const [request, setRequest] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
+  // Each opening starts from an empty request.
+  const [wasOpen, setWasOpen] = useState(isOpen)
+  if (wasOpen !== isOpen) {
+    setWasOpen(isOpen)
+    if (isOpen) setRequest('')
+  }
+
   useEffect(() => {
     if (isOpen) {
-      setRequest('')
       // Modal mounts via portal; focus after it paints.
       const t = setTimeout(() => textareaRef.current?.focus(), 50)
       return () => clearTimeout(t)

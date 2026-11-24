@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 import { useToast } from '@/components/ui'
 import { StepUpModal } from '@/components/auth/StepUpModal'
 import type { SharingPolicy } from '@/lib/authz/sharingPolicy'
@@ -83,7 +83,12 @@ export function SharingPolicyPanel({ settings, unconfirmedRoot, onSaved }: {
   const saved = useMemo(() => (policy ? draftOf(policy) : null), [policy])
   const [draft, setDraft] = useState<Draft | null>(saved)
   const [confirming, setConfirming] = useState(false)
-  useEffect(() => setDraft(saved), [saved])
+  // New settings (a save, a reload) start the draft again from what is in force.
+  const [draftBase, setDraftBase] = useState(saved)
+  if (draftBase !== saved) {
+    setDraftBase(saved)
+    setDraft(saved)
+  }
   if (!policy || !draft || !saved) return null
 
   const lead = 'Whether accounts share projects with each other, up to which level, and what administrators see.'

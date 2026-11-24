@@ -74,9 +74,10 @@ export default function AdminUsersPage() {
   // A refresh after a row action keeps the rows on screen: each row owns its dialogs, so
   // swapping the table for the loading line unmounted a dialog still showing its result
   // (the reset link of Reset credentials). A failed refresh says so below the rows.
+  // The loading line is set by what asks for a new list (the first render, a filter change,
+  // Retry), not here, so the effect below only fetches.
   const load = useCallback(async (f: Filters, keepRows = false) => {
     const mine = ++generation.current
-    if (!keepRows) setView({ kind: 'loading' })
     try {
       const page = await fetchJson<DirectoryPage>(`/api/admin/users?${queryOf(f)}`, { cache: 'no-store' }, 'Could not list the accounts')
       if (mine !== generation.current) return
@@ -92,9 +93,11 @@ export default function AdminUsersPage() {
     }
   }, [])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- the effect's job is the fetch; load sets state only after it resolves
   useEffect(() => { void load(filters) }, [load, filters])
 
   function apply(next: Filters) {
+    setView({ kind: 'loading' })
     setFilters(next)
     const qs = queryOf(next)
     router.replace(qs ? `/admin/users?${qs}` : '/admin/users', { scroll: false })
@@ -120,7 +123,7 @@ export default function AdminUsersPage() {
     }
   }
 
-  const reload = () => void load(filters)
+  const reload = () => { setView({ kind: 'loading' }); void load(filters) }
   const refresh = () => void load(filters, true)
   const filtered = FILTER_KEYS.some((k) => filters[k].trim() !== '')
   const confirmedRoot = me?.accountType === 'root' && me?.rbac?.root?.confirmed === true

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { AlertTriangle, ShieldAlert, Play, Loader2, History, Trash2 } from 'lucide-react'
 import { Modal } from '@/components/ui'
 import type { ScanMode } from '@/hooks/useReconStatus'
@@ -84,15 +84,19 @@ export function ReconConfirmModal({
   // Scan Timeline (Section 3.2): a second-or-later scan asks what to do with the
   // graph it is about to rebuild. Default is the non-destructive choice.
   const [scanMode, setScanMode] = useState<ScanMode>('new')
-  useEffect(() => {
+  const [wasOpen, setWasOpen] = useState(isOpen)
+  if (wasOpen !== isOpen) {
+    setWasOpen(isOpen)
     if (isOpen) setScanMode('new')
-  }, [isOpen])
+  }
   // The start route asks recon:overwrite on top of recon:scan for this mode (route manifest).
   const overwriteRefusal = useRefusal('recon:overwrite')
   const overwriteRefused = overwriteRefusal !== null
-  useEffect(() => {
+  const [wasRefused, setWasRefused] = useState(overwriteRefused)
+  if (wasRefused !== overwriteRefused) {
+    setWasRefused(overwriteRefused)
     if (overwriteRefused) setScanMode('new')
-  }, [overwriteRefused])
+  }
 
   return (
     <Modal

@@ -425,7 +425,7 @@ export default function AdminOperationsPage() {
               </Table>
             ))}
             {data.shells.state.ok && data.shells.jobs > 0 && (
-              <p className={overviewStyles.count}>{data.shells.jobs} background job{data.shells.jobs === 1 ? '' : 's'} (handlers) running in the Kali sandboxes' Metasploit consoles.</p>
+              <p className={overviewStyles.count}>{data.shells.jobs} background job{data.shells.jobs === 1 ? '' : 's'} (handlers) running in the Kali sandboxes&apos; Metasploit consoles.</p>
             )}
           </Section>
 

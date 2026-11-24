@@ -187,7 +187,7 @@ export function KatanaSection({ data, updateField, onRun }: KatanaSectionProps) 
                 />
               </div>
               <span className={styles.fieldHint}>
-                Skip static assets, images, and CDN URLs. These aren't vulnerable to injection attacks
+                Skip static assets, images, and CDN URLs. These aren&apos;t vulnerable to injection attacks
               </span>
             </div>
           </div>

@@ -446,7 +446,7 @@ export interface ThinkingChunkPayload {
 
 export interface ToolStartPayload {
   tool_name: string
-  tool_args: Record<string, any>
+  tool_args: Record<string, unknown>
   wave_id?: string
   /** Stable per-step id, repeated on this tool's chunk/finished/complete. */
   step_id?: string
@@ -538,7 +538,7 @@ export interface ResponsePayload {
 }
 
 export interface ExecutionStepPayload {
-  step: Record<string, any>
+  step: Record<string, unknown>
 }
 
 export interface ErrorPayload {
@@ -585,11 +585,12 @@ export interface FileReadyPayload {
 // MESSAGE STRUCTURE
 // =============================================================================
 
-export interface ClientMessage<T = any> {
+export interface ClientMessage<T = unknown> {
   type: MessageType
   payload: T
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- useWebSocketHandler reads a bare ServerMessage's payload field by field; an `unknown` default needs that handler narrowed per message type first
 export interface ServerMessage<T = any> {
   type: MessageType
   payload: T
@@ -690,7 +691,7 @@ export interface SessionInteractResult {
 // TYPE GUARDS (Runtime type checking)
 // =============================================================================
 
-export function isServerMessage(data: any): data is ServerMessage {
+export function isServerMessage(data: unknown): data is ServerMessage {
   return (
     typeof data === 'object' &&
     data !== null &&

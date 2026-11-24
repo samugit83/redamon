@@ -1,4 +1,4 @@
-import { createElement, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, waitFor, cleanup, act } from '@testing-library/react'
 import { JevSelectionProvider, useHasJevProvider, useJevProvider, notifyJevProviderChanged } from './useHasJevProvider'
@@ -18,7 +18,7 @@ function mount(selection: string | null = 'direct', owner: string | null = 'owne
   let selectedProviderId = selection
   let ownerUserId = owner
   const hook = renderHook(() => useJevProvider(), { wrapper: ({ children }: { children: ReactNode }) =>
-    createElement(JevSelectionProvider, { selectedProviderId, ownerUserId, ownerUnavailable: unavailable, children }) })
+    <JevSelectionProvider selectedProviderId={selectedProviderId} ownerUserId={ownerUserId} ownerUnavailable={unavailable}>{children}</JevSelectionProvider> })
   return { ...hook,
     select(id: string | null) { selectedProviderId = id; hook.rerender() },
     owner(id: string | null) { ownerUserId = id; hook.rerender() },

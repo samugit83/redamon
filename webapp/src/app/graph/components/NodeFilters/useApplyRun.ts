@@ -7,7 +7,7 @@
  * a run whose agent died to `failed`, and a run that is gone stops the polling,
  * so it always ends.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { readApiError } from '@/lib/apiError'
 import type { NodeFilterRunSummary } from './useNodeFilters'
 
@@ -20,9 +20,13 @@ export function useApplyRun(projectId: string | null, initialRunId: string | nul
   const [runId, setRunId] = useState<string | null>(initialRunId)
   const [run, setRun] = useState<NodeFilterRunSummary | null>(null)
   const onFinishedRef = useRef(onFinished)
-  onFinishedRef.current = onFinished
+  useLayoutEffect(() => { onFinishedRef.current = onFinished })
 
-  useEffect(() => { setRunId(initialRunId) }, [initialRunId])
+  const [seenInitialRunId, setSeenInitialRunId] = useState(initialRunId)
+  if (seenInitialRunId !== initialRunId) {
+    setSeenInitialRunId(initialRunId)
+    setRunId(initialRunId)
+  }
 
   useEffect(() => {
     if (!projectId || !runId) return

@@ -74,6 +74,7 @@ export function SetsManager({ kind }: { kind: SetKind }) {
     }
   }, [readList, selfId, words])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: load() also serves Retry, so it starts from the loading state
   useEffect(() => { void load() }, [load])
 
   async function refresh() {

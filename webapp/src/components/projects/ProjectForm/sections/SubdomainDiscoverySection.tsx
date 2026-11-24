@@ -355,7 +355,7 @@ export function SubdomainDiscoverySection({ data, updateField, onRun }: Subdomai
                       const current = (Array.isArray(data.amassBruteWordlists) ? data.amassBruteWordlists as string[] : ['default']).filter((w: string) => w !== 'jhaddix-all')
                       if (e.target.checked) current.push('jhaddix-all')
                       if (!current.includes('default')) current.unshift('default')
-                      updateField('amassBruteWordlists', current as any)
+                      updateField('amassBruteWordlists', current)
                     }}
                   />
                   <span>jhaddix all.txt (~2.18M entries)</span>
@@ -511,7 +511,7 @@ export function SubdomainDiscoverySection({ data, updateField, onRun }: Subdomai
               <div className={styles.toggleRowCompactInfo}>
                 <span className={styles.toggleLabelLg}>AI NS Hint</span>
                 <p className={styles.toggleDescription}>
-                  Weak signal: tag Subdomain.ai_service_hint = "ai-hosting-candidate" when NS records point at AI-friendly hosts (Vercel, Netlify, Replit, Modal, HuggingFace Spaces). Never overrides a stronger TXT hint.
+                  Weak signal: tag Subdomain.ai_service_hint = &quot;ai-hosting-candidate&quot; when NS records point at AI-friendly hosts (Vercel, Netlify, Replit, Modal, HuggingFace Spaces). Never overrides a stronger TXT hint.
                 </p>
               </div>
               <Toggle

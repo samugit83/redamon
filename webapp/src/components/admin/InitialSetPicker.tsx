@@ -85,6 +85,7 @@ export function InitialSetPicker({ idPrefix, selfId: given, value, onChange }: I
   }, [selfId])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect, only while the picker is shown: load() also serves Retry, so it starts from the loading state
     if (shown) void load()
   }, [shown, load])
 

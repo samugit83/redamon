@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useId, useState, type FormEvent } from 'react'
+import { useId, useState, type FormEvent } from 'react'
 import { Modal } from '@/components/ui'
 import { durationLabel } from './ActAsDialog'
 import styles from './ActAsDialog.module.css'
@@ -45,7 +45,10 @@ export function BreakGlassDialog({ isOpen, target, onConfirm, onClose }: BreakGl
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
 
-  useEffect(() => {
+  // Closing clears the form, checked while rendering so a reopened dialog never shows the last one.
+  const [wasOpen, setWasOpen] = useState(isOpen)
+  if (wasOpen !== isOpen) {
+    setWasOpen(isOpen)
     if (!isOpen) {
       setReason('')
       setPassword('')
@@ -53,7 +56,7 @@ export function BreakGlassDialog({ isOpen, target, onConfirm, onClose }: BreakGl
       setPending(false)
       setDuration(DEFAULT_MINUTES)
     }
-  }, [isOpen])
+  }
 
   async function submit(e?: FormEvent) {
     e?.preventDefault()

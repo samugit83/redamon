@@ -46,15 +46,24 @@ interface GraphCanvas3DProps {
   externalGraphRef?: React.MutableRefObject<any>
 }
 
+// What disposal touches on a Three.js object (`three` is untyped here: src/types/three.d.ts).
+interface Disposable { dispose(): void }
+interface SceneObject {
+  geometry?: Disposable
+  material?: Disposable | Disposable[]
+  dispose?: unknown
+  traverse(visit: (child: SceneObject) => void): void
+}
+
 // ── Dispose all geometries + materials in a group ──
-function disposeGroup(group: any) {
-  group.traverse((child: any) => {
+function disposeGroup(group: SceneObject) {
+  group.traverse((child) => {
     if (child.geometry) {
       child.geometry.dispose()
     }
     if (child.material) {
       if (Array.isArray(child.material)) {
-        child.material.forEach((m: any) => m.dispose())
+        child.material.forEach((m) => m.dispose())
       } else {
         child.material.dispose()
       }
@@ -75,7 +84,7 @@ function buildFullDetail(
   enableWireframe: boolean,
   enableLabels: boolean,
   labelColor: string,
-): any {
+) {
   const group = new THREE.Group()
   const sphereSize = BASE_SIZES.node3D * getNodeSize(graphNode)
   const nodeColor = getNodeColor(graphNode)
@@ -165,7 +174,7 @@ function buildFullDetail(
   }
 
   // Main geometry
-  let geometry: any
+  let geometry
   if (isCluster) {
     // Torus: ring of radius torusRadius, tube thickness tubeRadius
     geometry = new THREE.TorusGeometry(sphereSize * 1.25, sphereSize * 0.45, 12, 32)

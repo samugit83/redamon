@@ -5,7 +5,7 @@
  * Provides automatic reconnection, message handling, and type-safe communication.
  */
 
-import { useEffect, useRef, useCallback, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useCallback, useState } from 'react'
 import { buildAgentWsUrl } from './agentWsUrl'
 import { describeWsClose, wsUrlForDisplay } from './agentWsClose'
 import { ApiError } from '@/lib/apiError'
@@ -103,8 +103,8 @@ interface UseAgentWebSocketReturn {
   // Decisions return false when they were not sent (no authenticated socket):
   // they are never queued, a stale approval must not land on a later request.
   sendApproval: (decision: 'approve' | 'modify' | 'abort', modification?: string) => boolean
-  sendToolConfirmation: (decision: 'approve' | 'modify' | 'reject', modifications?: Record<string, any>) => boolean
-  sendFireteamMemberConfirmation: (wave_id: string, member_id: string, decision: 'approve' | 'reject', modifications?: Record<string, any>) => boolean
+  sendToolConfirmation: (decision: 'approve' | 'modify' | 'reject', modifications?: Record<string, unknown>) => boolean
+  sendFireteamMemberConfirmation: (wave_id: string, member_id: string, decision: 'approve' | 'reject', modifications?: Record<string, unknown>) => boolean
   sendAnswer: (answer: string) => boolean
   sendGuidance: (message: string) => void
   sendSkillInject: (payload: { skill_id: string; skill_name: string; content: string }) => void
@@ -162,12 +162,10 @@ export function useAgentWebSocket({
   const outboxRef = useRef<{ sessionKey: string; message: ClientMessage }[]>([])
   const sessionKey = `${userId}:${projectId}:${sessionId}`
   const sessionKeyRef = useRef(sessionKey)
-  sessionKeyRef.current = sessionKey
   const lastPongAtRef = useRef(0)
   const connectRef = useRef<() => void>(() => {})
   // Read at init time, so a view change does not have to rebuild sendInit.
   const graphViewCypherRef = useRef(graphViewCypher)
-  graphViewCypherRef.current = graphViewCypher
   // The view the live connection was opened with (see the view effect below).
   const appliedViewRef = useRef(graphViewCypher)
 
@@ -176,7 +174,7 @@ export function useAgentWebSocket({
   const getWebSocketUrl = useCallback(() => buildAgentWsUrl('/ws/agent'), [])
 
   // Send a message to the server
-  const sendMessage = useCallback(<T = any>(type: MessageType, payload: T) => {
+  const sendMessage = useCallback(<T = unknown>(type: MessageType, payload: T) => {
     const message: ClientMessage<T> = { type, payload }
     const ready = wsRef.current && wsRef.current.readyState === WebSocket.OPEN
       && (isAuthenticatedRef.current || type === MessageType.INIT)
@@ -302,12 +300,12 @@ export function useAgentWebSocket({
   }, [sendMessage])
 
   // Public API: Send tool confirmation
-  const sendToolConfirmation = useCallback((decision: 'approve' | 'modify' | 'reject', modifications?: Record<string, any>) => {
+  const sendToolConfirmation = useCallback((decision: 'approve' | 'modify' | 'reject', modifications?: Record<string, unknown>) => {
     if (!isAuthenticatedRef.current) {
       return false
     }
 
-    const payload: any = { decision }
+    const payload: { decision: typeof decision; modifications?: Record<string, unknown> } = { decision }
     if (modifications) payload.modifications = modifications
     sendMessage(MessageType.TOOL_CONFIRMATION, payload)
     return true
@@ -320,10 +318,10 @@ export function useAgentWebSocket({
     wave_id: string,
     member_id: string,
     decision: 'approve' | 'reject',
-    modifications?: Record<string, any>,
+    modifications?: Record<string, unknown>,
   ) => {
     if (!isAuthenticatedRef.current) return false
-    const payload: any = { wave_id, member_id, decision }
+    const payload: { wave_id: string; member_id: string; decision: typeof decision; modifications?: Record<string, unknown> } = { wave_id, member_id, decision }
     if (modifications) payload.modifications = modifications
     sendMessage(MessageType.FIRETEAM_MEMBER_CONFIRMATION, payload)
     return true
@@ -529,7 +527,14 @@ export function useAgentWebSocket({
       onError?.(connectionError)
     }
   }, [getWebSocketUrl, sendInit, handleMessage, handleError, handleClose, onError, stopPingInterval])
-  connectRef.current = connect
+
+  // The latest values for handlers and timers that outlive their render. A layout effect, so
+  // they are current before any effect of the same commit (the view effect calls connectRef).
+  useLayoutEffect(() => {
+    sessionKeyRef.current = sessionKey
+    graphViewCypherRef.current = graphViewCypher
+    connectRef.current = connect
+  })
 
   // Public API: Disconnect
   const disconnect = useCallback(() => {
@@ -568,6 +573,7 @@ export function useAgentWebSocket({
       isIntentionalDisconnect.current = false
       connect()
     } else {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- WebSocket subscription: opening or closing the socket sets its connection status
       disconnect()
     }
 

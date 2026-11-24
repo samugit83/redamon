@@ -30,6 +30,7 @@ export function useSession() {
     // Use environment variable if available, otherwise generate new session ID
     const envSessionId = process.env.NEXT_PUBLIC_SESSION_ID
     const newSessionId = envSessionId || generateSessionId()
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the id is made on the client after hydration, so the server render and the first client render agree
     setSessionId(newSessionId)
     sessionStorage.setItem(SESSION_STORAGE_KEY, newSessionId)
     setMounted(true)

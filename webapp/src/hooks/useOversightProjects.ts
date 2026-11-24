@@ -25,6 +25,7 @@ export function useOversightProjects(enabled: boolean): OversightProjects {
   useEffect(() => {
     if (!enabled) return
     let live = true
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: each read, and each refetch, shows the loading flag until it answers
     setLoading(true)
     setError(null)
     fetchJson<ProjectListItem[]>('/api/projects/oversight', { cache: 'no-store' }, 'Could not list every project').then(

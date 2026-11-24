@@ -178,40 +178,44 @@ export function RoeReviewModal({
       return
     }
     if (!projectId) return
-    setBusySaving(true)
-    setError(null)
-    const result = await confirmRoe({ projectId, review: current, file: file ?? null })
-    if (result.ok) {
-      setBusySaving(false)
-      onApplied?.(result.value)
-      return
-    }
-    const err = result.error
-    if (err.code === 'roe_stale') {
-      // The project moved while the person was reviewing. Rebuild against it;
-      // when what would be written is unchanged, confirm again once by itself.
-      const fresh = await rediffRoe(projectId, current)
-      if (fresh.ok) {
-        const same = JSON.stringify(confirmedChanges(fresh.value)) === JSON.stringify(confirmedChanges(current))
-        onReviewChanged?.(fresh.value)
-        if (same && !autoRetried.current) {
-          autoRetried.current = true
+    // Saves `reviewed`; a stale answer may save the rebuilt review once more, from here.
+    const save = async (reviewed: Record<string, unknown>): Promise<void> => {
+      setBusySaving(true)
+      setError(null)
+      const result = await confirmRoe({ projectId, review: reviewed, file: file ?? null })
+      if (result.ok) {
+        setBusySaving(false)
+        onApplied?.(result.value)
+        return
+      }
+      const err = result.error
+      if (err.code === 'roe_stale') {
+        // The project moved while the person was reviewing. Rebuild against it;
+        // when what would be written is unchanged, confirm again once by itself.
+        const fresh = await rediffRoe(projectId, reviewed)
+        if (fresh.ok) {
+          const same = JSON.stringify(confirmedChanges(fresh.value)) === JSON.stringify(confirmedChanges(reviewed))
+          onReviewChanged?.(fresh.value)
+          if (same && !autoRetried.current) {
+            autoRetried.current = true
+            setBusySaving(false)
+            await save(fresh.value)
+            return
+          }
+          setStaleNotice(true)
           setBusySaving(false)
-          await confirm(fresh.value)
           return
         }
-        setStaleNotice(true)
+        if (fresh.error.status === 404) setDeleted(true)
+        setError(fresh.error)
         setBusySaving(false)
         return
       }
-      if (fresh.error.status === 404) setDeleted(true)
-      setError(fresh.error)
+      if (err.status === 404) setDeleted(true)
+      setError(err)
       setBusySaving(false)
-      return
     }
-    if (err.status === 404) setDeleted(true)
-    setError(err)
-    setBusySaving(false)
+    await save(current)
   }, [target, projectId, file, onApplyToForm, onApplied, onReviewChanged])
 
   const title = mode === 'remove' ? 'Review removing the Rules of Engagement' : 'Review what this document would change'

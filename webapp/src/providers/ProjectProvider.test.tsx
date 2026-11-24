@@ -372,7 +372,8 @@ describe('ProjectProvider saved project read that got no answer', () => {
 describe('ProjectProvider saved project read superseded by a pick, a clear or a switch', () => {
   let api: ReturnType<typeof useProject> | null = null
   function ApiConsumer() {
-    api = useProject()
+    const project = useProject()
+    React.useEffect(() => { api = project })
     return <LoadConsumer />
   }
   afterEach(() => { vi.useRealTimers(); api = null })

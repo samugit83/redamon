@@ -20,9 +20,7 @@ export default function UsersLayout({ children }: { children: ReactNode }) {
   const { user, isLoading, capabilities } = useAuth()
   const cameForPassword = searchParams.get('changePassword') === 'true'
   const [stay, setStay] = useState(cameForPassword)
-  useEffect(() => {
-    if (cameForPassword) setStay(true)
-  }, [cameForPassword])
+  if (cameForPassword && !stay) setStay(true)
 
   const target = !isLoading && user?.flags?.governance === true && !stay && !cameForPassword
     && holdsConsolePermission((p) => capabilities.has(p))

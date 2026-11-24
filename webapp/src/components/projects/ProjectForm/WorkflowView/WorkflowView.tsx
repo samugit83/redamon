@@ -203,7 +203,7 @@ export function WorkflowView({ formData, updateField, projectId, mode, onSave, o
         },
       }
     })
-  }, [rawNodes, handleToggle, handleOpenSettings, onRunPartial, handleNodeClick, connectedNodeIds, hasHighlight, mode, projectId, dataNodeCounts, handleBadgeClick, hasExplicitPrefixes, subdomainDiscoveryLockReason])
+  }, [rawNodes, handleToggle, handleOpenSettings, onRunPartial, runningPartialToolIds, handleNodeClick, connectedNodeIds, hasHighlight, mode, projectId, dataNodeCounts, handleBadgeClick, hasExplicitPrefixes, subdomainDiscoveryLockReason])
 
   const edges = useMemo(
     () => applyEdgeSelection(graphEdges, connectedEdgeIds, hasHighlight),

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import type { Prisma } from '@prisma/client'
 import { internalError } from '@/lib/routeErrors'
 import prisma from '@/lib/prisma'
 import { requireEffectiveUser, requireConversationAccess } from '@/lib/access'
@@ -41,7 +42,7 @@ export async function POST(
         conversationId,
         sequenceNum: nextSeq++,
         type: item.type,
-        data: item.data as any,
+        data: item.data as Prisma.InputJsonValue,
       })),
     })
 

@@ -22,6 +22,8 @@ import { DataTable } from './components/DataTable'
 import { NodeDetailsTable } from './components/NodeDetailsTable'
 import { JsReconTable, exportJsReconCsv, exportJsReconJson, exportJsReconMarkdown } from './components/JsReconTable'
 import type { JsReconData } from './components/JsReconTable'
+import type { GraphData } from './types'
+import type { Conversation } from '@/hooks/useConversations'
 import {
   KillChainTable,
   BlastRadiusTable,
@@ -224,7 +226,7 @@ export default function GraphPage() {
     [graphViews, currentProject?.scopeGroups],
   )
   const [selectedFilterId, setSelectedFilterId] = useState<string | null>(null)
-  const [filterGraphData, setFilterGraphData] = useState<{ nodes: any[]; links: any[]; projectId: string } | null>(null)
+  const [filterGraphData, setFilterGraphData] = useState<GraphData | null>(null)
   const [filterLoading, setFilterLoading] = useState(false)
 
   // Resolve the Cypher query for the selected filter (stable across graphViews refetches)
@@ -279,8 +281,8 @@ export default function GraphPage() {
       try {
         const res = await fetch(`/api/conversations?projectId=${projectId}&userId=${userId}`)
         if (!res.ok) return
-        const convs = await res.json()
-        const active = convs.filter((c: any) => c.agentRunning)
+        const convs: Conversation[] = await res.json()
+        const active = convs.filter((c) => c.agentRunning)
         setAgentSummary({ activeCount: active.length, conversations: convs })
       } catch { /* ignore fetch errors */ }
     }

@@ -9,7 +9,7 @@
  * tab, and something must still notice the end and refetch the graph.
  * A failed fetch shows no badge rather than a stale one.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { NodeFilterStatus } from '../components/ViewTabs/ViewTabs'
 
 const POLL_MS = 5000
@@ -22,7 +22,7 @@ export function useNodeFilterStatus(projectId: string | null, onApplyFinished?: 
   const seq = useRef(0)
   const runningFor = useRef<string | null>(null)
   const finished = useRef(onApplyFinished)
-  finished.current = onApplyFinished
+  useLayoutEffect(() => { finished.current = onApplyFinished })
 
   const refresh = useCallback(async () => {
     const mine = ++seq.current
@@ -43,6 +43,7 @@ export function useNodeFilterStatus(projectId: string | null, onApplyFinished?: 
 
   useEffect(() => {
     runningFor.current = null
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the status fetch on load and on a project change; refresh() is also what the page calls after a save
     void refresh()
   }, [refresh])
 

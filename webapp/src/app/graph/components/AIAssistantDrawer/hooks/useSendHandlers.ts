@@ -1,5 +1,6 @@
 import { useCallback, useRef, KeyboardEvent } from 'react'
 import type { ApprovalRequestPayload, QuestionRequestPayload, ToolConfirmationRequestPayload } from '@/lib/websocket-types'
+import type { Conversation } from '@/hooks/useConversations'
 import type { ChatItem, Message, FireteamItem, FireteamMemberPanel } from '../types'
 import type { PlanWaveItem } from '../AgentTimeline'
 import { saveProjectSession } from '../sessionMemory'
@@ -74,8 +75,8 @@ interface SendHandlersDeps {
   sendGuidance: (m: string) => void
   sendSkillInject: (payload: { skill_id: string; skill_name: string; content: string }) => void
   sendApproval: (decision: 'approve' | 'modify' | 'abort', modification?: string) => void
-  sendToolConfirmation: (decision: 'approve' | 'modify' | 'reject', modifications?: Record<string, any>) => void
-  sendFireteamMemberConfirmation: (wave_id: string, member_id: string, decision: 'approve' | 'reject', modifications?: Record<string, any>) => void
+  sendToolConfirmation: (decision: 'approve' | 'modify' | 'reject', modifications?: Record<string, unknown>) => void
+  sendFireteamMemberConfirmation: (wave_id: string, member_id: string, decision: 'approve' | 'reject', modifications?: Record<string, unknown>) => void
   sendAnswer: (answer: string) => void
   sendStop: () => void
   sendResume: () => void
@@ -86,9 +87,9 @@ interface SendHandlersDeps {
   projectId: string
   userId: string
   sessionId: string
-  createConversation: (sessionId: string) => Promise<any>
-  saveMessage: (type: string, data: any) => void
-  updateConvMeta: (updates: Record<string, any>) => Promise<void>
+  createConversation: (sessionId: string) => Promise<Conversation | null>
+  saveMessage: (type: string, data: unknown) => void
+  updateConvMeta: (updates: Record<string, unknown>) => Promise<void>
 }
 
 export function useSendHandlers(deps: SendHandlersDeps) {

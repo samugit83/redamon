@@ -268,11 +268,11 @@ function DrawerHarness({ onWord, resend, run }: {
   })
   const noop = () => {}
   const ref = <T,>(v: T) => ({ current: v })
-  const refs = React.useRef({
+  const [refs] = React.useState(() => ({
     itemIdCounter: ref(0), a: ref(false), b: ref(false), c: ref(false), d: ref(false), e: ref(false), f: ref(false),
     tool: ref<string | null>(null), wave: ref<string | null>(null),
     undo: ref({ approval: null, question: null, toolConfirmation: null, fireteam: {} }),
-  }).current
+  }))
   const { handleWebSocketMessage } = useWebSocketHandler({
     setChatItems: noop, setIsLoading: noop, setIsStopped: noop, setIsStopping: noop,
     setCurrentPhase: noop, setIterationCount: noop, setAttackPathType: noop, setTodoList: noop,

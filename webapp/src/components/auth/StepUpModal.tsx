@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useId, useState, type FormEvent, type ReactNode } from 'react'
+import { useId, useState, type FormEvent, type ReactNode } from 'react'
 import { Modal } from '@/components/ui'
 import styles from './StepUpModal.module.css'
 
@@ -29,13 +29,16 @@ export function StepUpModal({ isOpen, title, message, confirmLabel, onConfirm, o
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
 
-  useEffect(() => {
+  // Closing clears the field, checked while rendering so a reopened dialog never shows the last one.
+  const [wasOpen, setWasOpen] = useState(isOpen)
+  if (wasOpen !== isOpen) {
+    setWasOpen(isOpen)
     if (!isOpen) {
       setPassword('')
       setError('')
       setPending(false)
     }
-  }, [isOpen])
+  }
 
   async function submit(e?: FormEvent) {
     e?.preventDefault()

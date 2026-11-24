@@ -103,7 +103,13 @@ export function RecordingModal({ isOpen, onClose, projectId, onSaved }: {
     return stopPolling
   }, [phase, projectId])
 
-  useEffect(() => { if (!isOpen) { stopPolling(); setPhase('idle'); setSession(null); setSummary(null); setBlocked(null); setStale(null) } }, [isOpen])
+  // Closing resets the modal (while rendering, so it reopens clean) and stops the live counter.
+  const [wasOpen, setWasOpen] = useState(isOpen)
+  if (wasOpen !== isOpen) {
+    setWasOpen(isOpen)
+    if (!isOpen) { setPhase('idle'); setSession(null); setSummary(null); setBlocked(null); setStale(null) }
+  }
+  useEffect(() => { if (!isOpen) stopPolling() }, [isOpen])
 
   // Closing the modal must end the recording. Without this the session stays
   // active server-side until its 30-minute TTL: the proxy keeps tagging the

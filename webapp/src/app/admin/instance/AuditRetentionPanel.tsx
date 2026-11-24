@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 import { useToast } from '@/components/ui'
 import { StepUpModal } from '@/components/auth/StepUpModal'
 import type { InstanceSettingsView } from './instanceView'
@@ -62,10 +62,13 @@ export function AuditRetentionPanel({ settings, unconfirmedRoot, onSaved }: {
   const [forever, setForever] = useState(retention?.days === null)
   const [daysText, setDaysText] = useState(retention?.days === null ? '' : String(retention?.days ?? ''))
   const [asking, setAsking] = useState<null | { days: number | null; cancel: boolean }>(null)
-  useEffect(() => {
+  // New settings (a save, a reload) start the draft again from what is in force.
+  const [draftBase, setDraftBase] = useState(retention)
+  if (draftBase !== retention) {
+    setDraftBase(retention)
     setForever(retention?.days === null)
     setDaysText(retention?.days == null ? '' : String(retention.days))
-  }, [retention])
+  }
   if (!retention) return null
 
   const lead = `How long the audit log keeps its rows. A change applies ${retention.delayDays} days after Root asks for it; the rows the code reads back (upgrade markers, legacy-grant decisions) and the act-as and Fireteam records are always kept.`

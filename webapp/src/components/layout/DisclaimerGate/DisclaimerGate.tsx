@@ -72,6 +72,7 @@ export function DisclaimerGate({ children }: DisclaimerGateProps) {
       if (stored) {
         const parsed: StoredAcceptance = JSON.parse(stored)
         if (parsed.version === DISCLAIMER_VERSION) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- localStorage is only readable after hydration, so the stored acceptance is read on mount
           setIsAccepted(true)
         }
       }

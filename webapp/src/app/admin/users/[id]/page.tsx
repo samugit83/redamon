@@ -60,6 +60,7 @@ export default function AdminUserDetailPage() {
     }
   }, [id])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: load() sets the view only once the read answers
   useEffect(() => { void load() }, [load])
 
   // The directory's "Permissions" link names the section, which exists only once the account is read.
@@ -290,6 +291,7 @@ function McpTokensSection({ user, canRevoke }: { user: DirectoryRow; canRevoke: 
     }
   }, [base])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: load() sets the view only once the read answers
   useEffect(() => { void load() }, [load])
 
   async function revoke(t: TokenRow) {

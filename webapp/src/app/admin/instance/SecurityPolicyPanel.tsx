@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 import { useToast } from '@/components/ui'
 import { StepUpModal } from '@/components/auth/StepUpModal'
 import {
@@ -30,7 +30,12 @@ export function SecurityPolicyPanel({ settings, unconfirmedRoot, onSaved }: Prop
   const saved = useMemo(() => policyDraftOf(settings.securityPolicy), [settings.securityPolicy])
   const [draft, setDraft] = useState<PolicyDraft>(saved)
   const [confirming, setConfirming] = useState(false)
-  useEffect(() => setDraft(saved), [saved])
+  // New settings (a save, a reload) start the draft again from what is in force.
+  const [draftBase, setDraftBase] = useState(saved)
+  if (draftBase !== saved) {
+    setDraftBase(saved)
+    setDraft(saved)
+  }
 
   const errors = policyDraftErrors(draft)
   const patch = policyPatch(saved, draft)
@@ -145,7 +150,12 @@ export function PublicUrlPanel({ settings, unconfirmedRoot, onSaved }: Props) {
   const saved = baseUrlOf(settings.securityPolicy)
   const [value, setValue] = useState(saved)
   const [confirming, setConfirming] = useState(false)
-  useEffect(() => setValue(saved), [saved])
+  // New settings (a save, a reload) start the field again from what is in force.
+  const [valueBase, setValueBase] = useState(saved)
+  if (valueBase !== saved) {
+    setValueBase(saved)
+    setValue(saved)
+  }
 
   const problem = baseUrlProblem(value)
   const dirty = value.trim() !== saved

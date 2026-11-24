@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useEffectEvent } from 'react'
 
 /**
  * A browser-wide notice that a user's skills or a project's skill toggles changed, so every
@@ -35,10 +35,9 @@ export function postUserSkillsChanged(change: UserSkillsChange = {}): void {
 }
 
 export function useUserSkillsChanged(onChange: Listener): void {
-  const ref = useRef(onChange)
-  ref.current = onChange
+  const notify = useEffectEvent(onChange)
   useEffect(() => {
-    const listener: Listener = (c) => ref.current(c)
+    const listener: Listener = (c) => notify(c)
     let ch: BroadcastChannel | null = null
     if (hasChannel()) {
       try {

@@ -168,7 +168,7 @@ export function ChatArea({
             <ReactMarkdown
               remarkPlugins={[remarkGfm]}
               components={{
-                code({ className, children, ...props }: any) {
+                code({ className, children, ...props }) {
                   const match = /language-(\w+)/.exec(className || '')
                   const language = match ? match[1] : ''
                   const isInline = !className
@@ -187,7 +187,7 @@ export function ChatArea({
                         </button>
                         {language ? (
                           <SyntaxHighlighter
-                            style={vscDarkPlus as any}
+                            style={vscDarkPlus}
                             language={language}
                             PreTag="div"
                           >
@@ -206,7 +206,7 @@ export function ChatArea({
                     </code>
                   )
                 },
-                td({ children, ...props }: any) {
+                td({ children, ...props }) {
                   const text = extractTextFromChildren(children)
                   if (!text || text.length < 3) {
                     return <td {...props}>{children}</td>

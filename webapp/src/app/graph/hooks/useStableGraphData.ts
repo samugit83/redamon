@@ -68,6 +68,7 @@ export function useStableGraphData(data: GraphData | undefined): GraphData | und
         if (!newNode || !anchor) continue
         if (newNode.x !== undefined) continue
         if (anchor.x === undefined) continue
+        // eslint-disable-next-line react-hooks/purity -- seeds only a new node's starting position, which d3-force then moves; a random offset keeps neighbours from stacking
         const jitter = () => (Math.random() - 0.5) * 30
         newNode.x = anchor.x + jitter()
         newNode.y = (anchor.y ?? 0) + jitter()

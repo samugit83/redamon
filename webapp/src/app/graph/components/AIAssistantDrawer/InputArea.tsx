@@ -33,7 +33,7 @@ interface InputAreaProps {
   setInputValue: (v: string) => void
   activeSkill: ActiveSkill | null
   setActiveSkill: (v: ActiveSkill | null) => void
-  onSkillActivate: (skillId: string, skillName?: string) => Promise<any>
+  onSkillActivate: (skillId: string, skillName?: string) => Promise<unknown>
   // Set to true when the user drags the native resize grip, so keystroke
   // auto-grow stops fighting the user's chosen height until next send.
   userResizedRef: React.MutableRefObject<boolean>

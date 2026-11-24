@@ -119,7 +119,7 @@ Tradecraft is `src/lib/tradecraft/`, its routes `src/app/api/users/[id]/tradecra
 cd webapp
 npm run test          # vitest run --no-file-parallelism (full parallelism OOMs the box)
 npm run type-check    # tsc --noEmit
-npm run lint          # next lint
+npm run lint          # eslint . (eslint.config.mjs: Next's core-web-vitals + typescript configs)
 
 # Prisma schema changes: db push, NOT migrate
 docker compose exec webapp npx prisma db push

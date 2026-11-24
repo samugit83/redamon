@@ -351,7 +351,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (!sameOrigin(request)) return crossOriginResponse(request)
     const parsed = await readJsonBody(request)
     if (parsed instanceof NextResponse) return parsed
-    const body = parsed.body as Record<string, any>
+    const body = parsed.body
 
     // A feature's model decides whose provider keys that feature spends, so it
     // is the person's own choice: no service key extends to it. Refused or
@@ -570,12 +570,13 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // Handle rotation configs if provided
     const rotationConfigs: Record<string, { extraKeys?: string[]; extraKeyCount: number; rotateEveryN: number }> = {}
     if (body.rotationConfigs && typeof body.rotationConfigs === 'object') {
+      const configs = body.rotationConfigs as Record<string, { extraKeys?: unknown; rotateEveryN?: unknown } | undefined>
       for (const toolName of ROTATION_TOOL_NAMES) {
-        const cfg = body.rotationConfigs[toolName]
+        const cfg = configs[toolName]
         if (!cfg) continue
 
         const extraKeysRaw = (cfg.extraKeys || '') as string
-        const rotateEveryN = Math.max(1, parseInt(cfg.rotateEveryN, 10) || 10)
+        const rotateEveryN = Math.max(1, parseInt(String(cfg.rotateEveryN), 10) || 10)
 
         // If extraKeys is a masked marker, preserve existing
         if (extraKeysRaw.startsWith('••••')) {

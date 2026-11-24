@@ -7,7 +7,7 @@
 
 'use client'
 
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react'
 import type { ActiveSkill } from './hooks/useSendHandlers'
 import styles from './AIAssistantDrawer.module.css'
 
@@ -100,7 +100,11 @@ export function AIAssistantDrawer({
   const statusWord = useLoadingWord()
   // Agent in the Loop: the live status of this session's run (null otherwise).
   const [loopStatus, setLoopStatus] = useState<LoopStatusView | null>(null)
-  useEffect(() => { setLoopStatus(null) }, [sessionId])
+  const [loopStatusSession, setLoopStatusSession] = useState(sessionId)
+  if (loopStatusSession !== sessionId) {
+    setLoopStatusSession(sessionId)
+    setLoopStatus(null)
+  }
   // Under act-as the run is driven by the impersonated user's own token.
   const effectiveUserId = useOptionalProject()?.userId ?? null
   const signedInId = useOptionalAuth()?.user?.id
@@ -126,7 +130,7 @@ export function AIAssistantDrawer({
   // A model call waiting for the provider's rate limit, with its countdown.
   const { setRateLimitWait, rateLimitWord } = useRateLimitWait(isLoading, sessionId)
   const isLoadingRef = useRef(isLoading)
-  isLoadingRef.current = isLoading
+  useLayoutEffect(() => { isLoadingRef.current = isLoading }, [isLoading])
 
   const {
     awaitingApproval, setAwaitingApproval,
@@ -230,7 +234,7 @@ export function AIAssistantDrawer({
   // ─── handleNewChat (cross-cutting - touches state from multiple hooks) ─────
   // Defined before useConversationRestoration via a stable ref pattern
   const handleNewChatRef = useRef<() => void>(() => {})
-  const updateConvMetaRef = useRef<(updates: Record<string, any>) => Promise<void>>(async () => {})
+  const updateConvMetaRef = useRef<(updates: Record<string, unknown>) => Promise<void>>(async () => {})
 
   // ─── Conversation restoration ──────────────────────────────────────────────
   const {
@@ -273,7 +277,7 @@ export function AIAssistantDrawer({
     pendingApprovalToolId,
     pendingApprovalWaveId,
     setActiveSkill,
-    updateConvMeta: useCallback((updates: Record<string, any>) => updateConvMetaRef.current(updates), []),
+    updateConvMeta: useCallback((updates: Record<string, unknown>) => updateConvMetaRef.current(updates), []),
     handleNewChat: useCallback(() => handleNewChatRef.current(), []),
     notifyError: useCallback((message: string) => toast.error(message), [toast]),
   })
@@ -419,7 +423,7 @@ export function AIAssistantDrawer({
   // A decision made while the socket is down would be shown as sent and never
   // reach the agent; the pending request stays open until the connection is back.
   const isConnectedRef = useRef(isConnected)
-  isConnectedRef.current = isConnected
+  useLayoutEffect(() => { isConnectedRef.current = isConnected }, [isConnected])
   const guardedApproval = useCallback((decision: 'approve' | 'modify' | 'abort') => {
     if (!isConnectedRef.current) { toast.error(DECISION_NOT_SENT, 'Not connected'); return }
     handleApproval(decision)

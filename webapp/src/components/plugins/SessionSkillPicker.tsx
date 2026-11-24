@@ -87,6 +87,7 @@ export function SessionSkillPicker({
 
   useEffect(() => {
     let cancelled = false
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: each read, and each Retry through generation, starts from the loading state
     setLoad({ state: 'loading' })
     const qs = new URLSearchParams()
     if (context.sessionId) qs.set('sessionId', context.sessionId)

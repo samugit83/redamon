@@ -41,27 +41,31 @@ interface ToolExecutionCardProps {
 
 export function ToolExecutionCard({ item, isExpanded, onToggleExpand, missingApiKey, onAddApiKey, onApprove, onReject, onStop }: ToolExecutionCardProps) {
   const [copied, setCopied] = useState(false)
-  const [duration, setDuration] = useState(0)
   const [trailOpen, setTrailOpen] = useState(false)
   // The tool process itself is still going. A finished tool whose card is
   // still 'running' is waiting for the agent's analysis, not for the tool.
   const toolRunning = item.status === 'running' && !item.finished
 
-  // Calculate duration for running tools
+  // Seconds shown: 0 while awaiting approval, the recorded duration once the
+  // tool has one, a count ticked by the interval below while it runs, and
+  // otherwise whatever was shown last.
+  const itemSeconds = item.status === 'pending_approval' ? 0
+    : !toolRunning && item.duration ? Math.floor(item.duration / 1000)
+    : null
+  const [duration, setDuration] = useState(itemSeconds ?? 0)
+  const [durationFrom, setDurationFrom] = useState({ status: item.status, duration: item.duration, toolRunning })
+  if (durationFrom.status !== item.status || durationFrom.duration !== item.duration || durationFrom.toolRunning !== toolRunning) {
+    setDurationFrom({ status: item.status, duration: item.duration, toolRunning })
+    if (itemSeconds !== null) setDuration(itemSeconds)
+  }
+
   useEffect(() => {
-    if (item.status === 'pending_approval') {
-      setDuration(0)
-      return
-    }
-    if (toolRunning) {
-      const interval = setInterval(() => {
-        const elapsed = Date.now() - item.timestamp.getTime()
-        setDuration(Math.floor(elapsed / 1000))
-      }, 1000)
-      return () => clearInterval(interval)
-    } else if (item.duration) {
-      setDuration(Math.floor(item.duration / 1000))
-    }
+    if (!toolRunning) return
+    const interval = setInterval(() => {
+      const elapsed = Date.now() - item.timestamp.getTime()
+      setDuration(Math.floor(elapsed / 1000))
+    }, 1000)
+    return () => clearInterval(interval)
   }, [item.status, item.timestamp, item.duration, toolRunning])
 
   const handleCopy = async () => {

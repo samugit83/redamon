@@ -213,7 +213,7 @@ function PreviewFacts({ preview }: { preview: Preview }) {
     rows.push(['Size', formatBytes(d.bytes)])
   }
   if (d.contentType) rows.push(['Type', d.contentType])
-  if (d.scopeHost) rows.push(['Scope', <code>{`${d.scopeHost}${d.scopePath ?? '/'}`}</code>])
+  if (d.scopeHost) rows.push(['Scope', <code key="scope">{`${d.scopeHost}${d.scopePath ?? '/'}`}</code>])
 
   return (
     <div className={styles.card} role="group" aria-label="Preview">

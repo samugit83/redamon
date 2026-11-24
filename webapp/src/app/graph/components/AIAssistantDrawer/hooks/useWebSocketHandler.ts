@@ -626,15 +626,16 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
         if (awaitingToolConfirmationRef.current || isProcessingToolConfirmation.current) {
           break
         }
+        const request = message.payload as ToolConfirmationRequestPayload
         awaitingToolConfirmationRef.current = true
         setAwaitingToolConfirmation(true)
-        setToolConfirmationRequest(message.payload)
+        setToolConfirmationRequest(request)
         setIsLoading(false)
 
-        const confMode = message.payload.mode || 'single'
-        const confTools = message.payload.tools || []
-        const escalatedAgentId = (message.payload as any).agent_id || null
-        const escalatedAgentName = (message.payload as any).agent_name || null
+        const confMode = request.mode || 'single'
+        const confTools = request.tools || []
+        const escalatedAgentId = request.agent_id || null
+        const escalatedAgentName = request.agent_name || null
         const isFireteamEscalation = Boolean(
           confMode === 'fireteam_escalation' || escalatedAgentId || escalatedAgentName,
         )
@@ -646,7 +647,7 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
           const waveId = `wave-conf-${Date.now()}-${itemIdCounter.current++}`
           pendingApprovalWaveId.current = waveId
           pendingApprovalToolId.current = null
-          const pendingTools: ToolExecutionItem[] = confTools.map((t: any, idx: number) => ({
+          const pendingTools: ToolExecutionItem[] = confTools.map((t, idx) => ({
             type: 'tool_execution' as const,
             id: `tool-conf-${Date.now()}-${idx}-${itemIdCounter.current++}`,
             timestamp: new Date(),
@@ -660,7 +661,7 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
             id: waveId,
             timestamp: new Date(),
             wave_id: '',
-            plan_rationale: message.payload.reasoning || '',
+            plan_rationale: request.reasoning || '',
             tool_count: confTools.length,
             tools: pendingTools,
             status: 'pending_approval',
@@ -716,7 +717,7 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
           const waveId = `wave-conf-${Date.now()}-${itemIdCounter.current++}`
           pendingApprovalWaveId.current = waveId
           pendingApprovalToolId.current = null
-          const pendingTools: ToolExecutionItem[] = confTools.map((t: any, idx: number) => ({
+          const pendingTools: ToolExecutionItem[] = confTools.map((t, idx) => ({
             type: 'tool_execution' as const,
             id: `tool-conf-${Date.now()}-${idx}-${itemIdCounter.current++}`,
             timestamp: new Date(),
@@ -730,7 +731,7 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
             id: waveId,
             timestamp: new Date(),
             wave_id: '',
-            plan_rationale: message.payload.reasoning || '',
+            plan_rationale: request.reasoning || '',
             tool_count: confTools.length,
             tools: pendingTools,
             status: 'pending_approval',

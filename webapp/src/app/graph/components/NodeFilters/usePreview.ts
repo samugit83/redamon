@@ -68,11 +68,17 @@ export function usePreview(projectId: string | null, mode: NodeFilterMode, rules
 
   const retry = useCallback(() => setNonce(n => n + 1), [])
 
+  // At once, not after the debounce: from this moment the counts on screen
+  // describe rules the operator has already changed.
+  const [requested, setRequested] = useState({ projectId, mode, rules, enabled, nonce })
+  if (requested.projectId !== projectId || requested.mode !== mode || requested.rules !== rules
+      || requested.enabled !== enabled || requested.nonce !== nonce) {
+    setRequested({ projectId, mode, rules, enabled, nonce })
+    if (projectId && enabled) setState(prev => (prev === 'ready' ? 'updating' : prev))
+  }
+
   useEffect(() => {
     if (!projectId || !enabled) return
-    // At once, not after the debounce: from this moment the counts on screen
-    // describe rules the operator has already changed.
-    setState(prev => (prev === 'ready' ? 'updating' : prev))
     const timer = setTimeout(async () => {
       abortRef.current?.abort()
       const controller = new AbortController()

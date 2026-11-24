@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { rowCap } from '../rowCap'
 import { requirePermission } from '@/lib/authz/guards'
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import type { Record as Neo4jRecord } from 'neo4j-driver'
 import { internalError } from '@/lib/routeErrors'
 import { currentDns } from '@/lib/graph/forwardDns'
 
@@ -123,7 +124,7 @@ export async function GET(request: NextRequest) {
       { pid: projectId }
     )
 
-    const mapRow = (r: any) => ({
+    const mapRow = (r: Neo4jRecord) => ({
       nodeId: (r.get('nodeId') as string | null) ?? null,
       clusterType: r.get('clusterType') as string,
       clusterKey: (r.get('clusterKey') as string) || '',

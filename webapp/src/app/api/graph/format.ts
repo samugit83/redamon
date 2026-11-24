@@ -28,6 +28,12 @@ export interface FormattedNode {
   properties: Record<string, unknown>
 }
 
+/** A result row: a neo4j Record, or a stand-in with the same two members. */
+interface GraphRecord {
+  keys: readonly PropertyKey[]
+  get(key: string): unknown
+}
+
 export interface FormattedGraphData {
   nodes: FormattedNode[]
   links: { source: string; target: string; type: string }[]
@@ -52,7 +58,7 @@ export interface FormattedGraphData {
  * is a plain value, so it lands in shape 2, which graphReadView withholds from a
  * reader without Raw data & files.
  */
-export function formatGraphRecords(records: any[]): FormattedGraphData {
+export function formatGraphRecords(records: readonly GraphRecord[]): FormattedGraphData {
   const nodesMap = new Map<string, FormattedNode>()
   const links: { source: string; target: string; type: string }[] = []
 

@@ -83,6 +83,7 @@ export function CredentialDrawer({
   // The scan card links straight here to say a key is missing; landing on a
   // closed drawer would answer that with nothing to type into.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the URL hash is only readable after hydration
     if (window.location.hash === `#${id}`) setOpen(true)
   }, [id])
 

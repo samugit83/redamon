@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import type { Prisma } from '@prisma/client'
 import { internalError } from '@/lib/routeErrors'
 import prisma from '@/lib/prisma'
 import { isInternalRequest } from '@/lib/session'
@@ -83,7 +84,7 @@ export async function POST(
         conversationId: conversation.id,
         sequenceNum: nextSeq++,
         type: item.type,
-        data: item.data as any,
+        data: item.data as Prisma.InputJsonValue,
         memberIdKey: item.memberIdKey ?? null,
         fireteamIdKey: item.fireteamIdKey ?? null,
       })),
@@ -91,12 +92,14 @@ export async function POST(
 
     // Auto-set title from first user message if title is empty
     if (!conversation.title && items.some(i => i.type === 'user_message')) {
-      const firstUserMsg = items.find(i => i.type === 'user_message')
-      if (firstUserMsg && typeof (firstUserMsg.data as any)?.content === 'string') {
+      const firstData = items.find(i => i.type === 'user_message')?.data
+      const content = typeof firstData === 'object' && firstData !== null && 'content' in firstData
+        ? firstData.content : undefined
+      if (typeof content === 'string') {
         // A node-scoped first message embeds the whole node context; derive a
         // readable "<node>: <request>" title rather than titling the chat with
         // the context blob.
-        const title = conversationTitleFromUserMessage((firstUserMsg.data as any).content)
+        const title = conversationTitleFromUserMessage(content)
         await prisma.conversation.update({
           where: { id: conversation.id },
           data: { title },

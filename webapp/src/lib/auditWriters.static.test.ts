@@ -119,14 +119,14 @@ export function auditWriteProblems(sources: Map<string, string>): string[] {
       }
       if ((ts.isClassDeclaration(st) || ts.isEnumDeclaration(st)) && st.name?.text === name) return { kind: 'other' }
       if (ts.isImportDeclaration(st) && st.importClause && ts.isStringLiteral(st.moduleSpecifier)) {
-        const module = resolveModule(file, st.moduleSpecifier.text) ?? `external:${st.moduleSpecifier.text}`
+        const resolved = resolveModule(file, st.moduleSpecifier.text) ?? `external:${st.moduleSpecifier.text}`
         const clause = st.importClause
-        if (clause.name?.text === name) return { kind: 'import', file, module, name: 'default' }
+        if (clause.name?.text === name) return { kind: 'import', file, module: resolved, name: 'default' }
         const bindings = clause.namedBindings
         if (bindings && ts.isNamespaceImport(bindings) && bindings.name.text === name) return { kind: 'other' }
         if (bindings && ts.isNamedImports(bindings)) {
           for (const el of bindings.elements) {
-            if (el.name.text === name) return { kind: 'import', file, module, name: (el.propertyName ?? el.name).text }
+            if (el.name.text === name) return { kind: 'import', file, module: resolved, name: (el.propertyName ?? el.name).text }
           }
         }
       }

@@ -5,7 +5,7 @@
  * scans, Scan queue, Run history). The page size is a constant (30) that the user
  * cannot change - each table shows at most 30 rows and pages through the rest.
  */
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import styles from './ScanScheduleTable.module.css'
 
 /** Rows shown per page. Fixed by design; not user-adjustable. */
@@ -23,9 +23,7 @@ export function usePaged<T>(rows: readonly T[]) {
   const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE))
   // Clamp back into range when the row set shrinks (a delete, a filter, a poll
   // that returned fewer rows) so the view never lands on an empty page.
-  useEffect(() => {
-    if (page > pageCount - 1) setPage(pageCount - 1)
-  }, [page, pageCount])
+  if (page > pageCount - 1) setPage(pageCount - 1)
   const start = page * PAGE_SIZE
   return {
     slice: rows.slice(start, start + PAGE_SIZE),

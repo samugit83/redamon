@@ -23,6 +23,7 @@ export function AuditDetails({ entry, onClose }: { entry: AuditEntryView | null;
   useEffect(() => {
     if (!entry || entry.kind !== 'audit') return
     let live = true
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: opening another row, or Retry, shows the loading state until that row's read answers
     setLoaded({ kind: 'loading' })
     fetchJson<{ row: AuditLogDetail }>(`/api/admin/audit/${encodeURIComponent(entry.id)}`, { cache: 'no-store' }, 'Could not read the audit row')
       .then(({ row }) => { if (live) setLoaded({ kind: 'ready', row }) })

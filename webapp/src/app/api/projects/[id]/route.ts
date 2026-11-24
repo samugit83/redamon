@@ -293,7 +293,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // Only Project COLUMNS may be written here: a relation key in this whole-row
     // body would skip the relation's own route, its validation, its revision
     // check and its audit row.
-    const updateData: Record<string, any> = pickProjectColumns(rawUpdate)
+    const updateData = pickProjectColumns(rawUpdate)
     for (const key of NOT_WRITABLE_BY_SAVE) delete updateData[key]
     // Columns the server writes as a consequence of the save, not as the caller asked: they are
     // left out when a collaborator's change is judged (the mode or list that caused them is not).
@@ -508,7 +508,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       const requested = Object.fromEntries(Object.entries(updateData).filter(([k]) => !serverDerived.has(k)))
       const stored = (await prisma.project.findUnique({
         where: { id },
-        select: riskSelect(Object.keys(requested)) as any,
+        select: riskSelect(Object.keys(requested)) as Prisma.ProjectSelect,
       }) ?? {}) as Record<string, unknown>
       const refusal = settingsRefusal(classifyChange(stored, requested, auth.access), auth.permission)
       if (refusal) {
@@ -607,7 +607,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     const replacedKeys = Object.keys(updateData)
     const before = (replacedKeys.length === 0 ? {} : await prisma.project.findUnique({
       where: { id },
-      select: Object.fromEntries(replacedKeys.map(k => [k, true])) as any,
+      select: Object.fromEntries(replacedKeys.map(k => [k, true])) as Prisma.ProjectSelect,
     }) ?? {}) as Record<string, unknown>
 
     // A target list this save CHANGES needs project:rescope; one sent back as stored does not.

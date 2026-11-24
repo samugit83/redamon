@@ -20,6 +20,11 @@ export function sandboxIsRunning(body: unknown): boolean {
 /** Whether the viewer's own sandbox runs; false when it cannot be read (refused, failed). */
 export function useOwnSandboxRunning(enabled: boolean): { running: boolean; refresh: () => void } {
   const [running, setRunning] = useState(false)
+  const [wasEnabled, setWasEnabled] = useState(enabled)
+  if (wasEnabled !== enabled) {
+    setWasEnabled(enabled)
+    if (!enabled) setRunning(false)
+  }
   const live = useRef(true)
 
   const read = useCallback(async () => {
@@ -34,10 +39,8 @@ export function useOwnSandboxRunning(enabled: boolean): { running: boolean; refr
 
   useEffect(() => {
     live.current = true
-    if (!enabled) {
-      setRunning(false)
-      return () => { live.current = false }
-    }
+    if (!enabled) return () => { live.current = false }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the poll's fetch: read() sets state only once its request resolves
     void read()
     const timer = setInterval(() => { void read() }, POLL_MS)
     return () => {

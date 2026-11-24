@@ -167,6 +167,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     if (serverOwned) {
       // No silent restore (IM-02): a selection a previous version remembered is dropped.
       forgetActAsPick()
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncs the user id with the auth session and the server act-as cookie, an external system
       setUserIdState(actingAsId ?? authUserId)
       setImpersonationSynced(true)
     } else if (canSwitchUser) {
@@ -227,6 +228,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     if (projectIdToLoad) {
       const gen = ++projectLoadGen.current
       const current = () => projectLoadGen.current === gen
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: the saved project is read once impersonation is reconciled, clearing the last error first
       setProjectLoadError(null)
       readRetryingNoAnswer<ProjectRead>(`/api/projects/${projectIdToLoad}`, undefined, { keepTrying: current })
         .then(

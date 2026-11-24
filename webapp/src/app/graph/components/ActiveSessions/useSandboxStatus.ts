@@ -16,12 +16,14 @@ const NOTHING: OwnSandboxStatus = { stopAt: null, reversePort: null }
  */
 export function useSandboxStatus(enabled: boolean): OwnSandboxStatus {
   const [status, setStatus] = useState<OwnSandboxStatus>(NOTHING)
+  const [wasEnabled, setWasEnabled] = useState(enabled)
+  if (wasEnabled !== enabled) {
+    setWasEnabled(enabled)
+    if (!enabled) setStatus(NOTHING)
+  }
 
   useEffect(() => {
-    if (!enabled) {
-      setStatus(NOTHING)
-      return
-    }
+    if (!enabled) return
     let live = true
     const read = async () => {
       const next = await readOwnSandboxStatus()

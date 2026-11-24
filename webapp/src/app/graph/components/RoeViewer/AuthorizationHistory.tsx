@@ -78,10 +78,15 @@ export function AuthorizationHistory({
   const [records, setRecords] = useState<AuthorizationRecord[]>([])
   const [failure, setFailure] = useState<string | null>(null)
 
+  const [loadedFor, setLoadedFor] = useState(projectId)
+  if (loadedFor !== projectId) {
+    setLoadedFor(projectId)
+    if (projectId) setState('loading')
+  }
+
   useEffect(() => {
     if (!projectId) return
     let cancelled = false
-    setState('loading')
     fetch(`/api/projects/${projectId}/authorizations`)
       .then(async r => {
         if (!r.ok) throw await readApiError(r, READ_FAILED)

@@ -35,6 +35,7 @@ export function useTheme() {
   // Initialize theme on mount
   useEffect(() => {
     const storedTheme = getStoredTheme()
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the stored theme and the system preference are only readable after hydration
     setThemeState(storedTheme)
     setResolvedTheme(storedTheme === 'system' ? getSystemTheme() : storedTheme)
     applyTheme(storedTheme)

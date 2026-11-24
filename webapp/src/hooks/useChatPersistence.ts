@@ -3,7 +3,7 @@
 import { useCallback, useRef } from 'react'
 
 export function useChatPersistence(conversationId: string | null) {
-  const batchRef = useRef<Array<{ type: string; data: any }>>([])
+  const batchRef = useRef<Array<{ type: string; data: unknown }>>([])
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const flush = useCallback(async () => {
@@ -24,7 +24,7 @@ export function useChatPersistence(conversationId: string | null) {
     }
   }, [conversationId])
 
-  const saveMessage = useCallback((type: string, data: any) => {
+  const saveMessage = useCallback((type: string, data: unknown) => {
     if (!conversationId) return
 
     batchRef.current.push({ type, data })
@@ -48,7 +48,7 @@ export function useChatPersistence(conversationId: string | null) {
     }
   }, [conversationId, flush])
 
-  const updateConversation = useCallback(async (updates: Record<string, any>) => {
+  const updateConversation = useCallback(async (updates: Record<string, unknown>) => {
     if (!conversationId) return
     try {
       await fetch(`/api/conversations/${conversationId}`, {
