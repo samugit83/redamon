@@ -374,17 +374,39 @@ def test_the_route_reads_with_a_browser(sites, monkeypatch):
 
 def test_the_jobs_fetcher_renders_through_the_agents_browser(monkeypatch):
     """The fetcher the route and the jobs bind holds the agent's MCP manager: its render runs
-    the guarded script in the sandbox (net's module default answers browser_unavailable)."""
+    the guarded script in the sandbox (net's module default answers browser_unavailable).
+    Group 1: the render is the bound person's (a job's owner, a route's account), in that
+    person's own sandbox; with no person, no browser."""
     import types
+    from contextlib import asynccontextmanager
     from unittest.mock import patch
 
+    import sandbox_contract
+    import sandbox_router
     from orchestrator_helpers import fetch_guard
     from tradecraft_doubles import RecordingMcp
 
     mcp = RecordingMcp(reply="<html><body>rendered by the sandbox</body></html>")
-    monkeypatch.setitem(sys.modules, "api", types.SimpleNamespace(orchestrator=types.SimpleNamespace(_mcp_manager=mcp)))
+    browser = next(t for t in run(mcp.get_tools()) if t.name == "execute_playwright")
+
+    @asynccontextmanager
+    async def own_sandbox(user_id, *, project_id, kind, view=None):
+        yield sandbox_router.SandboxHandle(
+            user_id=user_id, view="own", instance="a1b2c3",
+            host=sandbox_contract.container_name(user_id, "own", "a1b2c3"),
+            token="t" * 24, tunnel_token="", ports=sandbox_contract.PORTS, reverse_port=4444)
+
+    async def tool_for(name, handle):
+        return browser if name == "execute_playwright" else None
+
+    monkeypatch.setattr(sandbox_router, "using", own_sandbox)
+    monkeypatch.setattr(sandbox_router, "tool_for", tool_for)
+    monkeypatch.setitem(sys.modules, "api", types.SimpleNamespace(orchestrator=types.SimpleNamespace(_mcp_manager=object())))
     with patch.object(fetch_guard, "_resolve_ips", lambda _host: ["93.184.216.34"]):
-        rendered = run(jobs.default_fetcher().render(WIKI, clean=True))
+        with jobs.sandbox_person("user_owner_fake"):
+            rendered = run(jobs.default_fetcher().render(WIKI, clean=True))
+        unbound = run(jobs.default_fetcher().render(WIKI, clean=True))
         default = run(net.GuardedFetcher().render(WIKI))
     assert rendered.error == "" and "rendered by the sandbox" in rendered.html and len(mcp.calls) == 1
+    assert unbound.error == "browser_unavailable" and len(mcp.calls) == 1
     assert default.error == "browser_unavailable"

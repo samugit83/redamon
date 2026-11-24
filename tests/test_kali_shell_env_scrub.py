@@ -590,16 +590,27 @@ class EverySpawnIsScrubbed(unittest.TestCase):
 
 
 class TheSandboxHoldsNoScannerKey(unittest.TestCase):
-    def test_compose_gives_the_kali_sandbox_no_scanner_or_master_key(self):
+    def test_a_sandbox_gets_no_scanner_or_master_key(self):
+        # Each person's sandbox is started by the orchestrator with the contract's
+        # environment; compose runs no Kali container any more.
+        import importlib.util
+
+        path = REPO / "recon_orchestrator" / "sandbox_contract.py"
+        spec = importlib.util.spec_from_file_location("env_scrub_sandbox_contract", path)
+        contract = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = contract
+        spec.loader.exec_module(contract)
+        env = contract.container_env("u1", "own", "a1b2c3", environ={
+            "SCANNER_API_KEY": "s", "INTERNAL_API_KEY": "i", "TERMINAL_MAX_SESSIONS": "3"})
+        self.assertNotIn("SCANNER_API_KEY", env)
+        self.assertNotIn("INTERNAL_API_KEY", env)
+        self.assertTrue({"SCANNER_API_KEY", "INTERNAL_API_KEY"} <= set(contract.NEVER_IN_ENV))
+        # The two inbound tokens stay, the instance's own: its servers validate them.
+        self.assertTrue({"MCP_AUTH_TOKEN", "TUNNEL_AUTH_TOKEN"} <= set(env))
         import yaml
 
         compose = yaml.safe_load((REPO / "docker-compose.yml").read_text(encoding="utf-8"))
-        env = compose["services"]["kali-sandbox"]["environment"]
-        names = set(env) if isinstance(env, dict) else {e.split("=", 1)[0] for e in env}
-        self.assertNotIn("SCANNER_API_KEY", names)
-        self.assertNotIn("INTERNAL_API_KEY", names)
-        # The two inbound tokens stay: the servers in that container validate them.
-        self.assertTrue({"MCP_AUTH_TOKEN", "TUNNEL_AUTH_TOKEN"} <= names)
+        self.assertNotIn("environment", compose["services"]["kali-sandbox"])
 
     def test_no_sandbox_client_reads_the_scanner_key(self):
         for name in ("redamon.py", "redagraph.py"):

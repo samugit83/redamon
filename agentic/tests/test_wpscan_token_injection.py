@@ -3,7 +3,7 @@ The user's WPScan token reaches wpscan off its command line.
 
 The executor used to prepend `--api-token <token>` to the args it sent the sandbox,
 so the token sat in wpscan's argv for the whole scan, which `ps` shows to every
-process in the shared container and on the host. It now travels as the MCP tool's
+process in the sandbox and on the host. It now travels as the MCP tool's
 own `api_token` argument, which the sandbox hands to that one wpscan child as
 WPSCAN_API_TOKEN (wpscan reads it; an --api-token on the command line wins).
 
@@ -22,12 +22,14 @@ if _AGENTIC_DIR not in sys.path:
 
 class WpscanToken(unittest.TestCase):
     def _executor(self, token="rbac-wpscan-token"):
+        from one_sandbox import route_to
         from tools import PhaseAwareToolExecutor
         ex = PhaseAwareToolExecutor(mcp_manager=mock.MagicMock(), graph_tool=None)
         tool = mock.AsyncMock()
         tool.name = "execute_wpscan"
         tool.ainvoke.return_value = "ok"
-        ex._all_tools["execute_wpscan"] = tool
+        # The call runs in the person's sandbox, whose client serves this tool.
+        route_to(self, {"execute_wpscan": tool})
         if token:
             ex.set_wpscan_api_token(token)
         return ex, tool

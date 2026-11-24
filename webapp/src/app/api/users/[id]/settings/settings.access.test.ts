@@ -14,6 +14,8 @@
  */
 import { describe, test, expect, beforeEach, vi } from 'vitest'
 import { NextRequest, NextResponse } from 'next/server'
+// No Kali sandbox runs in these tests: a tunnel save finds none to push to (group 1).
+vi.mock('@/lib/sandbox/gateway', () => ({ sandboxStatus: async () => ({ instances: [] }) }))
 
 const mockSettingsFindUnique = vi.fn()
 const mockRotationFindMany = vi.fn()

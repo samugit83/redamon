@@ -155,6 +155,7 @@ const DISPLAY_READERS: Readonly<Record<string, string>> = {
   'src/lib/authz/accountActivity.ts': "My account's activity list: the person's own recent events",
   'src/lib/authz/auditRetention.ts': 'the retention sweep\'s own read of the rows it deletes',
   'scripts/e2e-rbac-cleanup.mjs': 'test tooling: removes the e2e accounts\' rows after a live run',
+  'src/lib/sandbox/lifecycle.ts': "the sandbox backstop's resend of a lost account_deleted stop: it reads only the last 7 days of user.delete rows, inside the retention floor",
   // Readers of steps still in flight when this list was written (step 6.6); each entry applies once its
   // file exists.
   'src/lib/authz/oversight.ts': "step 4.14's one row per admin, project and day: it reads only today's rows",

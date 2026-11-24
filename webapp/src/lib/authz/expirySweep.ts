@@ -13,6 +13,9 @@
  *   is audited and names the expiry). A used link is kept, the record of how an account was set up.
  * - device sessions (step 6.10): a row revoked or expired more than 30 days ago is removed, with the
  *   address and browser it kept (no audit row: the revocation was audited, an expiry is not news).
+ * - the Kali sandboxes' backstop (group 1, lib/sandbox/lifecycle.ts): every person with a running
+ *   sandbox is checked again, so a sharing-policy change, a switch rolled back at restart or an
+ *   expiry nobody saw stops what no longer may stay mounted within one sweep; no switch gates it.
  * - audit retention (step 6.6): Root's change whose delay is over moves into force (audited
  *   `instance.audit_retention_activated`), then the audit_log rows older than the retention go, except
  *   the rows the code reads back (lib/authz/auditRetention.ts); with RBAC_GOVERNANCE_ENABLED only, and
@@ -40,6 +43,7 @@ import { sweepDeviceSessions } from './deviceSessions'
 import { sweepAuditRetention, type RetentionSweep } from './auditRetention'
 import { onAccessReduced } from './revocation'
 import { sweepNavigatorRetention } from '@/lib/navigator/retention'
+import { reconcileRunningSandboxes, sandboxAccessChanged } from '@/lib/sandbox/lifecycle'
 
 /** Audited rows of one kind handled per sweep; the rest wait for the next sweep. */
 export const SWEEP_BATCH = 500
@@ -160,6 +164,8 @@ async function closeEndedShares(ended: readonly ShareEnded[]): Promise<number> {
     if (rest > 0 && refused === batch.length) {
       console.error(`[rbac] socket-close failed for ${rest} more expired share(s): the agent did not answer`)
       failed += rest
+      // Their Kali sandboxes are still reconciled (group 1): that step asks the orchestrator, not the agent.
+      await sandboxAccessChanged(ended.slice(i + batch.length).map(({ userId }) => userId), null)
       break
     }
   }
@@ -215,6 +221,10 @@ export async function sweepExpired(): Promise<SweepResult> {
   }
 
   const socketCloseFailed = ended.length ? await closeEndedShares(ended) : 0
+  // The Kali sandboxes' backstop (group 1): not an RBAC part, so no switch gates it, and its outcome
+  // is its own (the hook logs it, within its deadline). Not awaited: the orchestrator's reaper awaits
+  // this sweep, and the same loop dispatches scans.
+  void reconcileRunningSandboxes().catch(() => undefined)
   if (Object.values(removed).some((n) => n) || auditRetention?.deleted || auditRetention?.activated) {
     const shown = (n: number | null) => (n === null ? 'off' : String(n))
     console.info(

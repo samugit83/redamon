@@ -227,7 +227,6 @@ class TestExecuteToolNodeHappyPath(unittest.TestCase):
             state, _make_config(),
             tool_executor=executor,
             streaming_callbacks={},              # no callback -> skips streaming/httpx
-            session_manager_base="http://sm",
         ))
         self.assertTrue(out["_current_step"]["success"])
         self.assertEqual(out["_current_step"]["tool_output"], "scan complete")
@@ -241,7 +240,6 @@ class TestExecuteToolNodeHappyPath(unittest.TestCase):
             state, _make_config(),
             tool_executor=executor,
             streaming_callbacks={},
-            session_manager_base="http://sm",
         ))
         self.assertFalse(out["_current_step"]["success"])
         self.assertFalse(out["_tool_result"]["success"])
@@ -259,7 +257,6 @@ class TestExecuteToolNodeHappyPath(unittest.TestCase):
             state, _make_config(),
             tool_executor=executor,
             streaming_callbacks={},
-            session_manager_base="http://sm",
         ))
         self.assertFalse(out["_current_step"]["success"])
         self.assertTrue(out["_current_step"].get("error_embedded"))
@@ -273,7 +270,6 @@ class TestExecutePlanNode(unittest.TestCase):
         out = asyncio.run(execute_plan_node(
             _base_state(_current_plan=None), _make_config(),
             tool_executor=AsyncMock(), streaming_callbacks={},
-            session_manager_base="http://sm",
         ))
         self.assertIsNone(out["_current_plan"])
 
@@ -287,7 +283,6 @@ class TestExecutePlanNode(unittest.TestCase):
         out = asyncio.run(execute_plan_node(
             _base_state(_current_plan=plan), _make_config(),
             tool_executor=executor, streaming_callbacks={},
-            session_manager_base="http://sm",
         ))
         steps = out["_current_plan"]["steps"]
         self.assertTrue(all(s["success"] for s in steps))
@@ -310,7 +305,6 @@ class TestExecutePlanNode(unittest.TestCase):
         out = asyncio.run(execute_plan_node(
             _base_state(_current_plan=plan), _make_config(),
             tool_executor=executor, streaming_callbacks={},
-            session_manager_base="http://sm",
         ))
         steps = out["_current_plan"]["steps"]
         self.assertTrue(all(not s["success"] for s in steps))

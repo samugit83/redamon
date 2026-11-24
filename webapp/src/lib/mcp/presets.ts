@@ -307,7 +307,7 @@ export const MCP_PRESETS: McpPreset[] = [
     label: 'OSINT Toolkit',
     category: 'osint',
     blurb: '37-tool OSINT suite: DNS, WHOIS, crt.sh, GeoIP, BGP, Wayback, Hackertarget - works without API keys.',
-    whyForRedamon: 'Single-call DNS recon (lookups, reverse, SPF chain, DMARC, wildcards, SRV), CT log search (crt.sh), passive ASN/BGP analysis. Fills gaps the kali-sandbox tools don\'t cover natively.',
+    whyForRedamon: 'Single-call DNS recon (lookups, reverse, SPF chain, DMARC, wildcards, SRV), CT log search (crt.sh), passive ASN/BGP analysis. Fills gaps the Kali sandbox tools don\'t cover natively.',
     docsUrl: 'https://github.com/badchars/osint-mcp-server',
     authRequired: false,
     authHint: 'Optional: SHODAN_API_KEY, VT_API_KEY, ST_API_KEY, CENSYS_API_ID, CENSYS_API_SECRET unlock 14 extra tools',

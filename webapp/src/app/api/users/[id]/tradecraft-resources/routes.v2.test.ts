@@ -22,7 +22,12 @@ vi.mock('@/lib/session', () => ({
   requireUserAccess: vi.fn(async () => h.denied),
   isInternalRequest: vi.fn(() => h.internal),
 }))
-vi.mock('@/lib/auditActor', () => ({ auditActor: vi.fn(async () => h.actor) }))
+// Only who acts is doubled; the module's pure helpers (`actorFields`, which a login change's
+// audit row is written through) stay real.
+vi.mock('@/lib/auditActor', async (orig) => ({
+  ...(await orig<typeof import('@/lib/auditActor')>()),
+  auditActor: vi.fn(async () => h.actor),
+}))
 
 import { setNowForTests } from '@/lib/authz/clock'
 import { USERINFO_REFUSED } from '@/lib/tradecraft/urls'
@@ -114,9 +119,15 @@ describe('the 2.0 modules', () => {
     const added = await list.POST(req('', 'POST', { name: 'Docs', url: 'https://docs.example.test/', llmModel: 'gpt-4o' }), P)
     expect(added.status).toBe(201)
     const { resource } = await added.json()
-    const edited = await one.PUT(req('/r1', 'PUT', { url: 'https://wiki2.example.test/' }), PR)
+    // r1 has a site login: a move to another host keeps it only when it is typed again
+    // (lib/authz/secretEndpointRebind.ts tradecraftLoginSecretReentry), and a refused move writes nothing.
+    const kept = await one.PUT(req('/r1', 'PUT', { url: 'https://wiki2.example.test/' }), PR)
+    expect([kept.status, (await kept.json()).code]).toEqual([400, 'secret_reentry_required'])
+    expect(row().url).toBe('https://wiki.example.test/')
+    const edited = await one.PUT(req('/r1', 'PUT', { url: 'https://wiki2.example.test/', credentials: { cookie: 'session=fake-for-wiki2' } }), PR)
     expect(edited.status).toBe(200)
     expect((await edited.json()).job.kind).toBe('reingest')
+    expect(row().url).toBe('https://wiki2.example.test/')
     expect(agent.calls.filter(c => c.path === '/tradecraft/v2/jobs')).toHaveLength(2)
     const removed = await one.DELETE(req(`/${resource.id}`, 'DELETE'), { params: Promise.resolve({ id: 'owner', resourceId: resource.id }) })
     expect(removed.status).toBe(200)

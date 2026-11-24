@@ -5,11 +5,10 @@
  *     administrator reads them, only the confirmed Root changes them, with its password (the step-up
  *     dialog); a Full admin gets no control and nothing is sent ("Root-only fields refused to Full
  *     admin"); Root's save sends exactly the changed fields ("values saved");
- *   - the tunnel's editor (the tunnel push is the route's: instance-settings/route.test.ts "tunnel
- *     push called"); TrafficMind's summary, dialog and link; the Nuclei templates' list, promote and
- *     delete, each confirmed through useAlertModal;
- *   - loading, error with Retry, a refused route, and a member who kept a platform tool from before
- *     the upgrade, told why the console shows them this page.
+ *   - the Nuclei templates' list, promote and delete, each confirmed through useAlertModal;
+ *   - no tunnel, TrafficMind, Plugins or "used elsewhere" panel: those tools are set where they are
+ *     used (each person's own tunnel in Global Settings, TrafficMind's own Settings, the Plugins page);
+ *   - loading, error with Retry, and a refused route.
  * Audit rows are the routes' (instance-settings route.test.ts / route.securityPolicy.test.ts
  * "audited by field name", permissionSetAdmin's `instance.default_member_set_changed`,
  * nuclei-templates route.ownership.test.ts).
@@ -43,13 +42,6 @@ const alerts = vi.hoisted(() => ({
 }))
 vi.mock('@/components/ui/AlertModal/AlertModal', async (orig) => ({ ...((await orig()) as Record<string, unknown>), useAlertModal: () => alerts }))
 vi.mock('@/components/ui', async (orig) => ({ ...((await orig()) as Record<string, unknown>), useAlertModal: () => alerts }))
-const modal = vi.hoisted(() => ({ props: null as null | { isOpen: boolean; userId: string | null; onClose: () => void } }))
-vi.mock('@/components/traffic/TrafficMindSettingsModal', () => ({
-  TrafficMindSettingsModal: (p: { isOpen: boolean; userId: string | null; onClose: () => void }) => {
-    modal.props = p
-    return p.isOpen ? <div role="dialog" aria-label="TrafficMind settings"><button type="button" onClick={p.onClose}>Close</button></div> : null
-  },
-}))
 
 import InstancePage from './page'
 
@@ -90,7 +82,6 @@ const TEMPLATES = [
 
 beforeEach(() => {
   vi.clearAllMocks()
-  modal.props = null
   alerts.confirm.mockResolvedValue(true)
   alerts.dangerConfirm.mockResolvedValue(true)
   routes = {
@@ -106,7 +97,6 @@ beforeEach(() => {
       },
     },
     'GET /api/nuclei-templates': { status: 200, body: { templates: TEMPLATES, canManageAll: true } },
-    'GET /api/agent/tunnel-status': { status: 200, body: {} },
     'GET /api/admin/llm-providers': { status: 200, body: { providers: [], sets: [], byoLlmForbidden: false, kinds: ['openai'] } },
   }
   fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
@@ -162,14 +152,19 @@ describe('states', () => {
     expect(await screen.findByRole('region', { name: 'Security policy' })).toBeInTheDocument()
   })
 
-  test('a member who kept platform:kali_terminal: the route refuses the settings, the page says why and where', async () => {
+  test('a member holding platform:nuclei_templates alone: the route refuses the settings, only the Nuclei templates', async () => {
+    routes['GET /api/admin/instance-settings'] = { status: 403, body: { error: 'no', code: 'forbidden', permission: 'platform:tunnels' } }
+    renderPage(auth(['platform:nuclei_templates'], 'member'))
+    expect(await screen.findByRole('region', { name: 'Nuclei templates' })).toBeInTheDocument()
+    expect(screen.getAllByRole('region')).toHaveLength(1)
+    expect(screen.queryByRole('navigation', { name: 'Instance sections' })).toBeNull()
+  })
+
+  test('a member who kept platform:kali_terminal: nothing here is theirs, and nothing is read for them', async () => {
     routes['GET /api/admin/instance-settings'] = { status: 403, body: { error: 'no', code: 'forbidden', permission: 'platform:tunnels' } }
     renderPage(auth(['platform:kali_terminal'], 'member'))
-    const panel = await screen.findByRole('region', { name: 'Platform tools used elsewhere' })
-    expect(within(panel).getByRole('note')).toHaveTextContent('Your account is a member account. It sees this page because it holds a platform permission as a personal override, for example one kept from before the upgrade.')
-    expect(panel).toHaveTextContent('platform:kali_terminal: The raw Kali terminal is the RedAmon Terminal tab')
-    expect(within(panel).getByRole('link', { name: 'Open your projects' })).toHaveAttribute('href', '/projects')
-    expect(screen.queryByRole('region', { name: 'Security policy' })).toBeNull()
+    expect(await screen.findByText('No section of this page is open to you.')).toBeInTheDocument()
+    expect(screen.queryByRole('region')).toBeNull()
     expect(screen.queryByRole('alert')).toBeNull()
     expect(calls('GET', '/api/nuclei-templates')).toHaveLength(0)
   })
@@ -177,8 +172,19 @@ describe('states', () => {
   test('the section list is a labelled navigation of anchors to each panel', async () => {
     renderPage(auth(FULL_ADMIN, 'admin'))
     const nav = await screen.findByRole('navigation', { name: 'Instance sections' })
-    expect(within(nav).getByRole('link', { name: 'Tunnel' })).toHaveAttribute('href', '#tunnels')
-    expect(document.getElementById('tunnels')).toHaveAttribute('aria-labelledby', 'tunnels-title')
+    expect(within(nav).getByRole('link', { name: 'Nuclei templates' })).toHaveAttribute('href', '#nuclei')
+    expect(document.getElementById('nuclei')).toHaveAttribute('aria-labelledby', 'nuclei-title')
+  })
+
+  test('no tunnel, TrafficMind, Plugins or tools-used-elsewhere panel, even for Root with every permission', async () => {
+    routes['GET /api/admin/instance-settings'] = { status: 200, body: settingsFor(true) }
+    renderPage(auth(EVERYTHING, 'root'))
+    const nav = await screen.findByRole('navigation', { name: 'Instance sections' })
+    for (const name of ['Tunnel', 'TrafficMind and egress policy', 'Plugins', 'Platform tools used elsewhere']) {
+      expect(within(nav).queryByRole('link', { name })).toBeNull()
+      expect(screen.queryByRole('region', { name })).toBeNull()
+    }
+    for (const id of ['tunnels', 'traffic', 'plugins', 'other-tools']) expect(document.getElementById(id)).toBeNull()
   })
 })
 
@@ -322,44 +328,6 @@ describe('values saved (the confirmed Root, with its password)', () => {
   })
 })
 
-describe('the tunnel (platform:tunnels)', () => {
-  test('its editor on this page, also with governance on; the save goes to the instance settings with the tunnel only', async () => {
-    routes['PUT /api/admin/instance-settings'] = (init) => ({ status: 200, body: { ...settingsFor(false), ...JSON.parse(String(init?.body)) } })
-    renderPage(auth(FULL_ADMIN, 'admin'))
-    const tunnel = await screen.findByRole('region', { name: 'Tunnel' })
-    fireEvent.click(await within(tunnel).findByLabelText('Enable tunnels'))
-    fireEvent.click(within(tunnel).getByRole('button', { name: 'Save tunnel settings' }))
-    await waitFor(() => expect(calls('PUT', '/api/admin/instance-settings')).toHaveLength(1))
-    expect(Object.keys(bodyOf(calls('PUT', '/api/admin/instance-settings')[0])).sort()).toEqual(['chiselAuth', 'chiselServerUrl', 'ngrokAuthtoken', 'tunnelsEnabled'])
-    expect(within(tunnel).queryByRole('link', { name: 'Open the tunnel settings' })).toBeNull()
-  })
-
-  test('not shown to whoever the route says may not change it', async () => {
-    routes['GET /api/admin/instance-settings'] = { status: 200, body: settingsFor(false, { canManageTunnels: false }) }
-    renderPage(auth(FULL_ADMIN, 'admin'))
-    await screen.findByRole('region', { name: 'Security policy' })
-    expect(screen.queryByRole('region', { name: 'Tunnel' })).toBeNull()
-  })
-})
-
-describe('TrafficMind link (platform:traffic_capture)', () => {
-  test('the summary, the TrafficMind page link, and the settings dialog as the signed-in person; closing reads again', async () => {
-    routes['GET /api/admin/instance-settings'] = { status: 200, body: settingsFor(false, { captureEgressBlockPrivate: false }) }
-    renderPage(auth(FULL_ADMIN, 'admin'))
-    const traffic = await screen.findByRole('region', { name: 'TrafficMind and egress policy' })
-    expect(traffic).toHaveTextContent('Capture proxyOn')
-    expect(traffic).toHaveTextContent('Relaxed: private IPs')
-    expect(within(traffic).getByRole('link', { name: 'Open TrafficMind' })).toHaveAttribute('href', '/traffic')
-    const reads = calls('GET', '/api/admin/instance-settings').length
-    fireEvent.click(within(traffic).getByRole('button', { name: 'Edit TrafficMind settings' }))
-    expect(screen.getByRole('dialog', { name: 'TrafficMind settings' })).toBeInTheDocument()
-    expect(modal.props?.userId).toBe('u-1')
-    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
-    await waitFor(() => expect(calls('GET', '/api/admin/instance-settings').length).toBe(reads + 1))
-    expect(screen.queryByRole('dialog', { name: 'TrafficMind settings' })).toBeNull()
-  })
-})
-
 describe('Nuclei templates (platform:nuclei_templates)', () => {
   test('the list with owners; promote and delete each confirmed, then sent to the templates route', async () => {
     routes['PATCH /api/nuclei-templates'] = { status: 200, body: { templates: TEMPLATES.map((t) => ({ ...t, ownership: 'instance' })), canManageAll: true, promoted: true } }
@@ -403,8 +371,8 @@ describe('Nuclei templates (platform:nuclei_templates)', () => {
   })
 })
 
-describe('quotas, plugins and the other platform tools', () => {
-  test('Full admin: quotas unlimited, the Plugins link, and where the tools without a panel live', async () => {
+describe('quotas', () => {
+  test('Full admin: every quota starts unlimited', async () => {
     // Step 6.8 replaced 6.7's placeholder line with the editor: every quota starts unlimited (OQ-39).
     routes['GET /api/admin/instance-settings'] = {
       status: 200,
@@ -414,10 +382,6 @@ describe('quotas, plugins and the other platform tools', () => {
     const quotas = await screen.findByRole('region', { name: 'Quotas' })
     expect(quotas).toHaveTextContent('No set has its own quota.')
     expect(within(quotas).getAllByRole('combobox').every((c) => (c as HTMLSelectElement).value === 'unlimited')).toBe(true)
-    expect(within(region('Plugins')).getByRole('link', { name: 'Open the Plugins page' })).toHaveAttribute('href', '/plugins')
-    const other = region('Platform tools used elsewhere')
-    expect(within(other).queryByRole('note')).toBeNull()
-    expect(within(other).getByRole('link', { name: 'Open MCP Tool Plugins' })).toHaveAttribute('href', '/settings?tab=mcp')
   })
 })
 

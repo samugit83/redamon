@@ -568,8 +568,22 @@ RUN CHISEL_VERSION="1.11.4" && \
 # Expose ports for MCP servers (SSE/HTTP transport) + tunnel manager + ngrok API + terminal WS
 EXPOSE 8000 8002 8003 8004 8005 8014 8015 8016 4040
 
+# Bumped by `redamon.sh update` (MSF_REFRESH_STAMP=<date>) so only the layers from
+# here on are rebuilt: per-user sandboxes start with auto-updates off and take their
+# Metasploit modules from the image. The stamp is only tested for emptiness, never run.
+ARG MSF_REFRESH_STAMP=
+RUN if [ -n "$MSF_REFRESH_STAMP" ]; then \
+      (apt-get update -qq && apt-get install -y -qq --only-upgrade metasploit-framework) \
+      || echo "metasploit refresh skipped"; \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # Initialize Metasploit database (speeds up first run)
 RUN msfdb init || true
+
+# The day the layer above last refreshed Metasploit (empty: not since a full build);
+# `redamon.sh update` reads it so it refreshes at most once a day.
+LABEL redamon.msf_refresh="${MSF_REFRESH_STAMP}"
 
 # Entrypoint handles updates + launches MCP servers
 ENTRYPOINT ["/opt/entrypoint.sh"]

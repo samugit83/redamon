@@ -95,6 +95,10 @@ class ExecutorWiringTestBase(unittest.IsolatedAsyncioTestCase):
             mcp_manager=MagicMock(),
             graph_tool=None,
         )
+        from one_sandbox import route_to
+
+        # A system tool runs in the person's sandbox, whose client serves this table.
+        route_to(self, lambda: self.executor._all_tools)
 
     async def asyncTearDown(self):
         # Cancel any in-flight jobs before restoring WORKSPACE_ROOT.

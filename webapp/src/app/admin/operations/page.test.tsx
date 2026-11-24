@@ -8,13 +8,18 @@
  * error + Retry, denied and empty states; labelled controls. The console shell (6.1) denies the page
  * to anyone without platform:operations before it renders.
  *
+ * Group 1 (WI-S16-6): the running Kali sandboxes with their person, view, state and times, a Stop per
+ * sandbox for whoever may stop runs (behind the danger confirmation); shells from two sandboxes with
+ * the same number as two rows naming their instance; the partial-answer line when sandboxes did not
+ * answer.
+ *
  * Run: npx vitest run --no-file-parallelism src/app/admin/operations/page.test.tsx
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, within, waitFor, fireEvent, act } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { AlertProvider } from '@/components/ui'
-import type { OperationsView, OpsAgentRun, OpsScan } from '@/lib/authz/adminOperations'
+import type { OperationsView, OpsAgentRun, OpsSandbox, OpsScan } from '@/lib/authz/adminOperations'
 
 const h = vi.hoisted(() => ({ sections: [] as Array<{ id: string }> }))
 vi.mock('next/navigation', () => ({
@@ -54,8 +59,17 @@ function opsView(over: Partial<OperationsView> = {}): OperationsView {
     agentRuns: { state: { ok: true }, runs: [] },
     scans: { orchestrator: { ok: true }, running: [], queued: [], queuedTotal: 0 },
     triageRuns: [],
-    shells: { state: { ok: true }, sessions: [], jobs: 0 },
+    shells: { state: { ok: true }, sessions: [], jobs: 0, unavailable: 0 },
+    sandboxes: { state: { ok: true }, list: [] },
     ...over,
+  }
+}
+
+function sandbox(over: Partial<OpsSandbox> = {}): OpsSandbox {
+  return {
+    key: 'mem-b:bbbbb1', instance: 'bbbbb1', person: { id: 'mem-b', name: 'Member B' }, view: 'own', state: 'running',
+    createdAt: '2026-11-13T09:00:00.000Z', lastUsed: '2026-11-13T11:30:00.000Z', stopAt: '2026-11-13T11:50:00.000Z',
+    reversePort: { port: 31001, state: 'assigned' }, ...over,
   }
 }
 
@@ -64,17 +78,20 @@ let fetchMock: ReturnType<typeof vi.fn>
 let viewAnswer: () => Response | Promise<Response>
 let stopAnswer: (body: Record<string, unknown>) => Response
 let stopAllAnswer: () => Response
+let stopSandboxAnswer: (body: Record<string, unknown>) => Response
 
 beforeEach(() => {
   h.sections = [{ id: 'operations' }, { id: 'users' }]
   viewAnswer = () => json(opsView())
   stopAnswer = () => json({ stopped: true })
   stopAllAnswer = () => json({ scope: 'all', stopped: 3 })
+  stopSandboxAnswer = () => json({ stopped: 1 })
   fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
     const url = new URL(String(input), 'http://redamon.test')
     if (url.pathname === '/api/admin/operations') return viewAnswer()
     if (url.pathname === '/api/admin/operations/agent-runs/stop') return stopAnswer(JSON.parse(String(init?.body)))
     if (url.pathname === '/api/agent/emergency-stop-all') return stopAllAnswer()
+    if (url.pathname === '/api/admin/operations/sandboxes/stop') return stopSandboxAnswer(JSON.parse(String(init?.body)))
     return json({}, 404)
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -109,8 +126,9 @@ describe('lists runs with owners and actors', () => {
       }],
       shells: {
         state: { ok: true },
-        sessions: [{ key: 'session:3', id: '3', kind: 'session', type: 'meterpreter', project: P1, person: { id: 'mem-a', name: 'Member A' } }],
+        sessions: [{ key: 'session:3', id: '3', kind: 'session', type: 'meterpreter', sandbox: null, project: P1, person: { id: 'mem-a', name: 'Member A' } }],
         jobs: 2,
+        unavailable: 0,
       },
     }))
     renderPage()
@@ -191,7 +209,7 @@ describe('states', () => {
     viewAnswer = () => json(opsView({
       agentRuns: { state: { ok: false, code: 'agent_route_missing' }, runs: [] },
       scans: { orchestrator: { ok: false, code: 'orchestrator_unreachable' }, running: [scan('scan:1')], queued: [], queuedTotal: 0 },
-      shells: { state: { ok: false, code: 'agent_unreachable' }, sessions: [], jobs: 0 },
+      shells: { state: { ok: false, code: 'agent_unreachable' }, sessions: [], jobs: 0, unavailable: 0 },
     }))
     renderPage()
     expect(await screen.findByText('agent_route_missing')).toBeInTheDocument()
@@ -289,6 +307,8 @@ describe('the global emergency stop', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Stop every agent run' }))
     const dialog = await screen.findByRole('dialog')
     expect(dialog).toHaveTextContent('Every running agent run of every user stops now')
+    // The emergency stop also stops the Kali sandboxes (group 1, S14): the dialog says so.
+    expect(dialog).toHaveTextContent('every Kali sandbox stops with its shells, sessions and tunnels')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Stop every run' }))
     expect(await screen.findByText('Emergency stop: stopped 3 agent runs.')).toBeInTheDocument()
     expect(calls('/api/agent/emergency-stop-all')[0][1]).toMatchObject({ method: 'POST' })
@@ -309,6 +329,32 @@ describe('the global emergency stop', () => {
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Stop every run' }))
     await waitFor(() => expect(screen.getByRole('dialog')).toHaveTextContent('agent_unreachable'))
   })
+
+  test('the Kali sandboxes it stopped are named next to the runs', async () => {
+    stopAllAnswer = () => json({ scope: 'all', stopped: 3, sandboxes: { stopped: 2 } })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop every agent run' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Stop every run' }))
+    expect(await screen.findByText('Emergency stop: stopped 3 agent runs. Kali sandboxes: stopped 2 sandboxes.')).toBeInTheDocument()
+  })
+
+  test('a sandbox stop that failed is an error dialog with how to retry, not a success notice', async () => {
+    stopAllAnswer = () => json({ scope: 'all', stopped: 3, sandboxes: { error: 'orchestrator_unreachable' } })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop every agent run' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Stop every run' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toHaveTextContent('Kali sandboxes: not stopped (orchestrator_unreachable)'))
+    expect(screen.getByRole('dialog')).toHaveTextContent('again to retry')
+  })
+
+  test('a failed agent call still says what happened to the sandboxes', async () => {
+    stopAllAnswer = () => json({ error: 'Failed to stop agents', code: 'agent_unreachable', sandboxes: { stopped: 1 } }, 503)
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop every agent run' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Stop every run' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toHaveTextContent('agent_unreachable'))
+    expect(screen.getByRole('dialog')).toHaveTextContent('Kali sandboxes: stopped 1 sandbox.')
+  })
 })
 
 describe('keyboard and labels', () => {
@@ -328,5 +374,125 @@ describe('keyboard and labels', () => {
     expect(screen.getByRole('button', { name: 'Refresh now' })).toBeInTheDocument()
     for (const button of screen.getAllByRole('button')) expect(button.textContent || button.getAttribute('aria-label')).toBeTruthy()
     expect(container.querySelector('[tabindex="-1"]')).toBeNull()
+  })
+})
+
+describe('Kali sandboxes (group 1, WI-S16-6)', () => {
+  test('listed with person, view, state and times; never a host, token or project list', async () => {
+    viewAnswer = () => json(opsView({
+      sandboxes: {
+        state: { ok: true },
+        list: [sandbox(), sandbox({ key: 'mem-c:ccccc1', instance: 'ccccc1', person: { id: 'mem-c', name: null }, view: 'act_as', state: 'draining', stopAt: null })],
+      },
+    }))
+    renderPage()
+    const table = await screen.findByRole('table', { name: 'Kali sandboxes' })
+    const first = within(within(table).getByText('Member B').closest('tr')!)
+    expect(first.getByText('Running')).toBeInTheDocument()
+    expect(first.getByText('Own work')).toBeInTheDocument()
+    const second = within(within(table).getByText('Account mem-c').closest('tr')!)
+    expect(second.getByText('Draining')).toBeInTheDocument()
+    expect(second.getByText('An admin acting as them')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: /^Kali sandboxes/ })).toBeInTheDocument()
+  })
+
+  test("a Reverse port column (FU-24): the pool port, none and why, or a dash when the orchestrator did not say", async () => {
+    viewAnswer = () => json(opsView({
+      sandboxes: {
+        state: { ok: true },
+        list: [
+          sandbox(),
+          sandbox({ key: 'mem-c:ccccc1', instance: 'ccccc1', person: { id: 'mem-c', name: 'Member C' }, reversePort: { port: null, state: 'pool_full' } }),
+          sandbox({ key: 'mem-d:ddddd1', instance: 'ddddd1', person: { id: 'mem-d', name: 'Member D' }, reversePort: { port: null, state: 'no_pool' } }),
+          sandbox({ key: 'mem-e:eeeee1', instance: 'eeeee1', person: { id: 'mem-e', name: 'Member E' }, reversePort: null }),
+        ],
+      },
+    }))
+    renderPage()
+    const table = await screen.findByRole('table', { name: 'Kali sandboxes' })
+    expect(within(table).getByRole('columnheader', { name: 'Reverse port' })).toBeInTheDocument()
+    const portOf = (name: string) => within(within(table).getByText(name).closest('tr')!).getByTestId('ops-sandbox-port').textContent
+    expect(portOf('Member B')).toBe('31001')
+    expect(portOf('Member C')).toBe('none (pool full)')
+    expect(portOf('Member D')).toBe('none')
+    expect(portOf('Member E')).toBe('-')
+  })
+
+  test('Stop, confirmed in the app dialog, stops that person\'s sandboxes; a notice, then the view reads again', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm')
+    let sent: Record<string, unknown> | null = null
+    stopSandboxAnswer = (b) => { sent = b; return json({ stopped: 1 }) }
+    viewAnswer = () => json(opsView({ sandboxes: { state: { ok: true }, list: [sandbox()] } }))
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: "Stop Member B's Kali sandbox" }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent("Member B's Kali sandbox stops now")
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop the sandbox' }))
+    expect(await screen.findByText("Stopped Member B's Kali sandbox.")).toBeInTheDocument()
+    expect(sent).toEqual({ userId: 'mem-b' })
+    await waitFor(() => expect(calls('/api/admin/operations')).toHaveLength(2))
+    expect(confirmSpy).not.toHaveBeenCalled()
+  })
+
+  test('already stopped, and a refusal shown with its code', async () => {
+    viewAnswer = () => json(opsView({ sandboxes: { state: { ok: true }, list: [sandbox()] } }))
+    stopSandboxAnswer = () => json({ stopped: 0 })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: "Stop Member B's Kali sandbox" }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Stop the sandbox' }))
+    expect(await screen.findByText("Member B's Kali sandbox had already stopped.")).toBeInTheDocument()
+
+    stopSandboxAnswer = () => json({ error: 'You do not hold the permission this action needs (platform:emergency_stop).', code: 'forbidden', permission: 'platform:emergency_stop' }, 403)
+    fireEvent.click(await screen.findByRole('button', { name: "Stop Member B's Kali sandbox" }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Stop the sandbox' }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toHaveTextContent('forbidden'))
+    expect(screen.getByRole('dialog')).toHaveTextContent('Could not stop the sandbox')
+  })
+
+  test('without the stop permission: the sandboxes are listed with no Stop', async () => {
+    viewAnswer = () => json(opsView({ actions: { stopRuns: false }, sandboxes: { state: { ok: true }, list: [sandbox()] } }))
+    renderPage()
+    await screen.findByRole('table', { name: 'Kali sandboxes' })
+    expect(screen.queryByRole('button', { name: /Kali sandbox/ })).toBeNull()
+  })
+
+  test('none running, and a source that does not answer', async () => {
+    viewAnswer = () => json(opsView({ sandboxes: { state: { ok: true }, list: [] } }))
+    const second = renderPage()
+    expect(await screen.findByText('No Kali sandbox is running.')).toBeInTheDocument()
+    expect(screen.queryByText(/shared container/)).toBeNull()
+    second.unmount()
+    viewAnswer = () => json(opsView({ sandboxes: { state: { ok: false, code: 'orchestrator_timeout' }, list: [] } }))
+    renderPage()
+    expect(await screen.findByText('orchestrator_timeout')).toBeInTheDocument()
+  })
+})
+
+describe('shells across sandboxes (group 1)', () => {
+  test('two sessions numbered 1 in two sandboxes are two rows, each naming its instance; the partial-answer line', async () => {
+    const errors = vi.spyOn(console, 'error')
+    viewAnswer = () => json(opsView({
+      shells: {
+        state: { ok: true },
+        sessions: [
+          { key: 'session:aaaaa1:1', id: '1', kind: 'session', type: 'shell', sandbox: 'aaaaa1', project: P1, person: { id: 'mem-a', name: 'Member A' } },
+          { key: 'session:bbbbb1:1', id: '1', kind: 'session', type: 'meterpreter', sandbox: 'bbbbb1', project: P2, person: { id: 'mem-b', name: 'Member B' } },
+        ],
+        jobs: 0,
+        unavailable: 2,
+      },
+    }))
+    renderPage()
+    const table = await screen.findByRole('table', { name: 'Shell sessions' })
+    expect(within(table).getByText('Session 1 · shell · sandbox aaaaa1')).toBeInTheDocument()
+    expect(within(table).getByText('Session 1 · meterpreter · sandbox bbbbb1')).toBeInTheDocument()
+    expect(screen.getByText('2 sandboxes did not answer; their sessions may be out of date or missing')).toBeInTheDocument()
+    expect(errors.mock.calls.some((c) => String(c[0]).includes('same key'))).toBe(false)
+  })
+
+  test('none unavailable: no partial line', async () => {
+    renderPage()
+    await screen.findByText('No scan is running.')
+    expect(screen.queryByText(/did not answer; /)).toBeNull()
   })
 })

@@ -1,0 +1,114 @@
+[
+  {
+    "note": "Scope guardrail: allow the placeholder project.",
+    "match": "for a penetration testing scan:",
+    "repeat": true,
+    "content": { "allowed": true, "reason": "Scripted stub: placeholder project, local lab only." }
+  },
+  {
+    "note": "Intent router: start informational, so the move to exploitation raises the phase approval.",
+    "match": "You are classifying a penetration testing request",
+    "repeat": true,
+    "content": {
+      "required_phase": "informational",
+      "attack_path_type": "cve_exploit",
+      "confidence": 0.9,
+      "reasoning": "Scripted stub: start in the informational phase."
+    }
+  },
+  {
+    "note": "Root think 1: ask for the exploitation phase (the person approves it).",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: the engagement needs the exploitation phase.",
+      "reasoning": "Scripted turn of per-user-sandbox-engagement.json: request the phase change.",
+      "action": "transition_phase",
+      "phase_transition": {
+        "to_phase": "exploitation",
+        "reason": "Scripted stub run: move to exploitation against the local lab.",
+        "planned_actions": ["One plan wave and one Fireteam deployment against the local lab."],
+        "risks": ["None: a throwaway local lab container."]
+      },
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Root think 2: one plan wave of two independent tools. kali_shell leaves a marker in the sandbox; execute_curl is capture-routed, so it aims at the lab's pentest-net address (the capture proxy refuses the sandbox pool 10.214.0.0/16).",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: run two independent checks at once.",
+      "reasoning": "Scripted turn of per-user-sandbox-engagement.json: a plan wave.",
+      "action": "plan_tools",
+      "tool_plan": {
+        "plan_rationale": "Scripted stub: a marker in the sandbox and one captured request to the lab.",
+        "steps": [
+          {
+            "tool_name": "kali_shell",
+            "tool_args": { "command": "echo G1E2E-{{NONCE}}-wave > /tmp/g1e2e-{{NONCE}}-wave && echo G1E2E-WAVE-{{NONCE}}" },
+            "rationale": "Leave a marker in the sandbox that ran the wave."
+          },
+          {
+            "tool_name": "execute_curl",
+            "tool_args": { "args": "-s -i http://{{LAB_PROXY_IP}}:8080/g1e2e-{{NONCE}}.html" },
+            "rationale": "One request to the lab, recorded by the capture proxy."
+          }
+        ]
+      },
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Root think 3: deploy a Fireteam of one member (one member keeps the member turns in a fixed order).",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: hand one fetch to a Fireteam member.",
+      "reasoning": "Scripted turn of per-user-sandbox-engagement.json: a Fireteam deployment.",
+      "action": "deploy_fireteam",
+      "fireteam_plan": {
+        "plan_rationale": "Scripted stub: one member fetches one lab page.",
+        "members": [
+          {
+            "name": "g1e2e-scout",
+            "task": "Fetch http://{{LAB_PROXY_IP}}:8080/member-{{NONCE}}.html once with execute_curl, then complete.",
+            "tools": ["execute_curl"]
+          }
+        ]
+      },
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Member think 1 (the member's prompt asks it to 'decide your next action'): one capture-routed request.",
+    "match": "decide your next action",
+    "content": {
+      "thought": "Scripted stub member: fetch the page.",
+      "reasoning": "Scripted member turn of per-user-sandbox-engagement.json.",
+      "action": "use_tool",
+      "tool_name": "execute_curl",
+      "tool_args": { "args": "-s -i http://{{LAB_PROXY_IP}}:8080/member-{{NONCE}}.html" },
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Member think 2: end the member.",
+    "match": "decide your next action",
+    "content": {
+      "thought": "Scripted stub member: the page is fetched.",
+      "reasoning": "Scripted member turn of per-user-sandbox-engagement.json: done.",
+      "action": "complete",
+      "completion_reason": "Scripted stub member finished after one request.",
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Root think 4, after the Fireteam: end the run.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: the wave and the Fireteam are done.",
+      "reasoning": "Scripted turn of per-user-sandbox-engagement.json: nothing left to do.",
+      "action": "complete",
+      "completion_reason": "Scripted stub engagement finished.",
+      "updated_todo_list": []
+    }
+  }
+]

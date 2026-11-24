@@ -12,6 +12,7 @@ with a marker label iff the id contains "owned", and asserts:
 Run: cd docker_broker && python3 test_ownership.py
 """
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -49,7 +50,9 @@ async def mock_upstream(reader, writer):
     if m:
         cid = m.group(1)
         labels = {"redamon.broker-owned": "1"} if "owned" in cid else {"role": "infra"}
-        body = json.dumps({"Config": {"Labels": labels}}).encode()
+        # As the daemon answers: the full id (the broker forwards on it) and the state.
+        body = json.dumps({"Id": hashlib.sha256(cid.encode()).hexdigest(), "Config": {"Labels": labels},
+                           "State": {"Status": "created"}}).encode()
     else:
         body = b'{"Id":"deadbeef"}'
     writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"

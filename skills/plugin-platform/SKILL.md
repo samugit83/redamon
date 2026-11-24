@@ -55,7 +55,7 @@ for an LLM call path, `llm-provider-integration`; for tests, `redamon-testing`.
   the core `up`. A new webapp plugin variable still goes in the webapp's `environment:` list:
   the webapp has no `env_file`.
 - **NEVER put the runner or the proxy on `redamon`, and never widen the proxy's prefixes.**
-  Postgres, Neo4j, kali-sandbox and agent routes there trust the network. The proxy passes only
+  Postgres, Neo4j and agent routes there trust the network. The proxy passes only
   `/api/plugin-gateway/v1/*`, `/api/plugin-runner/v1/*` and `/runner/v1/*`
   ([proxy.py](../../services/plugin_runner/gateway_proxy/proxy.py)); `tests/redamon_plugins_profile_test.sh`
   asserts the networks.

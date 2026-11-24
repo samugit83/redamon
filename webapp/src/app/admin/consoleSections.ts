@@ -1,4 +1,4 @@
-import { PERMISSION_IDS, type PermissionId } from '@/lib/authz/permissions'
+import type { PermissionId } from '@/lib/authz/permissions'
 
 /**
  * The admin console's sections (step 6.1, UI-10, OQ-44) and the permissions that open each. The
@@ -24,10 +24,11 @@ export interface ConsoleSection {
   needsAllSharesView?: true
 }
 
-const PLATFORM: readonly PermissionId[] = PERMISSION_IDS.filter((p) => p.startsWith('platform:'))
-
 // instance:settings is the confirmed Root's (rootOnly); instance:quotas is how a Full admin reaches
-// the quotas section of the same page.
+// the quotas section of the same page; platform:nuclei_templates the Nuclei templates. The other
+// platform permissions have nothing to set there: each is used where its tool lives (TrafficMind's
+// own Settings, a person's own tunnel in Global Settings, the Plugins page, a project's graph page,
+// Operations), so none of them opens this section.
 export const CONSOLE_SECTIONS: readonly ConsoleSection[] = Object.freeze([
   { id: 'users', label: 'Users', href: '/admin/users', anyOf: ['users:read'],
     description: 'Accounts, invitations, status, permission sets and sign-ins.' },
@@ -43,8 +44,8 @@ export const CONSOLE_SECTIONS: readonly ConsoleSection[] = Object.freeze([
     description: 'Agent runs, scans and triage runs running or queued now.' },
   { id: 'audit', label: 'Audit', href: '/admin/audit', anyOf: ['audit:read'],
     description: 'Who did what and when, with filters, export and retention.' },
-  { id: 'instance', label: 'Instance', href: '/admin/instance', anyOf: ['instance:settings', 'instance:quotas', ...PLATFORM],
-    description: 'Instance-wide settings: security and sharing policy, quotas, tunnels, TrafficMind, Nuclei templates.' },
+  { id: 'instance', label: 'Instance', href: '/admin/instance', anyOf: ['instance:settings', 'instance:quotas', 'platform:nuclei_templates'],
+    description: 'Instance-wide settings: security and sharing policy, audit retention, LLM providers, quotas, Nuclei templates.' },
 ] satisfies ConsoleSection[])
 
 export const CONSOLE_PERMISSIONS: readonly PermissionId[] = Object.freeze([...new Set(CONSOLE_SECTIONS.flatMap((s) => s.anyOf))])

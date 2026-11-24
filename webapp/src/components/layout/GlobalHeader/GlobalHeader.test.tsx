@@ -286,7 +286,7 @@ describe('GlobalHeader – Admin link (step 6.1, UI-10, OQ-44)', () => {
 
   test('on: any console permission shows it, users:read or not', () => {
     mockFlags = GOVERNANCE_ON
-    for (const held of [['audit:read'], ['platform:tunnels'], ['instance:quotas'], ['roles:manage']]) {
+    for (const held of [['audit:read'], ['platform:nuclei_templates'], ['instance:quotas'], ['roles:manage']]) {
       mockGranted = new Set(held)
       render(<GlobalHeader />)
       expect(adminLink()).not.toBeNull()
@@ -300,6 +300,18 @@ describe('GlobalHeader – Admin link (step 6.1, UI-10, OQ-44)', () => {
     render(<GlobalHeader />)
     expect(adminLink()).toBeNull()
     expect(usersLink()).toBeNull()
+  })
+
+  // Used where its tool lives (TrafficMind's own Settings, a person's own tunnel, the Plugins page),
+  // so it opens no console section and shows no link to one.
+  test('on: a platform permission with nothing to set in the console shows no link', () => {
+    mockFlags = GOVERNANCE_ON
+    for (const held of [['platform:tunnels'], ['platform:traffic_capture'], ['platform:plugins']]) {
+      mockGranted = new Set(held)
+      render(<GlobalHeader />)
+      expect(adminLink()).toBeNull()
+      cleanup()
+    }
   })
 
   test.each(['/admin', '/admin/users', '/admin/audit'])('on: active on %s', (route) => {

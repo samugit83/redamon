@@ -1,11 +1,13 @@
 """WebSocket half of tests/rbac_kali_terminal_live.sh (RBAC step 1.14). Not a pytest file.
 
-Fed on stdin to `python3 -` inside the agent container, after four assignments the
+Fed on stdin to `python3 -` inside the agent container, after five assignments the
 shell prepends: T_AGENT (a member's chat ticket), T_LEGACY (a legacy holder's
-terminal ticket), LEGACY_ID and LEGACY_PID (that holder and its project). Tickets
-live 60 s, so the shell mints them right before this runs. Reaches the agent on
-localhost:8080 and the sandbox's terminal on KALI_TERMINAL_WS_URL. Prints PASS/FAIL
-lines and `RESULT_WS <pass> <fail>`; never a ticket, a key or terminal output.
+terminal ticket), LEGACY_ID and LEGACY_PID (that holder and its project), and KALI_WS
+(the holder's own sandbox's terminal, ws://<its container name>:8016, which resolves
+here because the agent is a guest of every sandbox's network; empty when the shell
+found no sandbox). Tickets live 60 s, so the shell mints them right before this runs.
+Reaches the agent on localhost:8080. Prints PASS/FAIL lines and `RESULT_WS <pass>
+<fail>`; never a ticket, a key or terminal output.
 """
 import asyncio
 import json
@@ -18,7 +20,6 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 AGENT_WS = "ws://localhost:8080"
 AGENT_HTTP = "http://localhost:8080"
-KALI_WS = os.environ.get("KALI_TERMINAL_WS_URL", "ws://kali-sandbox:8016")
 PASS = 0
 FAIL = 0
 
@@ -73,12 +74,16 @@ async def main():
     state = await refused(f"{AGENT_WS}/ws/cypherfix-triage?ticket={T_LEGACY}")  # noqa: F821
     check("a terminal ticket on /ws/cypherfix-triage is refused (1008)", state == ("closed", 1008), str(state))
 
-    # NF-04: the sandbox's terminal admits only the agent's bearer.
-    kali = f"{KALI_WS}/?user_id=rbac-probe&project_id=rbac-probe&session_id=rbac-probe"
-    state = await refused(kali)
-    check("raw upgrade to the sandbox terminal without a bearer -> 401", state == ("handshake", 401), str(state))
-    state = await refused(kali, {"Authorization": "Bearer rbac-not-the-token"})
-    check("raw upgrade with a wrong bearer -> 401", state == ("handshake", 401), str(state))
+    # NF-04: the sandbox's terminal admits only its instance's bearer, which only the agent holds.
+    if KALI_WS:  # noqa: F821
+        kali = f"{KALI_WS}/?user_id=rbac-probe&project_id=rbac-probe&session_id=rbac-probe"  # noqa: F821
+        state = await refused(kali)
+        check("raw upgrade to the sandbox terminal without a bearer -> 401", state == ("handshake", 401), str(state))
+        state = await refused(kali, {"Authorization": "Bearer rbac-not-the-token"})
+        check("raw upgrade with a wrong bearer -> 401", state == ("handshake", 401), str(state))
+    else:
+        check("raw upgrade to the sandbox terminal without a bearer -> 401", False, "the holder's sandbox did not run")
+        check("raw upgrade with a wrong bearer -> 401", False, "the holder's sandbox did not run")
 
     # The legacy holder's terminal: identity from the proxy, not the spoofed init frame.
     marker = f"RBACID={LEGACY_ID}:{LEGACY_PID}:END".encode()  # noqa: F821

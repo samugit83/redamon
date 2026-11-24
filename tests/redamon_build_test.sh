@@ -162,12 +162,16 @@ assert_contains "I1 last batch is the remainder" "$(sed -n 5p "$CALLS")" "LIMIT=
 
 # I2: update core INCLUDING webapp (the OOM case) + ordering + passthrough. An
 # explicit list longer than the budget is paced too, in the caller's order.
-reset_calls; compose_build build recon-orchestrator kali-sandbox agent webapp docker-broker
+# The list is cmd_update's rebuild_core after a compose change (no Kali service:
+# its image is a tool image now).
+reset_calls; compose_build build recon-orchestrator agent webapp docker-broker
 c1="$(sed -n 1p "$CALLS")"; c2="$(sed -n 2p "$CALLS")"
 assert_contains "I2 webapp built FIRST"      "$c1" "LIMIT=unset|compose build webapp"
-assert_contains "I2 batch 1 in caller order" "$c2" "LIMIT=2|compose build recon-orchestrator kali-sandbox"
-assert_contains "I2 batch 2 in caller order" "$(sed -n 3p "$CALLS")" "LIMIT=2|compose build agent webapp"
-assert_contains "I2 batch 3 is the remainder" "$(sed -n 4p "$CALLS")" "LIMIT=2|compose build docker-broker"
+assert_contains "I2 batch 1 in caller order" "$c2" "LIMIT=2|compose build recon-orchestrator agent"
+assert_contains "I2 batch 2 in caller order" "$(sed -n 3p "$CALLS")" "LIMIT=2|compose build webapp docker-broker"
+assert_not_contains "I2 no third batch"      "$(sed -n 4p "$CALLS")" "compose build"
+reset_calls; compose_build build recon-orchestrator agent webapp docker-broker plugin-runner
+assert_contains "I2b an odd list's last batch is the remainder" "$(sed -n 4p "$CALLS")" "LIMIT=2|compose build plugin-runner"
 
 # I3: update core WITHOUT webapp -> no isolation, single capped build (+ prune)
 reset_calls; compose_build build agent

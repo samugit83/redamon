@@ -110,8 +110,8 @@ it not to use the one tool it has. A short `NOTE FOR MCP CALLERS` after the
 catalogue says so, and names the tools the advice steered it away from.
 
 Served by the agent's `GET /kali/toolbox` (`require_master_internal_auth`). It
-never calls the kali-sandbox, holds no `MCP_AUTH_TOKEN`, and takes no
-`projectId`, so it answers even when the sandbox is down.
+never calls a sandbox, holds no sandbox token, and takes no `projectId`, so it
+answers even when no sandbox is running.
 
 ### 1.1 `kali_exec` IS `kali_shell`
 
@@ -172,6 +172,45 @@ promising a check.
 - A finished-but-failed job is readable, not a 404, and a run killed at the
   sandbox's 300s cap reports `status=failed` with the reason - never a clean
   exit 0.
+
+### 1.2 Whose sandbox, and one that is starting
+
+`kali_exec` runs in the Kali sandbox of the **token's owner**: the webapp sends
+the owner's user id with the command (`user_id` on `POST /kali/exec`,
+`webapp/src/lib/mcp/kaliClient.ts`), and the agent runs it in that person's own
+sandbox, never in another person's (a request naming nobody is refused, 400
+`invalid_user_id`; `agentic/api.py` `kali_exec`). Each person's sandbox is a
+container of its own, started on first need ([README.KALI_SANDBOX.md](README.KALI_SANDBOX.md)).
+
+- **Starting.** When the owner's sandbox is not running, the job is created at
+  once with `status: "starting"`: the command runs as soon as the sandbox is
+  ready (seconds; a first Metasploit command about 20 s more). Poll
+  `kali_output` with the `jobId`; do not send the command again.
+- **A sandbox that cannot be used** fails the job with an `errorCode`, and the
+  tool result carries a note on what to do (`SANDBOX_NOTES` in
+  `webapp/src/lib/mcp/kaliTools.ts`):
+
+  | `errorCode` | Meaning | What to do |
+  | --- | --- | --- |
+  | `ram` | the instance's memory is in use by scans and other sandboxes | retry in minutes |
+  | `hard` | the instance's limit on running sandboxes (`KALI_SANDBOX_MAX_CONCURRENT`) is reached | retry once another sandbox has stopped |
+  | `sandbox_refused` | the token's owner may not use the Kali sandbox on this project | retrying will not help |
+  | `sandbox_error` | the sandbox could not start | retry once, then tell a person |
+  | `sandbox_stopped` | the sandbox stopped while the command ran | the output is incomplete; run it again if needed |
+
+- **Files.** `/tmp` keeps what a command wrote between calls while the sandbox
+  runs. A sandbox left unused stops (after 20 minutes by default) and starts
+  again with an empty `/tmp`.
+
+**A token's project limits do not narrow the sandbox.** A token minted with
+"Include projects shared with me" off, or limited to a list of shared projects,
+reaches only those projects with its tools, `kali_exec` included. The command
+itself runs in the owner's sandbox, which mounts every project that person may
+run the agent on: their own projects plus every project shared with them for
+"Use AI agent" or "Exploitation & shells". A shell started through a token
+limited to the owner's own projects can therefore still read and write a shared
+project's folder under `/workspace`. This is an accepted residual; weigh it
+when granting `kali:exec`.
 
 ## 2. Turning it on
 
@@ -633,8 +672,8 @@ its user (step 4.10, SH-42). Every existing token keeps both at their defaults
   whom the webapp checks again and records as spending the owner's model, step
   5.10); `W+X` (Exploitation & shells) for `kali_exec`, `kali_output` and
   `kali_cancel` (with the `kali:exec` scope, which needs `agent:kali_exec`, and
-  the project's own sandbox opt-in; the sandbox is shared by every project on the
-  server, as the share dialog's notice says). The owner's alone:
+  the project's own sandbox opt-in; the command runs in the collaborator's own
+  sandbox, never the owner's, §1.2). The owner's alone:
   `attach_engagement_authorization` (and `update_project_scope`'s
   `authorization`) and capturing a project into a preset. A collaborator's settings, preset and scope changes are
   judged key by key as the project save judges them (step 5.1b). A level
@@ -938,12 +977,16 @@ can run any installed binary against any host the sandbox can reach, use
 pipelines and redirection freely, and read the sandbox's own process
 environment.
 
-That environment is not empty. At the time of writing the kali-sandbox
-container carries `SCANNER_API_KEY`, `MCP_AUTH_TOKEN` and `TUNNEL_AUTH_TOKEN`,
-so `env` is a credential read. `SCANNER_API_KEY` is the one to weigh: this route
-deliberately refuses `X-Scanner-Key` as an inbound credential precisely because
-the scanner tier is the least trusted, and an agent that can read it out of the
-sandbox has recovered what the route declined to accept.
+That environment is not empty. The command runs in the token owner's own
+sandbox, whose environment holds that sandbox's two random tokens
+(`MCP_AUTH_TOKEN` for its servers, `TUNNEL_AUTH_TOKEN` for its tunnel manager)
+and never a service key (`NEVER_IN_ENV` in `recon_orchestrator/sandbox_contract.py`
+lists `INTERNAL_API_KEY`, `SCANNER_API_KEY`, the database and Neo4j credentials,
+the instance's ngrok and chisel credentials, and more). What a shell there can
+also read, in `/proc`, is what that person's own agent runs pass to their tools
+while they run: their run credential and, on a project shared with them, the
+owner's WPScan, URLScan and ProjectDiscovery keys (the share dialog says so). No
+other person's runs execute in that container.
 
 Two consequences worth stating rather than leaving to inference:
 

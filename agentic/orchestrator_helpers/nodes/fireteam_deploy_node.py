@@ -28,6 +28,7 @@ from state import AgentState, FireteamMemberResult, ChainFindingExtract
 from orchestrator_helpers.config import get_identifiers, get_tenant_id
 from project_settings import get_setting, TOOL_MUTEX_GROUPS
 from tools import set_tenant_context, set_phase_context, set_graph_view_context
+import sandbox_router
 
 
 def _system_msg(content: str) -> SystemMessage:
@@ -645,12 +646,14 @@ async def fireteam_deploy_node(
                 # proxy, so execute_tool_node/execute_plan_node lookups emit
                 # FIRETEAM_TOOL_START/COMPLETE instead of TOOL_START/COMPLETE,
                 # scoping all events to the correct member panel in the UI.
+                # The member is a model context of its own: a sandbox restart is told to
+                # it as well as to the chat, not only to whoever calls first.
                 with scoped_member_streaming(
                     streaming_cb,
                     fireteam_id=fireteam_id_key,
                     member_id=member_id,
                     member_name=spec.get("name") or member_id,
-                ) as member_scoped_cb:
+                ) as member_scoped_cb, sandbox_router.note_unit(f"{fireteam_id_key}:{member_id}"):
                     # Track merged state + emit streaming events per yield.
                     # We call emit_streaming_events with the member-scoped proxy
                     # so _current_step / _decision from inner think/execute

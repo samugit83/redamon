@@ -28,6 +28,11 @@
   font-family: var(--font-mono);
 }
 
+.ownerLabel {
+  font-weight: var(--font-normal, 400);
+  color: #8b949e;
+}
+
 .dot {
   width: 8px;
   height: 8px;
@@ -44,6 +49,17 @@
   border-bottom: 1px solid rgba(245, 158, 11, 0.2);
   font-size: 11px;
   color: #fbbf24;
+  flex-shrink: 0;
+}
+
+.endedBanner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border-default);
+  font-size: 11px;
+  color: var(--text-secondary);
   flex-shrink: 0;
 }
 

@@ -272,7 +272,14 @@ resource. Each skipped page is counted by reason (`excluded`, `outOfScope`, `too
 
 **Fetching.** A page is first downloaded with a plain GET. When it gives too little text, or the resource asks for it
 every time, it is rendered in the sandbox browser, which cleans it in the page before the transfer (body selector,
-removed elements). The browser is never used for a resource with a login. Every plain request passes the address guard
+removed elements). The browser is the one in the Kali sandbox of the person the work is bound to (a job's owner, the
+account a synchronous route names, a chat run's person; an admin's act-as work uses that person's `act_as` sandbox),
+under a `tradecraft` lease held for the render (`SandboxBrowser` in `agentic/tradecraft/jobs.py`). No person, no
+browser: a page is never rendered in someone else's sandbox, and for work bound to nobody a page that needs the
+browser is not rendered (`browser_unavailable`). An account that may use Tradecraft but none of the Kali tools (it
+holds no `agent:chat`, `agent:kali_exec` or `platform:kali_terminal`) gets no sandbox, so its renders are refused
+(`browser_error`) and only what a plain GET reads is kept (nothing, for a resource set to always use the browser):
+an accepted limit that fails closed. The browser is never used for a resource with a login. Every plain request passes the address guard
 on every redirect hop, judged on the address it connects to; the browser runs a guard script that aborts navigations,
 resources, WebSockets and popups aimed at internal addresses and removes peer connections and service workers from every
 frame (its residual, a blind request on a redirect hop, is in

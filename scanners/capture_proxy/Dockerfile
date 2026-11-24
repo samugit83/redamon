@@ -6,7 +6,9 @@ FROM python:3.12-slim
 
 # Pinned deps (§15.10: the proxy parses untrusted target responses — keep patched).
 # mitmproxy for the capture proxy; psycopg3 (already the stack's PG driver) for ingest.
-RUN pip install --no-cache-dir "mitmproxy~=11.1" "psycopg[binary]~=3.2"
+# mitmproxy exactly: capture_addon.py relies on its internals (the pinned dial, the
+# close of a client socket 11.1.3 leaves open), so an upgrade is a tested change.
+RUN pip install --no-cache-dir "mitmproxy==11.1.3" "psycopg[binary]~=3.2"
 
 # Non-root, least-privilege user (§15.10). Spool + bodies volumes are the only
 # writable paths at runtime (compose mounts them; root fs is read-only).
@@ -44,8 +46,10 @@ USER capture
 
 # Default command is the capture proxy; the ingest service overrides it in compose.
 # --listen-port is provided at runtime; --set stream_large_bodies bounds memory.
-# connection_strategy=lazy defers the upstream connection until AFTER the request
-# hook, so the addon's DNS-rebinding IP pin (server_conn.address) actually applies.
+# connection_strategy=lazy defers the upstream connection until the addon has checked
+# the request (its headers, for a body large enough to stream), so a refused request
+# never opens one. rawtcp=false, as the orchestrator and compose start it: a non-HTTP
+# stream after a CONNECT is not relayed raw.
 CMD ["mitmdump", "--quiet", "--set", "connection_strategy=lazy", \
-     "--set", "stream_large_bodies=5m", \
+     "--set", "stream_large_bodies=5m", "--set", "rawtcp=false", \
      "--listen-port", "8888", "-s", "/app/capture_addon.py"]

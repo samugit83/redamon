@@ -61,18 +61,22 @@ no_match "no \${var,,} / \${var^^} case modification" \
 no_match "no &>> / ;;& / |& operators" \
          '&>>|;;&|\|&' redamon.sh
 
-echo "== the reverse-shell catcher stays a fixed 4444:4444 =="
+echo "== the reverse-shell catcher keeps one number on both sides =="
 # Not a bash matter, but the same class of silent break: msfconsole binds the
 # agent's LPORT inside the container and the payload advertises that same
-# number, so an env var on the host side of this mapping produces a shell that
-# never lands and never errors. See the comment above the publish.
-if grep -qE '^[[:space:]]*-[[:space:]]*"4444:4444"[[:space:]]*$' docker-compose.yml; then
-    pass "docker-compose.yml publishes 4444:4444 literally"
+# number, so a host side that differs produces a shell that never lands and never
+# errors. The catcher is each person's sandbox's MSF_REVERSE_PORT: its pool port,
+# which the orchestrator publishes as the same number on both sides, or an
+# unpublished 4444. No compose file publishes 4444 any more.
+for f in docker-compose.yml docker-compose.dev.yml docker-compose.gpu.yml docker-compose.plugins.yml \
+         tooling/deploy/single-host/compose/docker-compose.prod.yml; do
+    [[ -f "$f" ]] && no_match "$f publishes no 4444" '[:"]4444(/tcp|/udp)?"?[[:space:]]*(#.*)?$' "$f"
+done
+if grep -qF 'return {f"{port}/tcp": (bind_ip, port)}' recon_orchestrator/sandbox_contract.py; then
+    pass "a sandbox's pool port is published as the same number"
 else
-    fail "docker-compose.yml no longer publishes a literal 4444:4444"
+    fail "recon_orchestrator/sandbox_contract.py no longer publishes the pool port as port -> (bind_ip, port)"
 fi
-no_match "no env var on the 4444 publish" \
-         '\$\{[A-Za-z_][A-Za-z0-9_]*[^}]*\}:4444' docker-compose.yml
 
 echo "== the memory governor really runs under bash 3.2 =="
 if ! command -v docker >/dev/null 2>&1; then

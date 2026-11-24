@@ -15,6 +15,7 @@ import { CREDENTIALS_ERROR } from '@/lib/skillUploadDraft'
 import { DESCRIPTION_MAX_CHARS, MAX_SKILLS_PER_USER, NAME_MAX_CHARS, USER_SKILL_LIMIT_TEXT } from '@/lib/userSkills'
 import { postUserSkillsChanged, useUserSkillsChanged } from '@/lib/userSkillsChannel'
 import { nameCheckMessage, useSkillNameCheck } from './useSkillNameCheck'
+import { offerCommunityUpdates } from './communitySkillUpdates'
 import styles from './Settings.module.css'
 import own from './AgentSkillsTab.module.css'
 
@@ -277,15 +278,28 @@ export function AgentSkillsTab({ userId }: { userId: string | null | undefined }
       // Skills may have landed even when the answer cannot be read.
       postUserSkillsChanged({})
       const data = await resp.json().catch(() => null)
-      if (data) showAlert(importSummary(data))
-      else alertError(`Failed to read the import's answer (invalid_json · HTTP ${resp.status}). Check your skills list.`)
+      if (!data) {
+        alertError(`Failed to read the import's answer (invalid_json · HTTP ${resp.status}). Check your skills list.`)
+        return
+      }
+      const update = await offerCommunityUpdates(userId, data, showConfirm)
+      if (update) {
+        postUserSkillsChanged({})
+        if (!update.ok) {
+          alertError((await readApiError(update, 'Failed to update community skills')).message)
+          return
+        }
+        showAlert(importSummary(data) + updatedSummary(await update.json().catch(() => null)))
+        return
+      }
+      showAlert(importSummary(data))
     } catch (err) {
       console.error('Failed to import community skills:', err)
       alertError(toApiError(err, 'Failed to import community skills').message)
     } finally {
       setImporting(false)
     }
-  }, [userId, fetchSkills, showAlert, alertError])
+  }, [userId, fetchSkills, showAlert, alertError, showConfirm])
 
   const atLimit = skills.length >= MAX_SKILLS_PER_USER
   const upload = useSkillUpload({ userId, existingCount: skills.length })
@@ -488,9 +502,15 @@ export function AgentSkillsTab({ userId }: { userId: string | null | undefined }
 }
 
 /** The community import's answer, with each reason a skill was skipped said apart. */
+/** What the second call of an update said, appended to the import's summary. */
+export function updatedSummary(answer: unknown): string {
+  const n = answer && typeof answer === 'object' ? (answer as { updated?: unknown }).updated : undefined
+  return typeof n === 'number' ? ` Updated ${n} to the catalog's version.` : ' The update\'s answer could not be read: check your skills list.'
+}
+
 export function importSummary(data: {
   imported?: number
-  skippedBy?: Partial<Record<'duplicate' | 'limit' | 'fetchFailed' | 'tooLarge' | 'invalid' | 'saveFailed', number>>
+  skippedBy?: Partial<Record<'duplicate' | 'outdated' | 'limit' | 'fetchFailed' | 'tooLarge' | 'invalid' | 'saveFailed', number>>
   skipped?: number
   message?: string
 }): string {
@@ -498,6 +518,7 @@ export function importSummary(data: {
   const by = data.skippedBy ?? {}
   const parts = [
     by.duplicate ? `${by.duplicate} already in your skills` : '',
+    by.outdated ? `${by.outdated} older than the catalog's version (kept as you have them)` : '',
     by.limit ? `${by.limit} over your ${MAX_SKILLS_PER_USER}-skill limit` : '',
     by.tooLarge ? `${by.tooLarge} too large` : '',
     by.fetchFailed ? `${by.fetchFailed} could not be fetched` : '',

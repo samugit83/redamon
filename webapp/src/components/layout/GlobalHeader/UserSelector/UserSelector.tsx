@@ -8,6 +8,7 @@ import { useCan, useRbacFlags } from '@/hooks/useCan'
 import { useUsers } from '@/hooks/useUsers'
 import { useGuardedRouter, useNavigationGuard } from '@/context/NavigationGuardContext'
 import { useErrorToast } from '@/hooks/useErrorToast'
+import { isNoAnswer } from '@/lib/noAnswerRetry'
 import { StepUpModal } from '@/components/auth/StepUpModal'
 import { IdentityLabel, accountTypeFor, identityText, ACCOUNT_TYPE_LABEL } from '@/components/auth/IdentityLabel'
 import { opensOwnPasswordDialog } from '@/components/auth/ownPasswordDialog'
@@ -101,6 +102,9 @@ export function UserSelector() {
   }
 
   const displayUser = currentUser || authUser
+  // The session read got no answer even after its retries: a reload, which reads everything again,
+  // instead of a bare "No User" with nothing to do.
+  const unreachable = !displayUser && isNoAnswer(sessionError)
   const initials = displayUser
     ? displayUser.name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)
     : '?'
@@ -116,8 +120,10 @@ export function UserSelector() {
     <div className={styles.container} ref={dropdownRef}>
       <button
         className={styles.trigger}
-        onClick={() => setIsOpen(!isOpen)}
-        title="User Menu"
+        onClick={unreachable ? () => window.location.reload() : () => setIsOpen(!isOpen)}
+        title={unreachable && sessionError
+          ? `Could not reach the server: ${sessionError.message}. Retry reloads the page.`
+          : 'User Menu'}
         aria-label={displayType && displayUser
           ? `User menu: ${identityText({ name: displayUser.name, email: displayUser.email ?? '', accountType: displayType })}`
           : undefined}
@@ -126,14 +132,14 @@ export function UserSelector() {
           <span>{initials}</span>
         </div>
         <span className={styles.userName}>
-          {displayUser?.name || 'No User'}
+          {displayUser?.name || (unreachable ? 'Server unreachable · Retry' : 'No User')}
         </span>
         {displayType && (
           <span className={`${styles.roleBadge} ${displayType === 'member' ? styles.roleBadgeStandard : styles.roleBadgeAdmin}`}>
             {ACCOUNT_TYPE_LABEL[displayType]}
           </span>
         )}
-        <ChevronDown size={14} className={isOpen ? styles.iconOpen : ''} />
+        {!unreachable && <ChevronDown size={14} className={isOpen ? styles.iconOpen : ''} />}
       </button>
 
       {isOpen && (

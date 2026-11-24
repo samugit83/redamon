@@ -650,7 +650,8 @@ def merge_group_hosts(recon_result, target_info: dict, root_domain: str,
     Split out of run_domain_recon so it can be tested as the thing the pipeline
     calls; inlined, it was only reachable through the whole 750-line phase.
     """
-    from recon.main_recon_modules.ip_filter import is_never_scannable_ip, is_non_routable_ip
+    from recon.main_recon_modules.ip_filter import (
+        SANDBOX_POOL_NETWORK, in_sandbox_pool, is_never_scannable_ip, is_non_routable_ip)
 
     discovered_subs = []
     if recon_result:
@@ -714,27 +715,45 @@ def merge_group_hosts(recon_result, target_info: dict, root_domain: str,
     # in `resolved` and costs nothing.
     #
     # Operator-supplied hosts are NOT filtered: if someone typed it, scanning it
-    # is their decision. This drops only what discovery volunteered.
+    # is their decision. This drops only what discovery volunteered, except the
+    # Kali sandbox pool: an address there is another person's sandbox, which no
+    # one may make their target by typing a name that points at it.
     listed = set(target_info.get("full_subdomains") or [])
     kept, dropped = [], []
     for host in discovered_subs:
-        if host == root_domain or host in listed:
-            kept.append(host)
-            continue
         addrs = ((resolved.get(host) or {}).get("ips") or {})
         flat = list(addrs.get("ipv4") or []) + list(addrs.get("ipv6") or [])
+        if host == root_domain:
+            apex = (discovered_dns.get("domain") or {}).get("ips") or {}
+            flat += list(apex.get("ipv4") or []) + list(apex.get("ipv6") or [])
+        if host == root_domain or host in listed:
+            if any(in_sandbox_pool(a) for a in flat):
+                dropped.append((host, flat))
+            else:
+                kept.append(host)
+            continue
         if any(is_never_scannable_ip(a) for a in flat):
             dropped.append((host, flat))
         else:
             kept.append(host)
     if dropped:
         for host, flat in dropped:
-            print(f"[!][Scope] Dropped discovered host {host} -> {flat}: "
-                  f"loopback/link-local/multicast is never a scan target")
+            if any(in_sandbox_pool(a) for a in flat):
+                print(f"[!][Scope] Dropped host {host} -> {flat}: the Kali sandbox address pool "
+                      f"({SANDBOX_POOL_NETWORK}) is never a scan target")
+            else:
+                print(f"[!][Scope] Dropped discovered host {host} -> {flat}: "
+                      f"loopback/link-local/multicast is never a scan target")
         discovered_subs = kept
         for host, _ in dropped:
             resolved.pop(host, None)
         discovered_dns["subdomains"] = resolved
+        if any(host == root_domain for host, _ in dropped):
+            # As with Include Root off: a root left in dns.domain, or marked
+            # included without an address, still reaches the tools that resolve
+            # the name themselves.
+            include_root = False
+            discovered_dns["domain"] = {}
 
     # D2 on the addresses: the RoE checks above are by name, and a discovered
     # name in an excluded range would be written as a Subdomain with
@@ -1507,6 +1526,21 @@ def _run_phase_a_fan_out(tools: dict, combined_result: dict, settings: dict,
                 save_recon_file(combined_result, output_file)
 
 
+def _drop_sandbox_pool_targets(ips: list) -> list:
+    """IP mode's expanded targets without the Kali sandbox pool, order kept.
+
+    The operator's own list is otherwise scanned as typed, private ranges
+    included; a pool address is another person's Kali sandbox, which the host
+    network this scan runs on reaches, so it is dropped whoever typed it.
+    """
+    from recon.main_recon_modules.ip_filter import SANDBOX_POOL_NETWORK, in_sandbox_pool
+    kept = [ip for ip in ips if not in_sandbox_pool(ip)]
+    if len(kept) != len(ips):
+        print(f"[!][Scope] Dropped {len(ips) - len(kept)} target IP(s) in the Kali sandbox "
+              f"address pool ({SANDBOX_POOL_NETWORK}): never a scan target")
+    return kept
+
+
 def run_ip_recon(target_ips: list, settings: dict) -> dict:
     """
     Run IP-based reconnaissance: expand CIDRs, reverse DNS, IP WHOIS.
@@ -1565,6 +1599,7 @@ def run_ip_recon(target_ips: list, settings: dict) -> dict:
 
     # RoE: filter out excluded hosts (supports exact match + CIDR)
     expanded_ips = _filter_roe_excluded(expanded_ips, settings, label="IP")
+    expanded_ips = _drop_sandbox_pool_targets(expanded_ips)
 
     # record_filter's passive search of the filter domains asks third-party
     # indexes only, never a target, so it runs beside PTR, WHOIS and the scans.

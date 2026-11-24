@@ -1,3 +1,14 @@
+# Standalone use only: one container from the Kali image, for working on the MCP
+# servers outside RedAmon (docs/readmes/README.MCP.md). RedAmon never runs this file:
+# its recon orchestrator starts one sandbox per person from the same image, on that
+# person's own network, with its own tokens and no published port
+# (docs/readmes/README.KALI_SANDBOX.md).
+#
+# Its ports are published on 127.0.0.1 only. The servers refuse every call without a
+# bearer (mcp/servers/_auth_middleware.py): export MCP_AUTH_TOKEN before `up`.
+# The container is not named redamon-kali, which redamon.sh removes as the old
+# shared container, and it sees only its own output folder, never mcp/output/users/
+# (each person's sandbox output).
 version: '3.8'
 
 services:
@@ -6,7 +17,7 @@ services:
     build:
       context: .
       dockerfile: kali-sandbox/Dockerfile
-    container_name: redamon-kali
+    container_name: redamon-kali-standalone
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -17,27 +28,27 @@ services:
     cap_add:
       - NET_ADMIN
       - NET_RAW
-      - SYS_PTRACE
     # Security options for Metasploit
     security_opt:
       - seccomp:unconfined
     ports:
-      - "8000:8000"  # network_recon MCP server (curl + naabu)
-      - "8002:8002"  # nuclei MCP server
-      - "8003:8003"  # metasploit MCP server
-      - "8004:8004"  # nmap MCP server
-      - "8005:8005"  # playwright MCP server
-      - "8013:8013"  # metasploit progress HTTP endpoint
-      - "4444:4444"  # Metasploit reverse shell listener
+      - "127.0.0.1:8000:8000"  # network_recon MCP server (curl + naabu)
+      - "127.0.0.1:8002:8002"  # nuclei MCP server
+      - "127.0.0.1:8003:8003"  # metasploit MCP server
+      - "127.0.0.1:8004:8004"  # nmap MCP server
+      - "127.0.0.1:8005:8005"  # playwright MCP server
+      - "127.0.0.1:8013:8013"  # metasploit progress HTTP endpoint
+      - "127.0.0.1:4444:4444"  # Metasploit reverse shell listener (local targets only)
     volumes:
-      # Mount servers directory for development (hot reload)
-      - ./servers:/opt/mcp_servers
-      # Output directory for scan results
-      - ./output:/opt/output
+      # Read-only is enough for hot reload: the servers read what you edit on the host.
+      - ./servers:/opt/mcp_servers:ro
+      - ./output/standalone:/opt/output
       # Nuclei templates (optional, for custom templates)
       - ./nuclei-templates:/opt/nuclei-templates:ro
     environment:
       - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN:-}
       # MCP settings
       - MCP_TRANSPORT=sse
       - MCP_HOST=0.0.0.0
@@ -60,9 +71,7 @@ services:
       retries: 3
       start_period: 180s
 
+# No fixed subnet: the main stack's pentest network already holds 172.28.0.0/16.
 networks:
   pentest-net:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.28.0.0/16

@@ -1,0 +1,45 @@
+[
+  {
+    "note": "Scope guardrail: allow the placeholder project.",
+    "match": "for a penetration testing scan:",
+    "repeat": true,
+    "content": { "allowed": true, "reason": "Scripted stub: placeholder project, local lab only." }
+  },
+  {
+    "note": "Intent router: informational, where kali_shell is allowed.",
+    "match": "You are classifying a penetration testing request",
+    "repeat": true,
+    "content": {
+      "required_phase": "informational",
+      "attack_path_type": "cve_exploit",
+      "confidence": 0.9,
+      "reasoning": "Scripted stub: start in the informational phase."
+    }
+  },
+  {
+    "note": "First think turn: write a file into the shared project's folder (the owner must see it in the workspace browser), leave a marker in the sandbox's /tmp and list the project folders the sandbox mounts.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: write a file in the shared project and list the mounted folders.",
+      "reasoning": "Scripted turn of per-user-sandbox-shared-project.json: one kali_shell call.",
+      "action": "use_tool",
+      "tool_name": "kali_shell",
+      "tool_args": {
+        "command": "echo G1E2E-{{NONCE}} > /workspace/{{PROJECT_ID}}/g1e2e-{{NONCE}}.txt && echo G1E2E-{{NONCE}} > /tmp/g1e2e-{{NONCE}} && echo G1E2E-OUT-{{NONCE}} && echo LS-BEGIN && ls -1 /workspace && echo LS-END"
+      },
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Think turn after the tool output: end the run.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: the file is written.",
+      "reasoning": "Scripted turn of per-user-sandbox-shared-project.json: nothing left to do.",
+      "action": "complete",
+      "completion_reason": "Scripted stub run finished after writing the shared file.",
+      "output_analysis": { "interpretation": "Scripted stub: the output lists the sandbox's project folders." },
+      "updated_todo_list": []
+    }
+  }
+]

@@ -11,7 +11,7 @@ from langchain_core.language_models import BaseChatModel
 
 from project_settings import load_project_settings
 from agent_context import set_llm_context
-from orchestrator_helpers.llm_url_guard import validate_llm_base_url
+from orchestrator_helpers.llm_url_guard import llm_guarded_clients, validate_llm_base_url
 from llm_builder import (
     INSTANCE_MODEL_PREFIX,
     NON_CHAT_PROVIDER_TYPES,
@@ -173,6 +173,18 @@ def parse_model_provider(model_name: str) -> tuple[str, str]:
         return ("openai", model_name)
 
 
+def _guard_anthropic_http(llm) -> None:
+    """A custom Anthropic endpoint's clients follow no redirect and judge the peer of every
+    connection (llm_url_guard). ChatAnthropic builds its httpx clients itself, in cached
+    properties with no parameter for them, so these take their place before first use."""
+    import anthropic
+
+    sync_http, async_http = llm_guarded_clients()
+    params = llm._client_params
+    llm.__dict__["_client"] = anthropic.Client(**params, http_client=sync_http)
+    llm.__dict__["_async_client"] = anthropic.AsyncClient(**params, http_client=async_http)
+
+
 def setup_llm(
     model_name: str,
     *,
@@ -261,6 +273,7 @@ def setup_llm(
             if _anthropic_sends_temperature(anth_model):
                 anth_kwargs["temperature"] = custom_llm_config.get("temperature", 0)
             llm = ChatAnthropic(**anth_kwargs)
+            _guard_anthropic_http(llm)
         elif ptype == "bedrock":
             from langchain_aws import ChatBedrockConverse
             bedrock_kwargs = dict(
@@ -313,10 +326,9 @@ def setup_llm(
             timeout = custom_llm_config.get("timeout")
             if timeout:
                 kwargs["timeout"] = float(timeout)
-            if not ssl_verify:
-                import httpx
-                kwargs["http_client"] = httpx.Client(verify=False)
-                kwargs["http_async_client"] = httpx.AsyncClient(verify=False)
+            # The baseUrl check above judges one DNS answer: these clients follow no
+            # redirect and judge the peer of every connection (llm_url_guard).
+            kwargs["http_client"], kwargs["http_async_client"] = llm_guarded_clients(verify=bool(ssl_verify))
             llm = ChatOpenAI(**kwargs)
 
     elif provider == "openai_compat":

@@ -73,13 +73,26 @@ class ResolutionTests(unittest.TestCase):
         self.assertNotIn(MASTER, repr(cfg))
         self.assertIn("[rbac] mcp token_env_var refused server=evil", "\n".join(logs.output))
 
-    def test_the_system_servers_still_read_their_token(self):
+    def test_a_system_server_id_never_resolves_it_either(self):
+        """No server reads the agent's environment for its bearer: a system id naming
+        MCP_AUTH_TOKEN (the shared container's, still in an old .env) gets no header."""
+        for sid in sorted(reg.SYSTEM_SERVER_IDS):
+            with self.subTest(server=sid):
+                srv = reg.MCPServer.model_validate(dict(_user_server(token_env_var="MCP_AUTH_TOKEN"), id=sid))
+                with self.assertLogs("mcp_registry", "WARNING") as logs:
+                    cfg, _warnings = reg.to_mcp_servers_dict([srv])
+                self.assertNotIn("sys-token", repr(cfg))
+                self.assertNotIn("Authorization", (cfg.get(sid) or {}).get("headers") or {})
+                self.assertIn(f"[rbac] mcp token_env_var refused server={sid}", "\n".join(logs.output))
+
+    def test_the_system_servers_carry_their_instances_token_not_an_env_var(self):
         from tools import _build_system_mcp_servers
-        cfg, _ = reg.to_mcp_servers_dict(_build_system_mcp_servers())
-        self.assertTrue(cfg)
+        cfg, _ = reg.to_mcp_servers_dict(_build_system_mcp_servers("redamon-kali-x-a1b2c3", "instance-token"))
+        self.assertEqual(len(cfg), 5)
         for sid, entry in cfg.items():
             with self.subTest(server=sid):
-                self.assertEqual(entry["headers"]["Authorization"], "Bearer sys-token")
+                self.assertEqual(entry["headers"]["Authorization"], "Bearer instance-token")
+        self.assertNotIn("sys-token", repr(cfg))
 
 
 class McpTestRouteTests(unittest.TestCase):

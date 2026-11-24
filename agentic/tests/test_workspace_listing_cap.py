@@ -52,8 +52,11 @@ class ListingCap(unittest.TestCase):
 
         def counting(path, *a, **kw):
             # Direct children only: each listed folder is also probed for its
-            # .import.json, which is a stat one level down.
-            if os.path.dirname(str(path)) == str(self.big):
+            # .import.json, which is a stat one level down. The listing stats a
+            # child by name, relative to the folder's own descriptor.
+            if kw.get("dir_fd") is not None and "/" not in str(path):
+                statted.append(str(path))
+            elif os.path.dirname(str(path)) == str(self.big):
                 statted.append(os.path.basename(str(path)))
             return real_stat(path, *a, **kw)
 

@@ -2,12 +2,17 @@ import { NextRequest, NextResponse } from 'next/server'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { requirePermission } from '@/lib/authz/guards'
 import { resolveSessionsViewer } from '@/lib/authz/agentSessionsAccess'
-import { agentErrorResponse, callAgent } from '../../../agentProxy'
-import { auditDrive, driveRan, findDriveTarget } from '../../../sessions/sessionDrive'
+import { beginDriveAudit, drivePath, driveSandbox, findDriveTarget, forwardAuditedDrive } from '../../../sessions/sessionDrive'
 
 const FAILED = 'Failed to kill job'
 
-/** A background job (a handler) belongs to no project: only holders of every session see and kill it. */
+/**
+ * A background job (a handler) belongs to no project, but to the sandbox it runs in (D-D): the person
+ * stops the jobs of their own sandbox in the view they work in (an admin acting as a member: that
+ * member's act_as sandbox), and holders of every session stop any. It is the pair (`?sandbox=`
+ * instance, number), as a session is (sessionDrive.ts), forwarded with the person and view its row
+ * names; anything outside the caller's view is 404.
+ */
 export const POST = withRouteErrors(FAILED, async (
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -18,12 +23,10 @@ export const POST = withRouteErrors(FAILED, async (
   const viewer = await resolveSessionsViewer()
   if (viewer instanceof NextResponse) return viewer
   const { id } = await params
-  const target = await findDriveTarget(viewer, 'job', id, FAILED)
+  const sandbox = driveSandbox(request)
+  if (sandbox instanceof NextResponse) return sandbox
+  const target = await findDriveTarget(viewer, 'job', id, sandbox, FAILED)
   if (target instanceof NextResponse) return target
-  const call = await callAgent(`/jobs/${encodeURIComponent(id)}/kill`, { method: 'POST' }, FAILED)
-  if (!call.ok) return call.response
-  if (!call.res.ok) return agentErrorResponse(call.res, FAILED)
-  const body = await call.res.json()
-  if (driveRan(body)) await auditDrive('agent.job_kill', 'job', id, viewer, target)
-  return NextResponse.json(body)
+  const audit = await beginDriveAudit('agent.job_kill', 'job', id, sandbox, viewer, target)
+  return forwardAuditedDrive(audit, drivePath('job', id, 'kill', sandbox, target), { method: 'POST' }, FAILED)
 })

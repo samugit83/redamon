@@ -2,9 +2,11 @@ services:
   pbtarget:
     build: .
     container_name: pbtarget
-    # Join the pentest network so the kali-sandbox (agent tools) and the
-    # capture proxy can both reach it by name at http://pbtarget:5000/.
-    # Also published on host loopback for manual curling.
+    # Join the pentest network so the capture proxy reaches it by name at
+    # http://pbtarget:5000/. The agent's tools run in a person's own Kali
+    # sandbox, which reaches it only once the lab is connected to that
+    # sandbox's network (../README.md). Also published on host loopback for
+    # manual curling.
     ports:
       - "127.0.0.1:9009:5000"
     networks:

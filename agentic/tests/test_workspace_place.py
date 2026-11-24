@@ -195,13 +195,13 @@ class CancelAndCrash(PlaceBase):
         real_rename = os.rename
         calls = []
 
-        def dead_after_first(src, dst):
+        def dead_after_first(src, dst, **kw):
             # The process dies after the first rename: nothing else runs,
             # not even the in-process rollback.
             calls.append(src)
             if len(calls) >= 2:
                 raise _Crash()
-            return real_rename(src, dst)
+            return real_rename(src, dst, **kw)
 
         with mock.patch("workspace_import.place.os.rename", dead_after_first):
             with self.assertRaises(_Crash):
@@ -217,11 +217,11 @@ class CancelAndCrash(PlaceBase):
         real_rename = os.rename
         calls = []
 
-        def fail_second(src, dst):
+        def fail_second(src, dst, **kw):
             calls.append(src)
             if len(calls) == 2:
                 raise OSError(28, "No space left on device")
-            return real_rename(src, dst)
+            return real_rename(src, dst, **kw)
 
         with mock.patch("workspace_import.place.os.rename", fail_second):
             with self.assertRaises(OSError):

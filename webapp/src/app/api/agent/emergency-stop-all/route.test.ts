@@ -8,7 +8,9 @@
  * and each press writes `agent.emergency_stop` (scope, count). GET tells the toolbar
  * which scope a press would have, without counting as a use.
  *
- * The session and the account read are mocked; sharedToolAccess is the real one.
+ * The session and the account read are mocked; sharedToolAccess is the real one. The Kali
+ * sandboxes stop too (group 1, D22): every one for the global scope, the presser's own otherwise,
+ * through the lifecycle hook (a double; nothing stopped unless a test says otherwise).
  *
  * Run: npx vitest run src/app/api/agent/emergency-stop-all/route.test.ts
  *
@@ -18,13 +20,17 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { NextResponse } from 'next/server'
 
 const mockRequireSession = vi.fn()
+const mockIdentity = vi.fn()
 const mockLoadPrincipal = vi.fn()
 const mockWriteAudit = vi.fn()
 const mockCutoff = vi.fn()
 const mockAgentFetch = vi.fn()
+const mockSandboxStop = vi.fn()
+const order: string[] = []
 
 vi.mock('@/lib/session', () => ({
   requireSession: (...a: unknown[]) => mockRequireSession(...a),
+  authzIdentityOf: (...a: unknown[]) => mockIdentity(...a),
 }))
 vi.mock('@/lib/authz/principal', () => ({
   loadPrincipal: (...a: unknown[]) => mockLoadPrincipal(...a),
@@ -37,7 +43,10 @@ vi.mock('@/lib/prisma', () => ({
 }))
 vi.mock('@/lib/agentFetch', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/agentFetch')>()),
-  agentFetch: (...a: unknown[]) => mockAgentFetch(...a),
+  agentFetch: (...a: unknown[]) => { order.push('agent'); return mockAgentFetch(...a) },
+}))
+vi.mock('@/lib/sandbox/lifecycle', () => ({
+  sandboxEmergencyStop: (...a: unknown[]) => { order.push('sandboxes'); return mockSandboxStop(...a) },
 }))
 
 import { GET, POST } from './route'
@@ -79,10 +88,13 @@ const compatRows = () => mockWriteAudit.mock.calls.map(c => c[0]).filter(e => e.
 let warn: ReturnType<typeof vi.spyOn>
 beforeEach(() => {
   mockRequireSession.mockReset()
+  mockIdentity.mockReset().mockResolvedValue({ actingAs: null })
   mockLoadPrincipal.mockReset()
   mockWriteAudit.mockReset().mockResolvedValue(undefined)
   mockCutoff.mockReset().mockResolvedValue({ createdAt: CUTOFF })
   mockAgentFetch.mockReset()
+  mockSandboxStop.mockReset().mockResolvedValue({ stopped: 0 })
+  order.length = 0
   resetSharedToolsForTests()
   setFlagsForTests({})
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -100,11 +112,11 @@ describe('POST /api/agent/emergency-stop-all', () => {
     const res = await post()
 
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ scope: 'own', stopped: 2 })
-    expect(agentCall()).toEqual({ path: '/agent-sessions/stop-for', method: 'POST', body: { user_id: 'member-1' } })
+    expect(await res.json()).toEqual({ scope: 'own', stopped: 2, sandboxes: { stopped: 0 } })
+    expect(agentCall()).toEqual({ path: '/agent-sessions/stop-for', method: 'POST', body: { user_id: 'member-1', include_acting: true } })
     expect(stopRows()).toEqual([{
       actorId: 'member-1', action: 'agent.emergency_stop', targetType: 'user', targetId: 'member-1',
-      after: { scope: 'own', count: 2, via: null }, source: 'ui',
+      after: { scope: 'own', count: 2, via: null, sandboxes: { stopped: 0 } }, source: 'ui',
     }])
   })
 
@@ -114,11 +126,11 @@ describe('POST /api/agent/emergency-stop-all', () => {
 
     const res = await post()
 
-    expect(await res.json()).toEqual({ scope: 'all', stopped: 5 })
+    expect(await res.json()).toEqual({ scope: 'all', stopped: 5, sandboxes: { stopped: 0 } })
     expect(agentCall()).toEqual({ path: '/emergency-stop-all', method: 'POST', body: undefined })
     expect(stopRows()).toEqual([{
       actorId: 'admin-1', action: 'agent.emergency_stop', targetType: 'instance', targetId: null,
-      after: { scope: 'all', count: 5, via: 'admin' }, source: 'ui',
+      after: { scope: 'all', count: 5, via: 'admin', sandboxes: { stopped: 0 } }, source: 'ui',
     }])
   })
 
@@ -129,9 +141,9 @@ describe('POST /api/agent/emergency-stop-all', () => {
 
     const res = await post()
 
-    expect(await res.json()).toEqual({ scope: 'all', stopped: 1 })
+    expect(await res.json()).toEqual({ scope: 'all', stopped: 1, sandboxes: { stopped: 0 } })
     expect(agentCall().path).toBe('/emergency-stop-all')
-    expect(stopRows()[0].after).toEqual({ scope: 'all', count: 1, via: 'compat' })
+    expect(stopRows()[0].after).toEqual({ scope: 'all', count: 1, via: 'compat', sandboxes: { stopped: 0 } })
     expect(compatRows()).toEqual([expect.objectContaining({ actorId: 'old-member', targetId: 'emergency_stop_all' })])
   })
 
@@ -140,7 +152,7 @@ describe('POST /api/agent/emergency-stop-all', () => {
     signedIn(principal('new-member', 'standard', [], AFTER_CUTOFF))
     agentAnswers({ stopped: 0 })
 
-    expect(await (await post()).json()).toEqual({ scope: 'own', stopped: 0 })
+    expect(await (await post()).json()).toEqual({ scope: 'own', stopped: 0, sandboxes: { stopped: 0 } })
     expect(agentCall().path).toBe('/agent-sessions/stop-for')
     expect(compatRows()).toEqual([])
   })
@@ -150,7 +162,7 @@ describe('POST /api/agent/emergency-stop-all', () => {
     agentAnswers({ stopped: 0 })
 
     expect((await (await post()).json()).scope).toBe('own')
-    expect(agentCall().body).toEqual({ user_id: 'holder' })
+    expect(agentCall().body).toEqual({ user_id: 'holder', include_acting: true })
   })
 
   test('the signed-in account is judged, read from the database', async () => {
@@ -214,6 +226,129 @@ describe('POST /api/agent/emergency-stop-all', () => {
     expect(res.ok).toBe(false)
     expect((await res.json()).upstreamStatus).toBe(401)
     expect(stopRows()).toEqual([])
+  })
+})
+
+describe('the Kali sandboxes stop too (group 1, D22)', () => {
+  const nobody = { onBehalfOfUserId: null, actorEmail: null }
+
+  test('admin → every sandbox, with the presser, after the agent stopped the runs in them', async () => {
+    signedIn(principal('admin-1', 'admin'))
+    agentAnswers({ stopped: 5 })
+    mockSandboxStop.mockResolvedValue({ stopped: 3 })
+
+    const res = await post()
+
+    expect(await res.json()).toEqual({ scope: 'all', stopped: 5, sandboxes: { stopped: 3 } })
+    expect(mockSandboxStop).toHaveBeenCalledTimes(1)
+    expect(mockSandboxStop).toHaveBeenCalledWith({ scope: 'all' }, { actorId: 'admin-1', ...nobody })
+    expect(order).toEqual(['agent', 'sandboxes'])
+    expect(stopRows()[0].after).toEqual({ scope: 'all', count: 5, via: 'admin', sandboxes: { stopped: 3 } })
+  })
+
+  test('member → only their own sandboxes (both views), never anyone else\'s', async () => {
+    signedIn(principal('member-1', 'standard'))
+    agentAnswers({ stopped: 2 })
+    mockSandboxStop.mockResolvedValue({ stopped: 1 })
+
+    expect(await (await post()).json()).toEqual({ scope: 'own', stopped: 2, sandboxes: { stopped: 1 } })
+    expect(mockSandboxStop).toHaveBeenCalledWith({ scope: 'own', userId: 'member-1', actingFor: null }, { actorId: 'member-1', ...nobody })
+  })
+
+  test('acting as someone without the global stop: also the act_as sandbox of that work (G-18)', async () => {
+    // Who may act as whom is the session's to decide (authzIdentityOf); the scope is own here.
+    signedIn(principal('presser', 'standard'))
+    mockIdentity.mockResolvedValue({ actingAs: { id: 'member-1' } })
+    agentAnswers({ stopped: 1 })
+    mockSandboxStop.mockResolvedValue({ stopped: 1 })
+
+    expect(await (await post()).json()).toEqual({ scope: 'own', stopped: 1, sandboxes: { stopped: 1 } })
+    expect(agentCall().body).toEqual({ user_id: 'presser', include_acting: true })
+    expect(mockSandboxStop).toHaveBeenCalledWith({ scope: 'own', userId: 'presser', actingFor: 'member-1' }, { actorId: 'presser', ...nobody })
+  })
+
+  test('an admin holding the global stop stops everything: acting changes nothing', async () => {
+    signedIn(principal('admin-1', 'admin'))
+    mockIdentity.mockResolvedValue({ actingAs: { id: 'member-1' } })
+    agentAnswers({ stopped: 1 })
+
+    await post()
+
+    expect(mockSandboxStop).toHaveBeenCalledWith({ scope: 'all' }, { actorId: 'admin-1', ...nobody })
+    expect(mockIdentity).not.toHaveBeenCalled()
+  })
+
+  test('a member not acting as anyone: no act_as view is stopped', async () => {
+    signedIn(principal('member-1', 'standard'))
+    agentAnswers({ stopped: 0 })
+
+    await post()
+
+    expect(mockSandboxStop.mock.calls[0][0]).toEqual({ scope: 'own', userId: 'member-1', actingFor: null })
+  })
+
+  test('asking the scope never reads who the presser acts as', async () => {
+    signedIn(principal('member-1', 'standard'))
+    await get()
+    expect(mockIdentity).not.toHaveBeenCalled()
+  })
+
+  test('no sandbox running: the answer still says none stopped', async () => {
+    signedIn(principal('admin-1', 'admin'))
+    agentAnswers({ stopped: 5 })
+
+    expect(await (await post()).json()).toEqual({ scope: 'all', stopped: 5, sandboxes: { stopped: 0 } })
+    expect(mockSandboxStop).toHaveBeenCalledTimes(1)
+  })
+
+  test('a sandbox stop that failed is in the answer, by its code', async () => {
+    signedIn(principal('admin-1', 'admin'))
+    agentAnswers({ stopped: 0 })
+    mockSandboxStop.mockResolvedValue({ error: 'orchestrator_unreachable', stopped: 0 })
+
+    expect(await (await post()).json()).toEqual({ scope: 'all', stopped: 0, sandboxes: { error: 'orchestrator_unreachable' } })
+    // The press's audit row says the sandboxes were not stopped, not only that runs were.
+    expect(stopRows()[0].after).toEqual({ scope: 'all', count: 0, via: 'admin', sandboxes: { error: 'orchestrator_unreachable' } })
+  })
+
+  test('an agent that cannot be reached does not keep the sandboxes running (the answer stays the agent\'s)', async () => {
+    signedIn(principal('admin-1', 'admin'))
+    mockAgentFetch.mockRejectedValue(new AgentUnreachableError(Object.assign(new Error('x'), { code: 'ECONNREFUSED' })))
+    mockSandboxStop.mockResolvedValue({ stopped: 2 })
+
+    const res = await post()
+
+    expect(res.status).toBe(503)
+    expect(mockSandboxStop).toHaveBeenCalledWith({ scope: 'all' }, { actorId: 'admin-1', ...nobody })
+    // The agent's failure is the answer, and it still says what happened to the sandboxes.
+    const body = await res.json()
+    expect(body.code).toBe('agent_unreachable')
+    expect(body.sandboxes).toEqual({ stopped: 2 })
+  })
+
+  test('an agent refusal still names the sandbox outcome, a failed one included', async () => {
+    signedIn(principal('member-1', 'standard'))
+    agentAnswers({ detail: 'Unauthorized' }, 401)
+    mockSandboxStop.mockResolvedValue({ error: 'orchestrator_timeout', stopped: 0 })
+
+    const res = await post()
+
+    expect(res.ok).toBe(false)
+    const body = await res.json()
+    expect(body.upstreamStatus).toBe(401)
+    expect(body.sandboxes).toEqual({ error: 'orchestrator_timeout' })
+    expect(stopRows()).toEqual([])
+  })
+
+  test('no session, an account gone or a failed account read stop no sandbox; asking the scope stops none', async () => {
+    mockRequireSession.mockResolvedValue(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+    await post()
+    mockRequireSession.mockResolvedValue({ userId: 'gone', role: 'standard' })
+    mockLoadPrincipal.mockResolvedValue(null)
+    await post()
+    signedIn(principal('admin-1', 'admin'))
+    await get()
+    expect(mockSandboxStop).not.toHaveBeenCalled()
   })
 })
 

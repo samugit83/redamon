@@ -7,7 +7,8 @@
 #
 # Docker-bypass caveat: Docker publishes ports via its own iptables chains and can
 # bypass ufw. The loopback re-binds in the prod overlay are the REAL control for
-# 3000/8090/4444; ufw here is belt-and-braces + the SSH lockdown.
+# 3000/8090, and the orchestrator binds each Kali sandbox's optional pool port on
+# 127.0.0.1; ufw here is belt-and-braces + the SSH lockdown.
 
 # Admit the MCP client CIDRs to the app port, on top of the operator CIDRs.
 #
@@ -95,12 +96,13 @@ setup_firewall() {
     fi
   fi
 
-  # 4444 reverse-shell catcher stays CLOSED at the firewall here. The container binds it to
-  # 127.0.0.1 (prod overlay), so it is not externally reachable. Per-engagement exposure is
-  # handled by `./deploy.sh revshell-open`, which starts a host-side socat forwarder (a real
-  # INPUT-chain listener ufw can scope) and opens 4444 to REVSHELL_TARGET_CIDRS, then
-  # `revshell-close` tears it back down. See the README "Reverse shell" section.
-  info "4444 stays closed here; use './deploy.sh revshell-open' per engagement"
+  # The reverse-shell ports stay CLOSED at the firewall here. Each Kali sandbox publishes at
+  # most one port of KALI_SANDBOX_PORT_POOL, on 127.0.0.1 (deploy.sh refuses any other bind
+  # address), so none is externally reachable. Per-engagement exposure is handled by
+  # `./deploy.sh revshell-open`, which starts one host-side socat forwarder per pool port (a
+  # real INPUT-chain listener ufw can scope) and opens the range to REVSHELL_TARGET_CIDRS,
+  # then `revshell-close` tears them back down. See the README "Reverse shells" bullet.
+  info "the reverse-shell port pool stays closed here; use './deploy.sh revshell-open' per engagement"
 
   run_sudo ufw --force enable
   run_sudo ufw status verbose || true

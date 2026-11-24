@@ -10,7 +10,12 @@ everywhere else.
 
 With no RoE exclusion in force the gate is inert: every admit function hands its
 input back unchanged (the same objects), logs nothing and notes nothing, so a
-builder that calls it builds byte-identical target files.
+builder that calls it builds byte-identical target files. The one exception is
+an input that holds an address of the Kali sandbox pool (``ip_filter``'s
+``SANDBOX_POOL_NETWORK``): such an address, and a name that resolves to one, is
+refused in every mode and whoever typed it, since recon runs on the host network
+and a pool address is another person's sandbox. That refusal is a decision, not
+a coverage gap: logged, never noted.
 
 Scope is not re-checked here: every builder's input is already scoped
 (``merge_group_hosts``, ``merge_discovered_hostnames``, partial recon's
@@ -38,6 +43,7 @@ from urllib.parse import urlsplit
 
 from recon.helpers.ip_placeholders import is_placeholder
 from recon.helpers.roe_scope import _is_network, _is_roe_excluded, _normalize_scope_entry
+from recon.main_recon_modules.ip_filter import in_sandbox_pool
 
 # Refusal reasons, also coverage tokens: [a-z0-9_], at most 64 characters.
 REASON_ROE_EXCLUDED = "roe_excluded"
@@ -45,16 +51,24 @@ REASON_ROE_UNRESOLVED = "roe_unresolved"
 # IP mode: not one of the run's target addresses. A decision, not a coverage
 # gap: logged, never noted, so it changes no prune.
 REASON_OUTSIDE_TARGETS = "outside_targets"
+# An address of the Kali sandbox pool, in any mode. Logged, never noted, like
+# REASON_OUTSIDE_TARGETS: no finding there was ever the run's to keep.
+REASON_SANDBOX_POOL = "sandbox_pool"
 
 # Every RoE refusal is recorded under this coverage source, so the report's
 # Coverage Limitations block can say what the RoE kept out of the run.
 COVERAGE_SOURCE = "roe_excluded"
 
 _ADDRESS_DETAIL = {REASON_ROE_EXCLUDED: "address excluded",
-                   REASON_OUTSIDE_TARGETS: "address outside the targets"}
+                   REASON_OUTSIDE_TARGETS: "address outside the targets",
+                   REASON_SANDBOX_POOL: "address in the Kali sandbox pool"}
 # (every address refused, some addresses refused)
 _NAME_DETAIL = {REASON_ROE_EXCLUDED: ("every address excluded", "resolves to an excluded address"),
-                REASON_OUTSIDE_TARGETS: ("no address is a target", "resolves outside the targets")}
+                REASON_OUTSIDE_TARGETS: ("no address is a target", "resolves outside the targets"),
+                REASON_SANDBOX_POOL: ("every address is in the Kali sandbox pool",
+                                      "resolves into the Kali sandbox pool")}
+# Refusals that are decisions, not coverage gaps: logged, never noted.
+_LOG_ONLY = frozenset((REASON_OUTSIDE_TARGETS, REASON_SANDBOX_POOL))
 
 _LOG_SHOWN = 10
 
@@ -303,18 +317,22 @@ def admit_targets(settings: Optional[Mapping], recon_data: Optional[Mapping] = N
     """
     ctx = admission_context(settings, recon_data)
     names = names or {}
-    if not ctx.active:
-        return Admission(names={n: list(a or ()) for n, a in names.items()}, ips=list(ips))
+    ips = list(ips)
+    if not ctx.active and not _touches_pool(names, ips):
+        return Admission(names={n: list(a or ()) for n, a in names.items()}, ips=ips)
 
     adm = Admission()
     verdicts: Dict[str, Optional[str]] = {}
 
     def refused(address: str) -> Optional[str]:
-        """Why ``address`` may not be sent, or None. A listed IP-mode target
-        passes as is; RoE is asked before the target list, so an address both
-        rules refuse is reported as the RoE's."""
+        """Why ``address`` may not be sent, or None. The sandbox pool is asked
+        first, so not even a listed IP-mode target passes there; then a listed
+        target passes as is; RoE is asked before the target list, so an address
+        both rules refuse is reported as the RoE's."""
         if address not in verdicts:
-            if ctx.authorized(address):
+            if in_sandbox_pool(address):
+                verdicts[address] = REASON_SANDBOX_POOL
+            elif ctx.authorized(address):
                 verdicts[address] = None
             elif ctx.excluded and _is_roe_excluded(address, ctx.excluded):
                 verdicts[address] = REASON_ROE_EXCLUDED
@@ -354,7 +372,7 @@ def admit_targets(settings: Optional[Mapping], recon_data: Optional[Mapping] = N
             adm.refusals.append(Refusal(name, REASON_ROE_EXCLUDED, "host excluded"))
             # IP mode: an authorized address stays a target even when its PTR
             # name is excluded; the name is only a label for it.
-            kept = [a for a in addrs if ctx.authorized(a)]
+            kept = [a for a in addrs if ctx.authorized(a) and not in_sandbox_pool(a)]
             if kept:
                 adm.ips.extend(a for a in kept if a not in adm.ips)
             continue
@@ -363,10 +381,12 @@ def admit_targets(settings: Optional[Mapping], recon_data: Optional[Mapping] = N
             if address not in kept:
                 reason = refused(address)
                 adm.refusals.append(Refusal(address, reason, _ADDRESS_DETAIL[reason], name=name))
-        # A name is refused for the target list when any of its addresses is
-        # outside it, else for the RoE.
-        name_reason = (REASON_OUTSIDE_TARGETS
-                       if any(refused(a) == REASON_OUTSIDE_TARGETS for a in addrs)
+        # A name is refused for the sandbox pool when any of its addresses is
+        # in it, else for the target list when any is outside it, else for the
+        # RoE.
+        reasons = {refused(a) for a in addrs}
+        name_reason = (REASON_SANDBOX_POOL if REASON_SANDBOX_POOL in reasons
+                       else REASON_OUTSIDE_TARGETS if REASON_OUTSIDE_TARGETS in reasons
                        else REASON_ROE_EXCLUDED)
         if not kept:
             if _as_ip(name) is None:
@@ -398,7 +418,7 @@ def admit_ip_map(settings: Optional[Mapping], recon_data: Optional[Mapping],
     a target only because of those names. Inert: the inputs come back as they are.
     """
     ctx = admission_context(settings, recon_data)
-    if not ctx.active:
+    if not ctx.active and not _any_in_pool([*ips, *(ip_to_hostnames or {})]):
         return ips, ip_to_hostnames, Admission(ips=list(ips))
     by_name: Dict[str, List[str]] = {}
     for ip, hostnames in (ip_to_hostnames or {}).items():
@@ -439,7 +459,7 @@ def admit_host_targets(settings: Optional[Mapping], recon_data: Optional[Mapping
     never in the map, so no tool is handed it as a name.
     """
     ctx = admission_context(settings, recon_data)
-    if not ctx.active:
+    if not ctx.active and not _any_in_pool([*ips, *hostnames, *(ip_to_hostnames or {})]):
         return ips, hostnames, ip_to_hostnames
     by_name: Dict[str, List[str]] = {h: [] for h in sorted(hostnames)}
     for ip, names in (ip_to_hostnames or {}).items():
@@ -472,10 +492,10 @@ def admit_urls(settings: Optional[Mapping], recon_data: Optional[Mapping], urls:
     whose every known address (``known_addresses``) is admitted. Order kept.
     """
     ctx = admission_context(settings, recon_data)
-    if not ctx.active:
-        return urls, Admission()
     hosts = list(dict.fromkeys(h for h in (_url_host(u) for u in urls) if h))
     known = known_addresses(recon_data or {})
+    if not ctx.active and not _touches_pool({h: known.get(h, []) for h in hosts}, ()):
+        return urls, Admission()
     adm = admit_targets(settings, recon_data,
                         names={h: known.get(h, []) for h in hosts if _as_ip(h) is None},
                         ips=[h for h in hosts if _as_ip(h) is not None],
@@ -558,7 +578,7 @@ def _record(module: str, refusals: List[Refusal]) -> None:
             if not logged.get(key)[0]:
                 logged.put(key, True)
                 fresh_log.append(refusal)
-            if refusal.reason == REASON_OUTSIDE_TARGETS:
+            if refusal.reason in _LOG_ONLY:
                 continue
             if not noted.get((module, *key))[0]:
                 noted.put((module, *key), True)
@@ -571,6 +591,9 @@ def _record(module: str, refusals: List[Refusal]) -> None:
              "(kept as not checked)")
         _log(label, [r for r in fresh_log if r.reason == REASON_OUTSIDE_TARGETS],
              "not sent to {n} host(s) outside the IP target list", tool="IpMode")
+        _log(label, [r for r in fresh_log if r.reason == REASON_SANDBOX_POOL],
+             "not sent to {n} target(s) in the Kali sandbox address pool (another person's sandbox)",
+             tool="Scope")
         if new_excluded:
             cb.note_degraded(module, entries=[{
                 "source": COVERAGE_SOURCE,
@@ -596,6 +619,18 @@ def _shown(refusals: List[Refusal], limit: int) -> str:
              for r in refusals[:limit]]
     more = len(refusals) - limit
     return ", ".join(parts) + (f" +{more} more" if more > 0 else "")
+
+
+def _any_in_pool(values: Iterable) -> bool:
+    return any(isinstance(v, str) and in_sandbox_pool(v.strip().strip("[]")) for v in values)
+
+
+def _touches_pool(names: Mapping[str, Iterable[str]], ips: Iterable[str]) -> bool:
+    """An input of an inert gate holds a sandbox pool address: as a bare IP, a
+    name that is one, or an address a name resolved to. Only then does the gate
+    do any work outside RoE and IP mode."""
+    return (_any_in_pool(ips) or _any_in_pool(names)
+            or any(_any_in_pool(addrs or ()) for addrs in names.values()))
 
 
 def _is_ip_entry(entry: str) -> bool:

@@ -12,7 +12,7 @@
  */
 import type { MyAccess } from '@/lib/authz/projectAccess'
 import type { ShareGrantable } from '@/lib/authz/projectShares'
-import { PERMISSIONS } from '@/lib/authz/permissions'
+import { SHARE_KEYS_LENT_TEXT } from '@/lib/sandbox/contract'
 
 export type ShareAccessLevel = 'read' | 'write'
 export type ShareToggleId = 'rawData' | 'runScans' | 'useAgent' | 'exploit' | 'manage'
@@ -36,8 +36,6 @@ export type ShareTermsLike = { access: string; rawData: boolean } & Partial<Omit
 
 export const RAW_DATA_WARNING =
   'Raw data includes captured traffic, workspace files and loot; grant it as you would hand over the files.'
-/** HD-22 (F-18, OQ-46): what the agent runs, it runs in one sandbox every project shares, until D-21. */
-export const SANDBOX_NOTICE = 'Use AI agent and Exploitation & shells reach a sandbox shared by every project on this server.'
 /** SH-29: a scan or an agent run authenticates to the target with the project's auth profile. */
 export const TARGET_CREDENTIALS_WARNING = "Run scans and Use AI agent carry the project's target credentials (its auth profile)."
 /**
@@ -46,6 +44,14 @@ export const TARGET_CREDENTIALS_WARNING = "Run scans and Use AI agent carry the 
  */
 export const READ_SHOWS_FINDINGS_WARNING =
   'Every level shows what recon found as you see it, found secrets and reports included; the project settings never show your own keys and tokens.'
+
+/**
+ * Gap G-09: a collaborator's own Kali sandbox mounts every project they may use with the agent, read
+ * and write, so Raw data off does not keep the agent, a terminal or `kali_exec` out of this
+ * project's folder (README.KALI_SANDBOX §19, "Shared projects are shared live").
+ */
+export const SANDBOX_MOUNT_WARNING =
+  "Their own Kali sandbox mounts this project's folder read-write: they can read and change its workspace files and loot, whatever Raw data says."
 
 /** A collaborator who reads raw files or drives the agent can keep a copy of what they see. */
 export const COPY_WARNING = 'A collaborator with Raw data or the agent can copy what they see: revoking ends the access, not the copies.'
@@ -70,8 +76,6 @@ export const EXPLOIT_STEP_UP =
 /** A share's note, at most (lib/authz/projectShares.ts NOTE_MAX_LENGTH, which this module cannot import). */
 export const NOTE_MAX_CHARS = 500
 
-const sandboxShared = PERMISSIONS['agent:kali_exec'].sandboxShared
-
 export interface ShareToggleInfo {
   id: ShareToggleId
   label: string
@@ -95,12 +99,13 @@ export const SHARE_TOGGLES: readonly ShareToggleInfo[] = [
   {
     id: 'useAgent', label: 'Use AI agent', level: 'write',
     description: 'Chat, Fireteam, triage runs, CodeFix and assistants.',
-    notices: [...(sandboxShared ? [SANDBOX_NOTICE] : []), TARGET_CREDENTIALS_WARNING],
+    // Group 1, I11 (OD-G1-k): the owner's third-party keys reach the collaborator's own sandbox.
+    notices: [SHARE_KEYS_LENT_TEXT, SANDBOX_MOUNT_WARNING, TARGET_CREDENTIALS_WARNING],
   },
   {
     id: 'exploit', label: 'Exploitation & shells', level: 'write',
     description: 'Approve exploitation and dangerous tools, project shell sessions, Kali exec.',
-    notices: sandboxShared ? [SANDBOX_NOTICE] : [],
+    notices: [SHARE_KEYS_LENT_TEXT, SANDBOX_MOUNT_WARNING],
   },
   {
     id: 'manage', label: 'Manage (co-owner)', level: 'write',

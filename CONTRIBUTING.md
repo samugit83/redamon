@@ -74,7 +74,7 @@ cp docker-compose.dev.yml docker-compose.override.yml
 
 # Build all images and start core services
 docker compose --profile tools build
-docker compose up -d postgres neo4j recon-orchestrator kali-sandbox agent webapp
+docker compose up -d postgres neo4j recon-orchestrator agent webapp
 ```
 
 Once the override file exists, all `docker compose` commands automatically use dev mode with Next.js hot-reload -- no `-f` flags needed.
@@ -319,7 +319,7 @@ RedAmon runs as a Docker Compose stack. Here's what each service does and how ch
 | webapp | Next.js / TypeScript | `webapp/` | Frontend + API routes, Prisma ORM |
 | recon-orchestrator | Python | `recon_orchestrator/` | Orchestrates the 6-phase recon pipeline |
 | agent | Python | `agentic/` | AI agent for exploitation + triage |
-| kali-sandbox | Kali Linux | `mcp/` | MCP tool servers (Metasploit, Nmap, Nuclei, Hydra) |
+| kali-sandbox (build only) | Kali Linux | `mcp/` | Image of the MCP tool servers (Metasploit, Nmap, Nuclei, Hydra); the recon orchestrator starts one container from it per person ([README.KALI_SANDBOX.md](docs/readmes/README.KALI_SANDBOX.md)) |
 | postgres | PostgreSQL | `services/postgres_db/` | Project config, user settings |
 | neo4j | Neo4j | `graph_db/` | Knowledge graph for all findings |
 | gvm-* | OpenVAS / GVM | `scanners/gvm_scan/` | Vulnerability scanner (optional profile) |

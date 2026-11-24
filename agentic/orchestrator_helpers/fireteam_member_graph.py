@@ -80,7 +80,6 @@ def build_fireteam_member_graph(
     llm_getter,
     tool_executor,
     streaming_callbacks,
-    session_manager_base,
     neo4j_creds,
     graph_view_cyphers=None,
 ):
@@ -123,7 +122,6 @@ def build_fireteam_member_graph(
             state, config,
             tool_executor=tool_executor,
             streaming_callbacks=streaming_callbacks,
-            session_manager_base=session_manager_base,
             graph_view_cyphers=graph_view_cyphers,
         )
 
@@ -132,7 +130,6 @@ def build_fireteam_member_graph(
             state, config,
             tool_executor=tool_executor,
             streaming_callbacks=streaming_callbacks,
-            session_manager_base=session_manager_base,
             graph_view_cyphers=graph_view_cyphers,
         )
 

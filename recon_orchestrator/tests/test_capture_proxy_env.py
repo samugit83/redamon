@@ -92,9 +92,12 @@ class TestCaptureProxyEnvMapping(unittest.TestCase):
             self.assertNotIn(k, env, f"{k} leaked back onto the proxy env")
 
     def test_blocked_ips_is_still_proxy_env_and_overridable(self):
-        # Security invariant: the service-IP denylist stays on the proxy env.
+        # Security invariant: the service-IP denylist stays on the proxy env. The
+        # per-user Kali sandbox pool follows the operator's entries (TD-24): the
+        # proxy sits on every sandbox network and must never carry one to another.
         proxy, _ = _spawn({"blockedIps": "10.9.9.9,172.31.0.1"})
-        self.assertEqual(proxy["environment"]["CAPTURE_BLOCKED_IPS"], "10.9.9.9,172.31.0.1")
+        self.assertEqual(proxy["environment"]["CAPTURE_BLOCKED_IPS"],
+                         "10.9.9.9,172.31.0.1,10.214.0.0/16")
 
     def test_port_is_baked_into_proxy_command_not_env(self):
         proxy, _ = _spawn({"port": 9999})
@@ -115,6 +118,8 @@ class TestCaptureProxyEnvMapping(unittest.TestCase):
         proxy, _ = _spawn({})
         self.assertEqual(proxy["cap_drop"], ["ALL"])
         self.assertTrue(proxy["read_only"])
+        # It joins every per-user Kali sandbox network: no forwarding between them (TD-23).
+        self.assertEqual(proxy["sysctls"], {"net.ipv4.ip_forward": "0"})
 
 
 if __name__ == "__main__":

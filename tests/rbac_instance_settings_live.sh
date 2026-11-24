@@ -14,19 +14,22 @@
 #   - an admin's TrafficMind change through /api/admin/instance-settings behaves as before
 #     for the proxy config, and a downgrade-style read of the user rows shows it mirrored
 #     into the source row (admin B), the other admin's row untouched;
-#   - the tunnel switch, changed there, is mirrored into the tunnel source row (member B);
-#     the sandbox being absent, the save answers with a warning, never a failure;
+#   - tunnels are per person, each in its person's own Kali sandbox: the instance tunnel's
+#     "off" is taken there, but never mirrored into the tunnel source row (member B's own
+#     tunnel stays as it was) and never pushed to a shared sandbox, which no longer exists;
 #   - the user settings PUT refuses a real change with 409; the `tunnels` legacy holder
-#     (member A, granted by the backfill) changes the tunnel but not the capture policy;
-#   - the audit names fields, never a credential; the sync refuses a call without the
-#     sandbox's bearer (the serve instance has no TUNNEL_AUTH_TOKEN: every call refused).
+#     (member A, granted by the backfill) passes the instance tunnel's gate, but a
+#     credential change there is refused (409 tunnels_per_person), and so is the capture policy;
+#   - the audit names fields, never a credential; the boot sync, which handed the tunnel
+#     config to the shared sandbox, is gone: a signed-in admin's POST finds no route, an
+#     anonymous one is refused.
 #
 # The harness's own scenario check prints a FAIL for the marker line (its expected file is
 # written for the switch off); this script reads the instance row itself.
 #
 # Needs Docker and the images the harness needs (redamon-webapp:latest built from a commit
-# that has step 2.4, postgres:16-alpine, redamon-webapp:rbac-7.7.2); SKIPs (exit 0) without
-# them or when port 3901 is taken.
+# that has step 2.4 and no shared Kali sandbox (group 1, S20), postgres:16-alpine,
+# redamon-webapp:rbac-7.7.2); SKIPs (exit 0) without them or when port 3901 is taken.
 #
 # Run: bash tests/rbac_instance_settings_live.sh
 set -uo pipefail
@@ -125,13 +128,14 @@ eq "admin A's row untouched" \
   "$(sql "SELECT s.capture_egress_block_private, s.capture_proxy_retention_days FROM user_settings s JOIN users u ON u.id = s.user_id WHERE u.email = 'upg-admin-a@e2e.local'")" \
   "t|14"
 
-echo "== the tunnel: changed at the instance, mirrored into its source row"
+# Tunnels are per person: the instance row's tunnel is unused, and its source row is member B's own.
+echo "== the tunnel: off at the instance, never mirrored into a person's own tunnel"
 out="$(put "$ADMIN" /api/admin/instance-settings '{"tunnelsEnabled":false}')"
-eq "admin PUT tunnel off -> 200 (no sandbox here: a warning, not a failure)" "${out##*$'\n'}" 200
-has "the save names the unapplied push" "$out" 'kali_sandbox'
-eq "instance and member B's row both off" \
+eq "admin PUT tunnel off -> 200" "${out##*$'\n'}" 200
+lacks "the save pushes nothing to a shared sandbox" "$out" 'kali_sandbox'
+eq "the instance off, member B's own row as it was" \
   "$(sql "SELECT (SELECT tunnels_enabled FROM instance_settings), (SELECT s.tunnels_enabled FROM user_settings s JOIN users u ON u.id = s.user_id WHERE u.email = 'upg-member-b@e2e.local')")" \
-  "f|f"
+  "f|t"
 
 echo "== the user settings PUT refuses a real change"
 ADMIN_ID="$(sql "SELECT id FROM users WHERE email = 'upg-admin-b@e2e.local'")"
@@ -142,15 +146,23 @@ has "with its code" "$out" 'moved_to_instance_settings'
 echo "== the tunnels legacy holder (OQ-R3 (a))"
 out="$(put "$MEMBER" /api/admin/instance-settings '{"captureEgressBlockPrivate":true}')"
 eq "member A capture change -> 403" "${out##*$'\n'}" 403
+# A 409, not a 403: the holder passes the tunnel gate, and its own tunnel lives in its user settings.
 out="$(put "$MEMBER" /api/admin/instance-settings '{"ngrokAuthtoken":"upg-fake-ngrok-token-0002"}')"
-eq "member A tunnel credential change -> 200" "${out##*$'\n'}" 200
-eq "audit: three changes, the right named, no credential" \
+eq "member A tunnel credential change -> 409" "${out##*$'\n'}" 409
+has "with its code" "$out" 'tunnels_per_person'
+eq "the refused credential reached no row" \
+  "$(sql "SELECT count(*) FROM instance_settings WHERE ngrok_authtoken = 'upg-fake-ngrok-token-0002'")" 0
+eq "audit: two changes, none of them the refused one, no credential" \
   "$(sql "SELECT count(*), count(*) FILTER (WHERE after->>'tunnelVia' = 'legacy'), count(*) FILTER (WHERE after::text LIKE '%upg-fake-ngrok%') FROM audit_log WHERE action = 'instance.settings_changed'")" \
-  "3|1|0"
+  "2|0|0"
 
-echo "== the tunnel sync takes only the sandbox's bearer"
-eq "sync without a bearer -> 401" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/global/tunnel-config/sync")" 401
-eq "sync with a bearer while the token is unset -> 401" \
+# The route that handed the tunnel config to the shared sandbox is deleted, and with it its
+# public path: nothing hands a tunnel config out any more.
+echo "== the boot sync is gone"
+eq "a signed-in admin's sync POST finds no route -> 404" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -b "$ADMIN" -X POST -H "Origin: $BASE" "$BASE/api/global/tunnel-config/sync")" 404
+eq "an anonymous sync POST without a bearer -> 401" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/global/tunnel-config/sync")" 401
+eq "an anonymous sync POST with a bearer -> 401" \
   "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer anything' "$BASE/api/global/tunnel-config/sync")" 401
 
 echo

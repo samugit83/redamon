@@ -47,7 +47,7 @@ export const LEGACY_GRANTS_CHANGED_EVENT = 'redamon:legacy-grants-changed'
 export const LEGACY_REVIEW_ANCHOR = 'legacy-access'
 
 export const ADMIN_CHANGE_LINES: readonly string[] = [
-  'The Kali terminal, every shell session and the tunnel settings are now an admin\'s. Members who used them before the update keep them as legacy grants until you review them on this page.',
+  'The Kali terminal and every shell session are now an admin\'s, and turning a tunnel on needs the tunnel grant: each person\'s tunnel runs in their own Kali sandbox, with their own credentials. Members who used them before the update keep them as legacy grants until you review them on this page.',
   'Acting as, resetting, demoting or deleting another admin asks for your own password, and the last admin with a password cannot be demoted or deleted.',
   'Other accounts\' settings, model providers, skills and MCP servers are shown masked and are no longer changed by an admin, except for passwordless managed accounts.',
 ]
@@ -55,9 +55,9 @@ export const ADMIN_CHANGE_LINES: readonly string[] = [
 export const MEMBER_CHANGE_LINES: readonly string[] = [
   "Emergency stop stops only their own agent runs; admins still stop everyone's.",
   'Nuclei templates: they upload and delete only their own.',
-  'Tunnel: only admins and members keeping the tunnel grant change it; the others see its status.',
-  "Shell sessions: they see their own projects' sessions; the all-sessions console needs the sessions grant.",
-  "Kali terminal: needs the terminal grant, and warns that other projects' files are visible there.",
+  'Tunnel: each person has their own, in their own Kali sandbox; turning it on needs the tunnel grant (admins, and members keeping it), and anyone can turn theirs off.',
+  "Shell sessions: they see their own projects' sessions and their own sandbox's background jobs; the all-sessions console needs the sessions grant.",
+  "Kali terminal: needs the terminal grant, and opens in their own Kali sandbox.",
   'MCP servers: only admins add, test or load stdio servers.',
 ]
 

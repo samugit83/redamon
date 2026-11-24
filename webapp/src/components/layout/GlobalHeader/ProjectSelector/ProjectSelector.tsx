@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { usePathname } from 'next/navigation'
-import { ChevronDown, FolderOpen, Plus, Settings, Share2 } from 'lucide-react'
+import { ChevronDown, FolderOpen, Plus, RotateCw, Settings, Share2 } from 'lucide-react'
 import { useProject } from '@/providers/ProjectProvider'
 import { useOptionalAuth } from '@/providers/AuthProvider'
 import { useProjects, type ProjectListItem } from '@/hooks/useProjects'
@@ -20,7 +20,7 @@ export function ProjectSelector() {
   const pathname = usePathname()
   const [isOpen, setIsOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
-  const { currentProject, setCurrentProject, userId, checkAccessNow } = useProject()
+  const { currentProject, setCurrentProject, userId, checkAccessNow, projectLoadError } = useProject()
   const { data: projects, refetch } = useProjects(userId || undefined)
   // Step 4.12: the open project's share control, only while sharing is in force (DV-30).
   const sharingInForce = useOptionalAuth()?.user?.sharing?.enabled === true
@@ -85,6 +85,18 @@ export function ProjectSelector() {
           </span>
           <ChevronDown size={12} className={isOpen ? styles.iconOpen : ''} />
         </button>
+        {!currentProject && projectLoadError && (
+          // The saved project's read got no answer even after its retries: a reload reads it again.
+          <button
+            type="button"
+            className={styles.settingsIconButton}
+            onClick={() => window.location.reload()}
+            title={`Could not reach the server: ${projectLoadError.message}. Retry reloads the page.`}
+            aria-label="Retry loading the project"
+          >
+            <RotateCw size={13} />
+          </button>
+        )}
         {currentProject && (
           <button
             className={styles.settingsIconButton}

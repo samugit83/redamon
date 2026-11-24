@@ -239,6 +239,18 @@ class StopReachesTheSandbox(unittest.TestCase):
 
 
 class StopRequest(unittest.TestCase):
+    """The run used its person's sandbox (noted by the executor): the stop goes there,
+    with that instance's bearer."""
+
+    OLD_ENV = {"MCP_NETWORK_RECON_URL": "http://kali-sandbox:8000/sse", "MCP_AUTH_TOKEN": "old-shared-bearer"}
+
+    def setUp(self):
+        from one_sandbox import handle
+
+        sandbox_runs._reset()
+        self.addCleanup(sandbox_runs._reset)
+        self.handle = handle()  # held: the run's record of it is weak
+        sandbox_runs.note_run_sandbox(SESSION, self.handle)
 
     def _run(self, transport, env=None):
         import httpx
@@ -261,12 +273,20 @@ class StopRequest(unittest.TestCase):
             seen.append(request)
             return httpx.Response(200, json={"run": SESSION, "signalled": 3})
 
-        signalled = self._run(httpx.MockTransport(answer), {
-            "MCP_NETWORK_RECON_URL": "http://kali-sandbox:8000/sse", "MCP_AUTH_TOKEN": "dummy-bearer"})
+        signalled = self._run(httpx.MockTransport(answer), self.OLD_ENV)
         self.assertEqual(signalled, 3)
-        self.assertEqual(str(seen[0].url), "http://kali-sandbox:8000/redamon/runs/stop")
-        self.assertEqual(seen[0].headers["authorization"], "Bearer dummy-bearer")
+        self.assertEqual(str(seen[0].url), f"http://{self.handle.host}:8000/redamon/runs/stop")
+        self.assertEqual(seen[0].headers["authorization"], f"Bearer {self.handle.token}")
         self.assertEqual(json.loads(seen[0].read()), {"run": SESSION})
+
+    def test_a_run_that_used_no_sandbox_asks_nothing(self):
+        import httpx
+
+        seen = []
+        sandbox_runs._reset()
+        transport = httpx.MockTransport(lambda r: seen.append(r) or httpx.Response(200, json={"signalled": 1}))
+        self.assertIsNone(self._run(transport, self.OLD_ENV))
+        self.assertEqual(seen, [], "the old shared address was asked")
 
     def test_an_unreachable_or_refusing_sandbox_never_raises(self):
         import httpx

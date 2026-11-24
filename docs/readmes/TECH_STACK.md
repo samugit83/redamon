@@ -68,7 +68,7 @@ See [README.PLUGINS.md](README.PLUGINS.md) for the design and [README.PLUGIN_SDK
 
 | Tool | Category | Role |
 |------|----------|------|
-| **Kali Linux** | Base Platform | Penetration testing distribution used as the base image of the `kali-sandbox` (MCP tool) container; the recon image is `python:3.11-slim-bookworm` |
+| **Kali Linux** | Base Platform | Penetration testing distribution used as the base image of the Kali sandbox image (`redamon-kali-sandbox`, the MCP tools), from which the recon orchestrator starts one container per person; the recon image is `python:3.11-slim-bookworm` |
 | **Metasploit Framework** | Exploitation | Exploit execution, payload delivery, Meterpreter sessions, auxiliary scanners, and post-exploitation |
 | **Naabu** | Port Scanning | Fast SYN/CONNECT port scanner from ProjectDiscovery |
 | **Nmap** | Network Scanning | Network mapper for deep service detection, OS fingerprinting, and NSE vulnerability scripts — exposed as a dedicated MCP server |
@@ -124,7 +124,7 @@ See [README.PLUGINS.md](README.PLUGINS.md) for the design and [README.PLUGIN_SDK
 
 | Protocol | Role |
 |----------|------|
-| **MCP (Model Context Protocol)** | Standardized tool integration — five MCP servers (Network Recon, Nuclei, Metasploit, Nmap, Playwright) running inside the Kali sandbox |
+| **MCP (Model Context Protocol)** | Standardized tool integration — five MCP servers (Network Recon, Nuclei, Metasploit, Nmap, Playwright) running inside each person's Kali sandbox |
 | **SSE (Server-Sent Events)** | Unidirectional real-time streaming for recon logs, GVM scan progress, and GitHub hunt output |
 | **WebSocket** | Bidirectional real-time communication for the agent chat interface |
 | **Bolt** (Neo4j) | Binary protocol for high-performance Neo4j graph database queries |

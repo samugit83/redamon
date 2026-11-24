@@ -81,6 +81,10 @@ export enum MessageType {
   // A model call waits for the provider's rate limit to clear before its next
   // try. Sent only, never persisted.
   RATE_LIMIT_WAIT = 'rate_limit_wait',
+
+  // The run's Kali sandbox is starting, ready or unavailable (SANDBOX_STATUS of
+  // lib/sandbox/contract.ts). Sent only, never persisted.
+  SANDBOX_STATUS = 'sandbox_status',
 }
 
 /**
@@ -414,6 +418,9 @@ export interface LoopStatusPayload {
   toolConfirmation?: boolean
 }
 
+/** The payload of SANDBOX_STATUS: the contract's type, so the two never drift. */
+export type { SandboxLimit, SandboxStatusPayload } from './sandbox/contract'
+
 /** A rate-limit wait: `seconds` before retry number `retry` of a `purpose` call. */
 export interface RateLimitWaitPayload {
   seconds: number
@@ -611,9 +618,21 @@ export interface WebSocketState {
 // =============================================================================
 // ACTIVE SESSIONS (REST polling, not WebSocket)
 // =============================================================================
+// Every person's Kali sandbox runs its own console, which numbers its sessions from 1: a row is the
+// pair (`sandbox` instance, `id`) (group 1, TD-11).
 
-export interface MsfSession {
+/**
+ * What a holder of every session sees on a row besides its own fields (gap G-33): whose sandbox the
+ * row comes from and the project its chat stands for. Absent for everyone else.
+ */
+export interface RowLabels {
+  person_label?: string
+  project_label?: string
+}
+
+export interface MsfSession extends RowLabels {
   id: number
+  sandbox?: string
   type: 'meterpreter' | 'shell' | 'unknown'
   info: string
   connection: string
@@ -621,27 +640,44 @@ export interface MsfSession {
   chat_session_id: string | null
 }
 
-export interface MsfJob {
+export interface MsfJob extends RowLabels {
   id: number
+  sandbox?: string
   name: string
   payload: string
   port: number
 }
 
-export interface NonMsfSession {
+export interface NonMsfSession extends RowLabels {
   id: string
+  sandbox?: string
   type: string
   tool: string
   command: string
   chat_session_id: string | null
 }
 
+/**
+ * What a reader that keeps the last answer adds to a row (useActiveSessions `nextSessionLists`, S16b):
+ * `listedAt` (ms), the last answer that listed it, and `staleSince` (ms) on a row kept from an
+ * earlier answer because its sandbox did not answer this time. Never the sandbox's own fields.
+ */
+export interface KeptRowMarks {
+  listedAt?: number
+  staleSince?: number
+}
+
 export interface SessionsData {
-  sessions: MsfSession[]
-  jobs: MsfJob[]
-  non_msf_sessions: NonMsfSession[]
+  sessions: Array<MsfSession & KeptRowMarks>
+  jobs: Array<MsfJob & KeptRowMarks>
+  non_msf_sessions: Array<NonMsfSession & KeptRowMarks>
   cache_age_seconds: number
-  agent_busy: boolean
+  /** The sandbox instances whose console runs a command of the agent now, of the rows shown. */
+  busy?: string[]
+  /** How many sandboxes did not answer: their sessions may be out of date or missing from the lists. */
+  unavailable_count?: number
+  /** Their instance ids, for holders of every session only. */
+  unavailable?: string[]
 }
 
 export interface SessionInteractResult {

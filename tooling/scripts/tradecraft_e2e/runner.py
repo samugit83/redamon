@@ -1399,6 +1399,10 @@ def run_attack(ctx: Context, run: lanes.Run, lane: int, address: lanes.LaneAddre
         if cap < MIN_AGENT_SEC:
             result.reason = "no time left in the run's cap for the agent"
             return result
+        if inst:
+            # The chat's person's sandbox (started by the chat's ticket) reaches the lab only on its
+            # own network; down() stops the follower.
+            ctx.docker.follow_sandbox(inst, chat_id)
         outcome = run_chat(ctx.stack, chat_http, chat_id, project_id, prompt, cap_sec=cap)
         result.cap_reached = outcome.ended == "cap"
         result.approvals_given = len(outcome.approvals)

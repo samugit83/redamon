@@ -14,8 +14,8 @@ Design (see AI_ATTACK_SURFACE_IMPLEMENTATION.md §15.2):
   - Weights persist, container does not: models live in the named volume
     `redamon_llm_models` (-> /root/.ollama). Start cost is load-into-RAM, not a
     re-download. First-ever launch pulls the judge model into the volume.
-  - Networking: spawned on the shared bridge network with its port published to
-    the host. The orchestrator reaches it by container DNS
+  - Networking: spawned on the shared bridge network with its port published on
+    the host's loopback only. The orchestrator reaches it by container DNS
     (http://redamon-local-llm:11434); host-network scan containers reach the
     published port via loopback (http://localhost:11434).
   - Failure-soft: any failure (image pull, container start, readiness, model
@@ -81,8 +81,14 @@ def _default_llm_mem() -> str:
 
 LLM_MEM_LIMIT = (os.environ.get("LOCAL_LLM_MEM") or _default_llm_mem()).strip()
 LLM_PORT = int(os.environ.get("LOCAL_LLM_PORT", "11434"))
+# Ollama's API has no authentication: whoever reaches it can rewrite, pull or
+# delete the judge model, and the weights volume outlives the container. So the
+# port is published on the host's loopback only, never on every interface:
+# Docker's own iptables rules bypass ufw, and the deploy overlay cannot re-bind
+# a port published through the SDK. Deliberately not an env knob.
+LLM_PUBLISH_HOST = "127.0.0.1"
 # Ollama is spawned on the shared bridge network and publishes its port to the
-# host. Two consumers reach it two different ways:
+# host's loopback. Two consumers reach it two different ways:
 #   - The orchestrator (this process) is ON the bridge network, so it reaches
 #     Ollama by container DNS name: http://redamon-local-llm:11434
 #   - Future AI-attack scan containers run on the HOST network, so they reach
@@ -278,9 +284,10 @@ class LocalLlmManager:
             name=LLM_CONTAINER_NAME,
             detach=True,
             # On the shared bridge network so the orchestrator reaches it by DNS;
-            # publish the port so host-network scan containers reach localhost.
+            # publish the port on loopback so host-network scan containers reach
+            # localhost and nothing off the host reaches it.
             network=LLM_NETWORK,
-            ports={f"{LLM_PORT}/tcp": LLM_PORT},
+            ports={f"{LLM_PORT}/tcp": (LLM_PUBLISH_HOST, LLM_PORT)},
             environment={"OLLAMA_HOST": f"0.0.0.0:{LLM_PORT}"},
             volumes={LLM_MODELS_VOLUME: {"bind": "/root/.ollama", "mode": "rw"}},
             restart_policy={"Name": "no"},

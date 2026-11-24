@@ -5,7 +5,8 @@ GET /admin to the CL.0 /beacon (which the server answers without reading the bod
 navigates to / on the reused connection and receives the /admin page (the flag) instead
 of the landing page.
 
-Needs Playwright + a Chromium build (run inside kali-sandbox, which has both):
+Needs Playwright + a Chromium build (run inside a Kali sandbox, which has both, with the
+lab connected to that sandbox's network):
   python3 tests/verify_clientside.py http://cs-guinea-server:5000
 """
 import re

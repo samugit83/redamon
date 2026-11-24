@@ -69,7 +69,8 @@ interface SendHandlersDeps {
   pendingApprovalWaveId: React.MutableRefObject<string | null>
   answerUndo: React.MutableRefObject<AnswerUndo>
   // WebSocket senders
-  sendQuery: (q: string) => void
+  /** `shown`: the text the chat shows for `q` when it differs (a chat skill's context is sent, not shown). */
+  sendQuery: (q: string, shown?: string) => void
   sendGuidance: (m: string) => void
   sendSkillInject: (payload: { skill_id: string; skill_name: string; content: string }) => void
   sendApproval: (decision: 'approve' | 'modify' | 'abort', modification?: string) => void
@@ -301,7 +302,7 @@ export function useSendHandlers(deps: SendHandlersDeps) {
         }
 
         try {
-          sendQuery(finalQuestion)
+          sendQuery(finalQuestion, remainingMessage)
         } catch {
           setIsLoading(false)
         }
@@ -417,7 +418,7 @@ export function useSendHandlers(deps: SendHandlersDeps) {
       }
 
       try {
-        sendQuery(finalQuestion)
+        sendQuery(finalQuestion, question)
       } catch {
         setIsLoading(false)
       }

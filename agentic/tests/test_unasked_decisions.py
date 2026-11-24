@@ -169,16 +169,14 @@ def _dispatched(ex) -> bool:
 async def _run_single(ex, tool_name, tool_args=None):
     state = {"messages": [], "current_iteration": 1, "current_phase": "exploitation",
              "_current_step": {"tool_name": tool_name, "tool_args": tool_args or {}}}
-    out = await execute_tool_node(state, _CONFIG, tool_executor=ex, streaming_callbacks={},
-                                  session_manager_base="http://x")
+    out = await execute_tool_node(state, _CONFIG, tool_executor=ex, streaming_callbacks={})
     return [out["_current_step"]]
 
 
 async def _run_plan(ex, tool_name, tool_args=None):
     state = {"messages": [], "current_iteration": 1, "current_phase": "exploitation",
              "_current_plan": {"steps": [{"tool_name": tool_name, "tool_args": tool_args or {}}]}}
-    out = await execute_plan_node(state, _CONFIG, tool_executor=ex, streaming_callbacks={},
-                                  session_manager_base="http://x")
+    out = await execute_plan_node(state, _CONFIG, tool_executor=ex, streaming_callbacks={})
     return out["_current_plan"]["steps"]
 
 
@@ -186,7 +184,7 @@ async def _run_member(ex, action, tool_name, tool_args=None):
     from orchestrator_helpers.fireteam_member_graph import build_fireteam_member_graph
 
     graph = build_fireteam_member_graph(llm_getter=lambda: None, tool_executor=ex, streaming_callbacks={},
-                                        session_manager_base="http://x", neo4j_creds=None)
+                                        neo4j_creds=None)
     state = {"messages": [], "current_iteration": 1, "max_iterations": 5, "current_phase": "exploitation",
              "user_id": "collab-B", "project_id": "p1", "session_id": "s1", "member_id": "m-1",
              "member_name": "Member", "fireteam_id": "ft-1", "tools": [tool_name], "task": "t",

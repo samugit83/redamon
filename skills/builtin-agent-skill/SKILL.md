@@ -65,6 +65,13 @@ For per-skill tunable defaults, use `project-settings-cascade`.
   with the command in that file's docstring.
 - **NEVER assume existing projects inherit the new skill.** `builtIn` is a strict
   has-key check; existing projects need a jsonb update to `attackSkillConfig`.
+- **NEVER teach a second inbound port.** A person's Kali sandbox takes inbound
+  connections from a target on one port only (their pool port, or 4444 through
+  their own tunnel), and the payload settings block names it: no literal LPORT,
+  no `http.server` on a sandbox port, no JNDI referral server on 1389/1099, no
+  relay or `nc`/`socat` listener on a fixed port, no `ngrok`/`chisel` of the
+  skill's own. `agentic/tests/test_prompts_reverse_ports.py` scans every prompt
+  file for them.
 - **ALWAYS add a registry entry for a per-skill tunable that became a `Project`
   column** in
   [recon_settings/registry.yaml](../../recon_settings/registry.yaml). A test

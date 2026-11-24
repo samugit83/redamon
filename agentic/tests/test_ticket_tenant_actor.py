@@ -621,6 +621,14 @@ class TheAgentApi(unittest.TestCase):
         cls.client = TestClient(api_module.app)
 
     def setUp(self):
+        import sandbox_router
+        from one_sandbox import route_to
+
+        # The terminal opens on its person's own sandbox (one_sandbox's handle).
+        sandbox_router._reset()
+        self.addCleanup(sandbox_router._reset)
+        route_to(self, {})
+
         self._e = mock.patch.dict(os.environ, {
             "INTERNAL_API_KEY": MASTER, "AGENT_WS_TICKET_SECRET": SECRET, "MCP_AUTH_TOKEN": "mcp-token-for-test",
         })
@@ -635,7 +643,7 @@ class TheAgentApi(unittest.TestCase):
         with mock.patch.object(self.api.websockets, "connect", connect):
             with self.client.websocket_connect(f"/ws/kali-terminal?ticket={_ticket('kali-terminal', **claims)}") as ws:
                 ws.send_text("hello")
-                self.assertEqual(ws.receive_text(), "hello")
+                self.assertEqual(ws.receive_bytes(), b"hello")
                 [entry] = PROXIED_SOCKETS.matching(kinds=["kali-terminal"], user_id=claims.get("sub", COLLAB))
                 held["entry"] = (entry.sub, entry.ten)
                 token = connect.call_args.kwargs["additional_headers"]["X-Redamon-Run"]

@@ -4,8 +4,9 @@ import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { GraphToolbar } from './components/GraphToolbar'
 import {
-  agentStopFailureLabel, agentStopSummary, isEmergencyStopScope, type EmergencyStopScope,
+  agentStopFailureLabel, agentStopSummary, isEmergencyStopScope, sandboxStopSummary, type EmergencyStopScope,
 } from './components/GraphToolbar/emergencyStopScope'
+import { useOwnSandboxRunning } from './components/GraphToolbar/useOwnSandboxRunning'
 import { FileSystemDrawer } from './components/FileSystemDrawer'
 import { GraphCanvas, AUTO_2D_THRESHOLD } from './components/GraphCanvas'
 import { GraphEmptyState } from './components/GraphEmptyState'
@@ -636,11 +637,14 @@ export default function GraphPage() {
   // the only place that knows which source is selected and whether it is
   // populated. Duplicating that here could only disagree with it.
 
-  // Active sessions hook - polls kali-sandbox session list
+  // The sessions and jobs of every Kali sandbox the viewer may see
   const activeSessions = useActiveSessions({
     enabled: true,
     fastPoll: activeView === 'sessions',
   })
+  const refetchSessions = activeSessions.refetch
+  const ownSandbox = useOwnSandboxRunning(!!projectId)
+  const isKaliActive = ownSandbox.running || activeSessions.totalCount > 0 || activeSessions.jobs.length > 0
 
   // ── Table view state (lifted from DataTable) ──────────────────────────
   const tableRows = useTableData(data)
@@ -1597,6 +1601,8 @@ export default function GraphPage() {
     return () => { live = false }
   }, [])
 
+  // The Retry of a sandbox stop that did not happen presses again (the stop is idempotent).
+  const emergencyPauseRef = useRef<(() => Promise<void>) | null>(null)
   const handleEmergencyPauseAll = useCallback(async () => {
     setIsEmergencyPausing(true)
     // Each target answers with the reason it did not stop, or null when it did:
@@ -1634,11 +1640,14 @@ export default function GraphPage() {
     }
     // Stop the AI agent runs the person may stop: every user's, or their own.
     let agentSummary: string | null = null
+    let sandboxes: ReturnType<typeof sandboxStopSummary> = null
     const agentLabel = agentStopFailureLabel(emergencyStopScope)
     tasks.push(fetch('/api/agent/emergency-stop-all', { method: 'POST' }).then(
       async res => {
+        // The route names the sandbox outcome on a failed agent call too: read it before the error.
+        const answer = await res.clone().json().catch(() => null)
+        sandboxes = sandboxStopSummary(answer, isEmergencyStopScope(answer?.scope) ? answer.scope : emergencyStopScope)
         if (!res.ok) return `${agentLabel}: ${(await readApiError(res, 'Failed to stop agents')).message}`
-        const answer = await res.json().catch(() => null)
         if (isEmergencyStopScope(answer?.scope)) setEmergencyStopScope(answer.scope)
         agentSummary = agentStopSummary(answer)
         return null
@@ -1648,12 +1657,24 @@ export default function GraphPage() {
     const failures = (await Promise.allSettled(tasks))
       .map(r => r.status === 'fulfilled' ? r.value : `${toApiError(r.reason, 'request failed').message}`)
       .filter((f): f is string => !!f)
+    const sandboxOutcome = sandboxes as ReturnType<typeof sandboxStopSummary>
     if (failures.length) toast.error(failures.join('; '), 'Emergency pause: not everything stopped')
-    if (agentSummary) toast.info(agentSummary)
+    if (sandboxOutcome && !sandboxOutcome.ok) {
+      // A stop the orchestrator did not do is never retried by itself: the press offers it.
+      toast.addToast({
+        type: 'error', title: 'Emergency pause: Kali sandboxes not stopped', message: sandboxOutcome.text, duration: 0,
+        action: { label: 'Retry', onClick: () => { void emergencyPauseRef.current?.() } },
+      })
+    }
+    const summary = [agentSummary, sandboxOutcome?.ok ? sandboxOutcome.text : null].filter(Boolean).join(' ')
+    if (summary) toast.info(summary)
+    ownSandbox.refresh()
+    void refetchSessions()
     // The recon hooks keep their reason for the next render (see reportReconFailure).
     if (reconFailed) reportReconFailure('Emergency pause: recon did not pause', 'recon')
     if (partialFailed) reportReconFailure('Emergency pause: a partial recon did not stop', 'partial')
-  }, [reconState?.status, gvmState?.status, githubHuntState?.status, trufflehogRuns, activePartialRecons, pauseRecon, pauseGvm, pauseGithubHunt, stopTrufflehog, stopPartialRecon, getGvmActionError, getGithubActionError, getTrufflehogActionError, reportReconFailure, toast, emergencyStopScope])
+  }, [reconState?.status, gvmState?.status, githubHuntState?.status, trufflehogRuns, activePartialRecons, pauseRecon, pauseGvm, pauseGithubHunt, stopTrufflehog, stopPartialRecon, getGvmActionError, getGithubActionError, getTrufflehogActionError, reportReconFailure, toast, emergencyStopScope, ownSandbox.refresh, refetchSessions])
+  useEffect(() => { emergencyPauseRef.current = handleEmergencyPauseAll }, [handleEmergencyPauseAll])
 
   // Show message if no project is selected
   if (!projectLoading && !projectId) {
@@ -1752,6 +1773,7 @@ export default function GraphPage() {
         // Emergency Pause All
         onEmergencyPauseAll={handleEmergencyPauseAll}
         isAnyPipelineRunning={isAnyPipelineRunning}
+        isKaliActive={isKaliActive}
         isEmergencyPausing={isEmergencyPausing}
         emergencyStopScope={emergencyStopScope}
         tunnelStatus={tunnelStatus}
@@ -2052,9 +2074,10 @@ export default function GraphPage() {
               sessions={activeSessions.sessions}
               jobs={activeSessions.jobs}
               nonMsfSessions={activeSessions.nonMsfSessions}
-              agentBusy={activeSessions.agentBusy}
+              busyInstances={activeSessions.busyInstances}
               isLoading={activeSessions.isLoading}
               error={activeSessions.error}
+              unavailable={activeSessions.unavailableCount}
               projectId={projectId || ''}
               onInteract={activeSessions.interactWithSession}
               onKillSession={activeSessions.killSession}

@@ -38,17 +38,39 @@ export type WsTicketResult =
 
 const FALLBACK = 'Could not get a ticket for the agent connection'
 
+/**
+ * A failure with `status: 0` got no answer: the request, or the body after the
+ * headers, was dropped or cancelled on the way, so a caller may retry it. Any
+ * other failure is an answer and keeps its status: a refusal, `invalid_json`
+ * (a 2xx body that is not JSON: a proxy's or a portal's page, which a retry
+ * only repeats) or `unexpected_answer` (JSON without a usable `ticket`). Only
+ * an explicit `{ticket: null}` means the deployment signs no tickets.
+ */
 export async function mintWsTicket(projectId: string, sessionId: string, socket: WsSocket): Promise<WsTicketResult> {
+  let res: Response
   try {
-    const res = await fetch('/api/agent/ws-ticket', {
+    res = await fetch('/api/agent/ws-ticket', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ projectId, sessionId, socket }),
     })
-    if (!res.ok) return { ok: false, error: await readApiError(res, FALLBACK) }
-    const body = await res.json().catch(() => null) as { ticket?: unknown } | null
-    return { ok: true, ticket: typeof body?.ticket === 'string' && body.ticket ? body.ticket : null }
   } catch (err) {
     return { ok: false, error: toApiError(err, FALLBACK) }
   }
+  if (!res.ok) return { ok: false, error: await readApiError(res, FALLBACK) }
+  let body: unknown
+  try {
+    body = await res.json()
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof SyntaxError
+        ? new ApiError({ reason: FALLBACK, status: res.status, code: 'invalid_json' })
+        : toApiError(err, FALLBACK),
+    }
+  }
+  const ticket = body && typeof body === 'object' ? (body as { ticket?: unknown }).ticket : undefined
+  if (typeof ticket === 'string' && ticket) return { ok: true, ticket }
+  if (ticket === null) return { ok: true, ticket: null }
+  return { ok: false, error: new ApiError({ reason: FALLBACK, status: res.status, code: 'unexpected_answer' }) }
 }

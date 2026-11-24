@@ -21,7 +21,8 @@ import { PluginSkillRow } from '@/components/plugins/skills/PluginSkillRow'
 import { usePluginSkillOverrides } from '@/components/plugins/skills/usePluginSkillOverrides'
 import { SkillVersionsModal } from '@/components/plugins/review/SkillVersionsModal'
 import { OverrideReviewModal } from '@/components/plugins/review/OverrideReviewModal'
-import { importSummary } from '@/components/settings/AgentSkillsTab'
+import { importSummary, updatedSummary } from '@/components/settings/AgentSkillsTab'
+import { offerCommunityUpdates } from '@/components/settings/communitySkillUpdates'
 import { useSkillUpload } from '@/components/userSkills/useSkillUpload'
 import { MAX_ENABLED_USER_SKILLS_PER_PROJECT, MAX_SKILLS_PER_USER, USER_SKILL_LIMIT_TEXT } from '@/lib/userSkills'
 import { postUserSkillsChanged, useUserSkillsChanged } from '@/lib/userSkillsChannel'
@@ -201,7 +202,7 @@ function getConfig(data: FormData): AttackSkillConfig {
 
 export function AttackSkillsSection({ data, updateField, projectId, onOpenRoe, inDrawer = false }: AttackSkillsSectionProps) {
   const { userId } = useProject()
-  const { alertError, alert: showAlert } = useAlertModal()
+  const { alertError, alert: showAlert, confirm: showConfirm } = useAlertModal()
   // A collaborator's form (step 5.7): the toggles pick among the project OWNER's skills, listed by
   // name from the owner's catalog; turning one on or off needs Manage, and only the owner uploads.
   const owner = useOwnerCatalogSource()
@@ -385,6 +386,13 @@ export function AttackSkillsSection({ data, updateField, projectId, onOpenRoe, i
         alertError(`Failed to read the import's answer (invalid_json · HTTP ${resp.status}). Check your skills list.`)
         return
       }
+      // Copies older than the catalog are replaced only on the person's word; an update enables nothing new.
+      let updateLine = ''
+      const update = await offerCommunityUpdates(userId, result, showConfirm)
+      if (update) {
+        if (!update.ok) alertError((await readApiError(update, 'Failed to update community skills')).message)
+        else updateLine = updatedSummary(await update.json().catch(() => null))
+      }
 
       const refreshResp = await fetch(`/api/users/${userId}/attack-skills`)
       if (!refreshResp.ok) {
@@ -411,7 +419,7 @@ export function AttackSkillsSection({ data, updateField, projectId, onOpenRoe, i
       }
 
       showAlert(
-        importSummary(result) +
+        importSummary(result) + updateLine +
         (newlyImported.length - leftOff > 0 ? ` ${newlyImported.length - leftOff} new skill(s) are enabled for this project.` : '') +
         (leftOff ? ` ${leftOff} were left off: a project can use at most ${MAX_ENABLED_USER_SKILLS_PER_PROJECT} of your skills.` : '')
       )
@@ -421,7 +429,7 @@ export function AttackSkillsSection({ data, updateField, projectId, onOpenRoe, i
     } finally {
       setImporting(false)
     }
-  }, [userId, importing, userSkills, config, updateField, alertError, showAlert])
+  }, [userId, importing, userSkills, config, updateField, alertError, showAlert, showConfirm])
 
   return (
     <>

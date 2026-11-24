@@ -334,8 +334,29 @@ describe('remove closes the terminal (agent call made)', () => {
   test('removing another grant opens no agent call: the sessions console re-reads the grant on every poll', async () => {
     await signIn('admin-1')
     await POST(post({ action: 'remove', userId: 'member-1', grant: 'shell_sessions' }))
-    await POST(post({ action: 'remove', userId: 'member-2', grant: 'tunnels' }))
+    // No tunnel stored on: nothing to turn off, nothing asked.
+    const res = await POST(post({ action: 'remove', userId: 'member-2', grant: 'tunnels' }))
+    expect(await res.json()).toMatchObject({ changed: true, tunnel: { turnedOff: 0, failed: 0 } })
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test('removing tunnels from a member whose tunnel is on turns it off in the settings and in their own sandbox (G-03)', async () => {
+    await signIn('admin-1')
+    db().seed('userSettings', [{ id: 's-2', userId: 'member-2', tunnelsEnabled: true, ngrokAuthtoken: 'fake-ngrok', chiselServerUrl: '', chiselAuth: '' }])
+    const res = await POST(post({ action: 'remove', userId: 'member-2', grant: 'tunnels' }))
+    expect(await res.json()).toMatchObject({ changed: true, tunnel: { turnedOff: 1, failed: 0 } })
+    expect(db().rows('userSettings').find((r) => r.userId === 'member-2')!.tunnelsEnabled).toBe(false)
+    const pushes = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/sandboxes/member-2/tunnel'))
+    expect(pushes).toHaveLength(1)
+    expect(JSON.parse(pushes[0][1].body)).toEqual({ ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '' })
+  })
+
+  test('remove_all turns off the tunnel of every member who lost tunnels with it', async () => {
+    await signIn('admin-1')
+    db().seed('userSettings', [{ id: 's-2', userId: 'member-2', tunnelsEnabled: true, ngrokAuthtoken: 'fake-ngrok', chiselServerUrl: '', chiselAuth: '' }])
+    const res = await POST(post({ action: 'remove_all' }))
+    expect(await res.json()).toMatchObject({ action: 'remove_all', tunnels: { turnedOff: 1, failed: 0 } })
+    expect(db().rows('userSettings').find((r) => r.userId === 'member-2')!.tunnelsEnabled).toBe(false)
   })
 
   test('the agent unreachable: the removal stands, the answer says so, [rbac] socket-close failed is logged', async () => {

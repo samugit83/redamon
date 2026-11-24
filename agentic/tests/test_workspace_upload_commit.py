@@ -398,6 +398,19 @@ class WhatTheJobStores(CommitBase):
             self.assertIn(uid, upload_sessions._sessions)
             gate.set()
 
+    async def test_a_refused_jobs_folder_is_not_a_full_queue(self):
+        # Reported as too_many_jobs, a jobs/ a sandbox replaced with a link was
+        # retried forever; it is a refusal the user has to fix.
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        shutil.rmtree(self.root / "jobs")
+        (self.root / "jobs").symlink_to(outside)
+        uid = await self.upload(tar_bytes([("r/x", b"x")]), "r", "folder")
+        with self.assertRaises(ImportFailure) as ctx:
+            await upload_job.commit("p1", uid)
+        self.assertEqual(ctx.exception.code, "jobs_folder_refused")
+        self.assertEqual(list(outside.iterdir()), [])
+
 
 if __name__ == "__main__":
     unittest.main()

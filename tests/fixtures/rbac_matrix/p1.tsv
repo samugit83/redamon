@@ -184,15 +184,28 @@ p1-skillcontent-actas	1.9	admin_a_as_member_a	GET	/api/projects/${PA_ID}?include
 # run_artifacts/step113/drive.mjs proves the per-project view with a tagged listener), so
 # these rows prove the gate on ids outside the caller's view: such an id is 404 before any
 # command reaches the console (the baseline's 422 was the agent refusing a non-numeric id).
-# member_c owns nothing and holds no grant, so its list never carries a job. A 502
+# member_c owns nothing and holds no grant, so its list carries only its own sandbox's jobs (D-D), and
+# the matrix starts no handler in it: none. A 502
 # session_manager_unauthorized means the agent's MCP_AUTH_TOKEN differs from kali-sandbox's.
+# Group 1 (TD-11): a drive names its sandbox instance; with per-user sandboxes a drive without
+# ?sandbox= is 400, so the drive rows name 000000, an instance nobody has, and stay 404 in both modes.
 p1-sessions-list-member	1.13	member_c	GET	/api/agent/sessions	-	200;has="jobs":[];lacks=session_manager_unauthorized	req:HD-01
 p1-sessions-list-admin	1.13	admin_a	GET	/api/agent/sessions	-	200;has="sessions":	req:HD-02
-p1-session-interact-hidden	1.13	member_c	POST	/api/agent/sessions/rbac-not-a-session/interact	{"command":"id"}	404	req:HD-01
-p1-session-interact-hidden-numeric	1.13	member_c	POST	/api/agent/sessions/999999/interact	{"command":"id"}	404	req:HD-01
-p1-session-kill-hidden	1.13	member_c	POST	/api/agent/sessions/rbac-not-a-session/kill	-	404	req:HD-01
-p1-job-kill-hidden	1.13	member_c	POST	/api/agent/jobs/rbac-not-a-job/kill	-	404	req:HD-02
-p1-session-kill-unknown-admin	1.13	admin_a	POST	/api/agent/sessions/999999/kill	-	404	req:HD-02
+p1-session-interact-hidden	1.13	member_c	POST	/api/agent/sessions/rbac-not-a-session/interact?sandbox=000000	{"command":"id"}	404	req:HD-01
+p1-session-interact-hidden-numeric	1.13	member_c	POST	/api/agent/sessions/999999/interact?sandbox=000000	{"command":"id"}	404	req:HD-01
+p1-session-kill-hidden	1.13	member_c	POST	/api/agent/sessions/rbac-not-a-session/kill?sandbox=000000	-	404	req:HD-01
+p1-job-kill-hidden	1.13	member_c	POST	/api/agent/jobs/rbac-not-a-job/kill?sandbox=000000	-	404	req:HD-02
+p1-session-kill-unknown-admin	1.13	admin_a	POST	/api/agent/sessions/999999/kill?sandbox=000000	-	404	req:HD-02
+# Group 1 (S16): one's own Kali sandbox status asks agent:sessions and never carries a token; the
+# operator's stop of a person's sandboxes is the operations view's (platform:operations, then
+# platform:emergency_stop), same-origin, 404 with RBAC_GOVERNANCE_ENABLED off. An empty body is refused
+# before anything stops. The status answers 502/503 when the orchestrator has no sandbox routes or is down.
+p1-g1-sandbox-status-member	g1	member_a	GET	/api/agent/sandbox/status	-	200|502|503;lacks="code":"forbidden";lacks=token	req:E3
+p1-g1-sandbox-status-denied	g1	operator	GET	/api/agent/sandbox/status	-	403;has="permission":"agent:sessions"	req:E3 permissions:on
+p1-g1-ops-sandbox-stop-admin	g1	admin_a	POST	/api/admin/operations/sandboxes/stop	{}	400;has=invalid_target	req:GV-06 governance:on
+p1-g1-ops-sandbox-stop-usermgr	g1	usermgr	POST	/api/admin/operations/sandboxes/stop	{}	403;has="permission":"platform:operations"	req:GV-06 governance:on
+p1-g1-ops-sandbox-stop-xo	g1	admin_a	POST	/api/admin/operations/sandboxes/stop	{}	403;has=cross_origin	req:GV-06 req:ID-26 governance:on origin:https://rbac-other-site.example
+p1-g1-ops-sandbox-stop-off	g1	admin_a	POST	/api/admin/operations/sandboxes/stop	{}	404	req:GV-06 governance:off
 #
 # ---- step 1.16: job credentials for scan containers ----
 # The bare scanner key reads and writes nothing (HD-20): each scanner route wants the scan's job

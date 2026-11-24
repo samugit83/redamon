@@ -379,9 +379,10 @@ export const SECTIONS = [
           ...pad(rows.map((s, i) => [
             `${email(s.userId)} (${role(s.userId)})`,
             `${[s.hasNgrok && 'ngrok', s.hasChiselUrl && 'chisel'].filter(Boolean).join('+')}  `
-              + `${s.tunnelsEnabled ? 'enabled' : 'disabled'}  saved ${day(s.updatedAt)}${i === 0 ? "  <- the agent's tunnel" : ''}`,
+              + `${s.tunnelsEnabled ? 'enabled' : 'disabled'}  saved ${day(s.updatedAt)}`,
           ])),
-          '    After the upgrade only admins and members keeping the tunnel grant change it.',
+          "    After the upgrade each account's tunnel runs in its own Kali sandbox, with its own credentials;",
+          '    turning one on needs the tunnel grant (admins, and members keeping it).',
         ],
       }
     },
@@ -398,8 +399,9 @@ export const SECTIONS = [
         return {
           affects: false,
           lines: [
-            '  Instance settings (tunnel, TrafficMind capture and egress, SCA ignore list): in force; admins change them in Global Settings.',
+            '  Instance settings (TrafficMind capture and egress, SCA ignore list): in force; admins change them in Global Settings.',
             "    The accounts' settings are not copied again.",
+            INSTANCE_TUNNEL_UNUSED,
           ],
         }
       }
@@ -422,6 +424,7 @@ export const SECTIONS = [
           switchOn
             ? '    With RBAC_IDENTITY_ENABLED on this copy is the one in force; admins change it in Global Settings.'
             : "    While RBAC_IDENTITY_ENABLED is off the accounts' settings stay in force; each start copies them again.",
+          INSTANCE_TUNNEL_UNUSED,
         ],
       }
     },
@@ -496,6 +499,9 @@ export const SECTIONS = [
   },
 ]
 
+// Tunnels are per person (group 1): the instance copy of the tunnel is kept but never started.
+const INSTANCE_TUNNEL_UNUSED = "    The tunnel in this copy is not used: each account's own tunnel runs in its own Kali sandbox."
+
 /** The short list of §14.7: what a member sees change, each from the step that changes it. */
 export const MEMBER_CHANGES = [
   { step: '1.11', text: () => "Emergency stop stops only their own agent runs; admins still stop everyone's." },
@@ -504,9 +510,9 @@ export const MEMBER_CHANGES = [
     text: ({ templateFiles }) => 'Nuclei templates: they upload and delete only their own'
       + (templateFiles > 0 ? `; the ${templateFiles} template file(s) already in the folder become instance templates that admins manage.` : '.'),
   },
-  { step: '1.10', text: () => 'Tunnel: only admins and members keeping the tunnel grant change it; the others see its status.' },
-  { step: '1.13', text: () => "Shell sessions: they see their own projects' sessions; the all-sessions console needs the sessions grant." },
-  { step: '1.14', text: () => "Kali terminal: needs the terminal grant, and warns that other projects' files are visible there." },
+  { step: '1.10', text: () => 'Tunnel: each person has their own, in their own Kali sandbox; turning it on needs the tunnel grant (admins, and members keeping it), and anyone can turn theirs off.' },
+  { step: '1.13', text: () => "Shell sessions: they see their own projects' sessions and their own sandbox's background jobs; the all-sessions console needs the sessions grant." },
+  { step: '1.14', text: () => "Kali terminal: needs the terminal grant, and opens in their own Kali sandbox." },
   { step: '1.9', text: () => 'MCP servers: only admins add, test or load stdio servers.' },
 ]
 

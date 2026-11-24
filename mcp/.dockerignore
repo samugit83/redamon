@@ -1,0 +1,15 @@
+# Build context of the Kali sandbox image (docker-compose.yml and mcp/docker-compose.yml:
+# context ./mcp). The Dockerfile copies only kali-sandbox/, requirements.txt and servers/.
+# servers/results and servers/notes hold old scan output of real targets (gitignored),
+# which COPY servers/ would bake into every image layer; output/ is every person's Kali
+# output (root-owned, unreadable to a build run as a user).
+output/
+nuclei-templates/
+tests/
+servers/results/
+servers/notes/
+servers/tests/
+servers/test_*.py
+**/__pycache__/
+**/*.py[cod]
+.env

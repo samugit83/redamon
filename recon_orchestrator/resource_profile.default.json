@@ -10,6 +10,7 @@
     "tool_envelope_note": "tool_container_envelope_bytes holds SIBLING containers spawned by a scan, not scan jobs themselves. supply_chain_analyzer is the DIRTY sandbox; its value is the expected PEAK, and container_cap() applies CONTAINER_CAP_HEADROOM (1.5x) on top to get the hard mem_limit.",
     "how_to_replace": "bash tests/redamon_mem_calibrate.sh baseline && bash tests/redamon_mem_calibrate.sh scan <project_id>"
   },
+  "kali_sandbox_envelope_bytes": 1073741824,
   "tool_container_envelope_bytes": {
     "supply_chain_analyzer": 1073741824,
     "trufflehog_js": 805306368,

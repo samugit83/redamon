@@ -2,6 +2,7 @@ import { INVALID_REASON_TEXT, groupHostsByScanRoot } from './domainBatch'
 import { resolveScopeGroups } from './scopeGroups'
 import { REGEX_GITHUB_ORG } from '@/lib/reconSettings/validators'
 import { roeExclusionProblem } from '@/lib/roeScope'
+import { SANDBOX_ADDRESS_POOL, inSandboxAddressPool } from '@/lib/ip-target-utils'
 
 // === IP / Network ===
 export const REGEX_IPV4 = /^((25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(25[0-5]|2[0-4]\d|[01]?\d\d?)$/
@@ -82,6 +83,11 @@ export const VALID_HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEA
 // === Validation result ===
 export interface ValidationError { field: string; message: string }
 
+/** Why a target inside the per-user Kali sandboxes' pool is refused, the same words on the form and the server. */
+export function sandboxPoolMessage(entry: string): string {
+  return `${entry.trim()} is inside ${SANDBOX_ADDRESS_POOL}, RedAmon's own Kali sandbox network: it is never a scan target`
+}
+
 export function validateProjectForm(data: Record<string, unknown>): ValidationError[] {
   const errors: ValidationError[] = []
   const ipMode = data.ipMode as boolean
@@ -129,6 +135,8 @@ export function validateProjectForm(data: Record<string, unknown>): ValidationEr
     for (const ip of ips) {
       if (ip.trim() && !isValidIpOrCidr(ip)) {
         errors.push({ field: 'targetIps', message: `Invalid IP/CIDR: ${ip}. CIDR max /24 (256 hosts).` })
+      } else if (inSandboxAddressPool(ip)) {
+        errors.push({ field: 'targetIps', message: sandboxPoolMessage(ip) })
       }
     }
     if (ips.filter(ip => ip.trim()).length === 0) {

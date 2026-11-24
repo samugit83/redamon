@@ -32,11 +32,11 @@ const userFindUnique = vi.fn(async (args: { where: { id: string } }) => {
   const role = dbRoles.get(args.where.id)
   return role ? { id: args.where.id, email: `${args.where.id}@e2e.local`, role, password: 'h', createdAt: new Date(0) } : null
 })
-const settingsFindFirst = vi.fn(async () => ({ ngrokAuthtoken: 'fake-ngrok', chiselServerUrl: '', chiselAuth: '' }))
+const settingsFindUnique = vi.fn(async () => ({ tunnelsEnabled: true, ngrokAuthtoken: 'fake-ngrok', chiselServerUrl: '', chiselAuth: '' }))
 vi.mock('@/lib/prisma', () => ({
   default: {
     user: { findUnique: (a: { where: { id: string } }) => userFindUnique(a) },
-    userSettings: { findFirst: () => settingsFindFirst() },
+    userSettings: { findUnique: () => settingsFindUnique() },
   },
 }))
 
@@ -102,7 +102,7 @@ beforeEach(() => {
   authCookie = undefined
   dbRoles.clear()
   userFindUnique.mockClear()
-  settingsFindFirst.mockClear()
+  settingsFindUnique.mockClear()
   fetchSpy.mockClear()
   quiet.error.mockImplementation(() => {})
   quiet.warn.mockImplementation(() => {})
@@ -132,14 +132,14 @@ describe('the former login-only routes read the account first', () => {
     expect(results.filter(r => r.status !== 401)).toEqual([])
     // Refused before any service call, file or settings read.
     expect(fetchSpy).not.toHaveBeenCalled()
-    expect(settingsFindFirst).not.toHaveBeenCalled()
+    expect(settingsFindUnique).not.toHaveBeenCalled()
   })
 
   test('each answers 401 without a cookie', async () => {
     const results = await callAll()
     expect(results.filter(r => r.status !== 401)).toEqual([])
     expect(fetchSpy).not.toHaveBeenCalled()
-    expect(settingsFindFirst).not.toHaveBeenCalled()
+    expect(settingsFindUnique).not.toHaveBeenCalled()
   })
 
   test('a signed-in account still reaches every one of them', async () => {
@@ -151,17 +151,18 @@ describe('the former login-only routes read the account first', () => {
 
   test('the tunnel config still answers the internal key without a cookie (the agent chisel lookup)', async () => {
     const { GET } = await import('./global/tunnel-config/route')
-    const res = await GET(request('GET', '/api/global/tunnel-config', { 'x-internal-key': 'internal-key-login-only' }))
+    const res = await GET(request('GET', '/api/global/tunnel-config?userId=member', { 'x-internal-key': 'internal-key-login-only' }))
     expect(res.status).toBe(200)
-    expect(settingsFindFirst).toHaveBeenCalledTimes(1)
-    expect(userFindUnique).not.toHaveBeenCalled()
+    expect(settingsFindUnique).toHaveBeenCalledTimes(1)
+    // No session is read: the only account read is the named person's, for platform:tunnels (G-03).
+    expect(userFindUnique.mock.calls.every(([a]) => a.where.id === 'member')).toBe(true)
   })
 
   test('a wrong internal key on the tunnel config is refused (404, HD-05)', async () => {
     const { GET } = await import('./global/tunnel-config/route')
     const res = await GET(request('GET', '/api/global/tunnel-config', { 'x-internal-key': 'wrong' }))
     expect(res.status).toBe(404)
-    expect(settingsFindFirst).not.toHaveBeenCalled()
+    expect(settingsFindUnique).not.toHaveBeenCalled()
   })
 
   test("the tunnel config answers a deleted user's token, and a live member's, with 404 and reads nothing", async () => {
@@ -171,7 +172,7 @@ describe('the former login-only routes read the account first', () => {
     dbRoles.set('member', 'standard')
     authCookie = await createToken('member', 'standard')
     expect((await GET(request('GET', '/api/global/tunnel-config'))).status).toBe(404)
-    expect(settingsFindFirst).not.toHaveBeenCalled()
+    expect(settingsFindUnique).not.toHaveBeenCalled()
     expect(userFindUnique).not.toHaveBeenCalled()
   })
 })

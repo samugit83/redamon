@@ -34,6 +34,7 @@ from orchestrator_helpers.productivity import (
 )
 from project_settings import get_setting, get_allowed_tools_for_phase, is_dangerous_call
 from tools import set_tenant_context, set_phase_context, set_graph_view_context
+from sandbox_router import model_note
 
 logger = logging.getLogger(__name__)
 
@@ -588,7 +589,7 @@ def _build_pending_output_section(state: FireteamMemberState) -> str:
             parts.append(
                 f"### Tool {i+1}: {s.get('tool_name', 'unknown')} ({status})\n"
                 f"Args: {json_dumps_safe(s.get('tool_args', {}))}\n"
-                f"Output:\n{wrap_untrusted(output)}"
+                f"Output:\n{model_note(s)}{wrap_untrusted(output)}"
             )
         return _MEMBER_PENDING_PLAN_OUTPUTS_SECTION.format(
             n_tools=len(plan_steps),
@@ -605,7 +606,7 @@ def _build_pending_output_section(state: FireteamMemberState) -> str:
             tool_name=prev_step.get("tool_name", ""),
             tool_args=str(prev_step.get("tool_args", {}))[:500],
             success=bool(prev_step.get("success", True)),
-            tool_output=wrap_untrusted(str(prev_step.get("tool_output", ""))[:max_chars]),
+            tool_output=model_note(prev_step) + wrap_untrusted(str(prev_step.get("tool_output", ""))[:max_chars]),
         )
 
     return ""

@@ -145,7 +145,11 @@ with a non-zero exit, never PASSED.
    `127.0.0.1` (`19100` + 10 × lane), and the instance's own secret (`oracles.py`). The two
    phase-10 labs take these as variables of their own Compose file; the older labs get a
    generated override (container names, ports, networks and image tags; the lab folders are
-   never edited).
+   never edited). The agent is given the lab by its front's container name: a person's Kali
+   sandbox is only on its own network, so right before the chat the front starts following the
+   chatting person's sandbox network (`redamon-sbx-<key>`, found by the orchestrator's labels and
+   joined again after a sandbox restart), where the sandbox resolves that name; the capture
+   proxy resolves it to the front's `redamon_pentest-net` address.
 2. Creates a project of the e2e owner with nothing waiting for a person (approvals and tool
    confirmation off, the target guardrail off, the lab's address as the target), the arm's
    resources turned off in it (`tradecraftOff`), and the library tools offered in the

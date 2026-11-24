@@ -10,6 +10,7 @@ import { auditActor } from '@/lib/auditActor'
 import { loginUseRefusal } from '@/lib/tradecraft/actAs'
 import { AGENT_ROUTES, Credentials, ReadNowRequest, ReadNowResult, SLUG_RE, WEBAPP_TIMEOUTS_MS } from '@/lib/tradecraft/agentContract'
 import { readSettings } from '@/lib/tradecraft/catalog'
+import { jobActorOf } from '@/lib/tradecraft/jobs'
 import { hasStoredLogin } from '@/lib/tradecraft/masking'
 import { loadOwnResource } from '@/lib/tradecraft/resourceAccess'
 
@@ -48,7 +49,11 @@ async function isBlocked(resourceId: string, url: string): Promise<boolean> {
 
 type Opened =
   | { res: Response }
-  | { id: string; row: UserTradecraftResource; pageId: string; entry: NonNullable<Awaited<ReturnType<typeof entryOf>>> }
+  | {
+    id: string; row: UserTradecraftResource; pageId: string; entry: NonNullable<Awaited<ReturnType<typeof entryOf>>>
+    /** The administrator acting as the account (Read now only), else null. */
+    realActorUserId: string | null
+  }
 
 /**
  * The guards both handlers share, then the row and the page; the login rule before the row is read.
@@ -64,9 +69,11 @@ async function open(request: NextRequest, p: RouteParams['params'], { person }: 
   if (notOwn) return { res: notOwn }
   const selfRefused = await requireSelfPermission(request, id, 'self:tradecraft')
   if (selfRefused) return { res: selfRefused }
+  let realActorUserId: string | null = null
   if (person) {
     const actor = await auditActor()
     if (!actor.actorId) return { res: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) }
+    realActorUserId = jobActorOf(actor)?.realActorUserId ?? null
   }
   // The text of a resource with a login is the private content §6.6 protects, and Read now would
   // also send the login: neither while an administrator acts as the account (R-161).
@@ -78,7 +85,7 @@ async function open(request: NextRequest, p: RouteParams['params'], { person }: 
   if (n === null) return { res: PAGE_NOT_FOUND() }
   const entry = await entryOf(id, row, n)
   if (!entry) return { res: PAGE_NOT_FOUND() }
-  return { id, row, pageId, entry }
+  return { id, row, pageId, entry, realActorUserId }
 }
 
 // GET /api/users/[id]/tradecraft-resources/[resourceId]/pages/[pageId]
@@ -114,7 +121,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
   try {
     const o = await open(request, params, { person: true })
     if ('res' in o) return o.res
-    const { id, row, entry } = o
+    const { id, row, entry, realActorUserId } = o
     if (await isBlocked(row.id, entry.url)) return failure(409, 'page_blocked', 'This page is blocked: unblock it to read it')
 
     const account = row.githubTokenOverride ? null : await prisma.userSettings.findUnique({ where: { userId: id }, select: { githubAccessToken: true } })
@@ -127,6 +134,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     const user = await prisma.tradecraftUserSettings.findUnique({ where: { userId: id }, select: { ingestion: true } })
     const payload = ReadNowRequest.parse({
       user_id: id,
+      real_actor_user_id: realActorUserId,
       resource_id: row.id,
       url: entry.url,
       read_settings: readSettings(row, user, row.forcedType || row.resourceType),

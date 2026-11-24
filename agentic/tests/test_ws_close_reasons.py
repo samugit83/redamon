@@ -48,6 +48,15 @@ class AgentSocketNotReady(_AppTestBase):
 
 
 class KaliTerminalUnavailable(_AppTestBase):
+    def setUp(self):
+        import sandbox_router
+        from one_sandbox import route_to
+
+        # The terminal opens on its person's own sandbox (one_sandbox's handle).
+        sandbox_router._reset()
+        self.addCleanup(sandbox_router._reset)
+        route_to(self, {})
+
     def test_an_unreachable_sandbox_closes_1011_with_the_class(self):
         claims = {"sub": "u", "pid": "p", "sid": "s"}
 

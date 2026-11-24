@@ -183,6 +183,7 @@ const CAPABILITY_ONLY: Record<string, string> = {
   '/api/plugins/overrides/change-sets/[id]/approve plugins:approve_overrides': 'the change set\'s scope (an account or a project) is read from the row and checked by changeSetAccess (scopeRefusal: a project scope at Manage, step 5.10; bodyOwnerMatches): the capability alone here (step 3.9)',
   '/api/plugins/overrides/change-sets/[id]/reject plugins:approve_overrides': 'the change set\'s scope (an account or a project) is read from the row and checked by changeSetAccess (scopeRefusal: a project scope at Manage, step 5.10; bodyOwnerMatches): the capability alone here (step 3.9)',
   '/api/plugins/overrides/reset plugins:approve_overrides': 'the change set\'s scope (an account or a project) is read from the row and checked by changeSetAccess (scopeRefusal: a project scope at Manage, step 5.10; bodyOwnerMatches): the capability alone here (step 3.9)',
+  '/api/agent/sandbox/status agent:sessions': 'a person\'s Kali sandbox belongs to no project (it mounts every project the person may run the agent on): the capability alone gates the Sessions panel\'s stop warning, and the route answers only the effective person\'s own sandbox (group 1, WI-S16-3)',
   '/api/agent/jobs/[id]/kill agent:sessions': 'the agent\'s session list spans every project (the Kali sandbox runs one msfconsole): the capability alone here; which sessions the caller sees and drives is resolveSessionsViewer\'s rule (own projects, projects shared at Exploitation & shells (step 5.10), or platform:shell_sessions for all) (step 3.9)',
   '/api/agent/sessions agent:sessions': 'the agent\'s session list spans every project (the Kali sandbox runs one msfconsole): the capability alone here; which sessions the caller sees and drives is resolveSessionsViewer\'s rule (own projects, projects shared at Exploitation & shells (step 5.10), or platform:shell_sessions for all) (step 3.9)',
   '/api/agent/sessions/[id]/interact agent:sessions': 'the agent\'s session list spans every project (the Kali sandbox runs one msfconsole): the capability alone here; which sessions the caller sees and drives is resolveSessionsViewer\'s rule (own projects, projects shared at Exploitation & shells (step 5.10), or platform:shell_sessions for all) (step 3.9)',
@@ -221,6 +222,8 @@ const SAME_ORIGIN_ROUTES = [
   '/api/admin/shares/[projectId]/[userId]',
   // Stopping another person's agent run from the operations view (step 6.5): an admin action, same-origin like the others.
   '/api/admin/operations/agent-runs/stop',
+  // Stopping another person's Kali sandboxes from the same view (group 1, WI-S16-6).
+  '/api/admin/operations/sandboxes/stop',
   '/api/auth/act-as',
   // A conversation shared with the project, and the owner's co-owner policy (step 5.8): who reads what.
   '/api/conversations/[id]/share',
@@ -274,7 +277,7 @@ const SAME_ORIGIN_FAMILIES = [
   /^\/api\/users\/\[id\](\/(password|permissions|disable|enable|revoke-sessions|reset-credentials|settings|invite\/[^/]+|mcp-tokens(\/\[tokenId\])?|sessions(\/\[sid\])?))?$/,
   /^\/api\/auth\/(act-as|sessions\/.+)$/,
   /^\/api\/root\//,
-  /^\/api\/admin\/(instance-settings|legacy-grants|permission-sets(\/\[id\])?|admin-profiles(\/\[id\])?|llm-providers(\/\[providerId\]|\/policy)?|projects\/\[id\]|shares\/\[projectId\]\/\[userId\]|operations\/agent-runs\/stop)$/,
+  /^\/api\/admin\/(instance-settings|legacy-grants|permission-sets(\/\[id\])?|admin-profiles(\/\[id\])?|llm-providers(\/\[providerId\]|\/policy)?|projects\/\[id\]|shares\/\[projectId\]\/\[userId\]|operations\/agent-runs\/stop|operations\/sandboxes\/stop)$/,
   /^\/api\/invite\//,
   /^\/api\/account\//,
   /^\/api\/projects\/\[id\]\/(collaborators(\/\[userId\])?|leave|breakglass|access-policy)$/,

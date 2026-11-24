@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { sandboxPoolTargets } from '@/lib/ip-target-utils'
+import { sandboxPoolMessage } from '@/lib/validation'
 import { requireAlso, requirePermission } from '@/lib/authz/guards'
 import prisma from '@/lib/prisma'
 import { Prisma } from '@prisma/client'
@@ -322,6 +324,13 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     }
     if (Array.isArray(updateData.targetIps)) {
       updateData.targetIps = updateData.targetIps.map((s: string) => s.trim()).filter(Boolean)
+    }
+    // Recon runs on the host network, which reaches every person's Kali sandbox bridge: a target in
+    // their address pool would scan other people's sandboxes, so it is never stored (recon refuses
+    // it again on its side).
+    const poolTargets = sandboxPoolTargets(Array.isArray(updateData.targetIps) ? updateData.targetIps : [])
+    if (poolTargets.length > 0) {
+      return NextResponse.json({ error: sandboxPoolMessage(poolTargets[0]), code: 'target_in_sandbox_pool' }, { status: 400 })
     }
 
     // Domain batch: the derived groups are the project's SCOPE (the hard guardrail,

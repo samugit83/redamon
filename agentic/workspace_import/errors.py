@@ -42,6 +42,9 @@ CODES: dict[str, tuple[int, str]] = {
     "chunk_too_large": (413, "The chunk is larger than the server accepts."),
     "session_incomplete": (409, "The upload is not complete yet."),
     "too_many_jobs": (429, "Too many uploads and imports are running on the server. Retry shortly."),
+    "jobs_folder_refused": (409, "The project's jobs folder has been replaced by something that is not a "
+                                 "plain folder, so no upload or import can start. Remove it from the workspace."),
+    "job_store_error": (503, "The job could not be started on the server. Check the agent log."),
     "project_deleted": (409, "The project was deleted."),
     "settings_unavailable": (503, "The project could not be checked with the web app. Retry shortly."),
     "project_exists": (409, "The project still exists; its workspace was not purged."),
@@ -119,3 +122,15 @@ def map_os_error(e: BaseException) -> Optional[ImportFailure]:
     if isinstance(e, OSError) and e.errno in _DISK_FULL_ERRNOS:
         return ImportFailure("insufficient_storage")
     return None
+
+
+# JobRegistry.spawn's refusal codes. Only a job cap is worth a retry: a refused
+# jobs/ folder retried as too_many_jobs never succeeds.
+_SPAWN_REFUSALS = {"job_store_refused": "jobs_folder_refused", "job_store_error": "job_store_error",
+                   "invalid_project_id": "invalid_request"}
+
+
+def spawn_refusal(started) -> ImportFailure:
+    """The failure for a JobRegistry.spawn answer that holds no job."""
+    code = started.get("code") if isinstance(started, dict) else None
+    return ImportFailure(_SPAWN_REFUSALS.get(code, "too_many_jobs"))

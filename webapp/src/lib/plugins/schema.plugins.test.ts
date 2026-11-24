@@ -100,7 +100,7 @@ describe('the constraint script', () => {
     const entry = dockerfile.split('\n').find((l) => l.startsWith('RUN printf') && l.includes('entrypoint'))!
     const push = entry.indexOf('db push')
     const backfill = entry.indexOf('backfill-user-skill-toggles.mjs')
-    const server = entry.indexOf('exec node server.js')
+    const server = entry.indexOf('exec node scripts/serve.cjs')
     expect(backfill).toBeGreaterThan(push)
     expect(server).toBeGreaterThan(backfill)
     // No `|| exit`: the script logs a failure and the next boot retries it.

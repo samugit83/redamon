@@ -12,9 +12,13 @@ cd testing/guinea_pigs/proxy_brain_target
 docker compose up -d --build
 ```
 
-It joins `redamon_pentest-net`, so the kali-sandbox (agent tools) and the capture
-proxy reach it at **`http://pbtarget:5000/`**. It is also on the host at
-`http://127.0.0.1:9009/` for manual curling.
+It joins `redamon_pentest-net`, so the capture proxy reaches it at
+**`http://pbtarget:5000/`**. The agent's tools run in your own Kali sandbox, which is not
+on that network: connect the lab to your sandbox network first
+(`docker network connect redamon-sbx-<key> pbtarget`, see
+[Reaching a lab from a Kali sandbox](../README.md#reaching-a-lab-from-a-kali-sandbox)),
+and the same URL works from there. It is also on the host at `http://127.0.0.1:9009/` for
+manual curling.
 
 ## Endpoint → proxy_brain technique map
 

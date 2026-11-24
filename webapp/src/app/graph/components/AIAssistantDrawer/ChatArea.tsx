@@ -49,6 +49,8 @@ interface ChatAreaProps {
   loop?: LoopDisplay
   /** A model call waiting for the provider's rate limit, with its countdown. */
   rateLimitWord?: string | null
+  /** The run's Kali sandbox is starting (hooks/sandboxStatus.ts). */
+  sandboxWord?: string | null
 }
 
 export function ChatArea({
@@ -68,6 +70,7 @@ export function ChatArea({
   handleToolStop,
   loop,
   rateLimitWord,
+  sandboxWord,
 }: ChatAreaProps) {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
   const [copiedFieldKey, setCopiedFieldKey] = useState<string | null>(null)
@@ -321,8 +324,11 @@ export function ChatArea({
             </div>
             <div className={styles.messageContent}>
               <div className={styles.loadingIndicator}>
-                <span key={rateLimitWord ? 'rate-limit' : loop?.statusWord ?? statusWord} className={styles.loadingWord}>
-                  {rateLimitWord ?? loop?.statusWord ?? statusWord}
+                <span
+                  key={rateLimitWord ? 'rate-limit' : sandboxWord ? 'sandbox' : loop?.statusWord ?? statusWord}
+                  className={styles.loadingWord}
+                >
+                  {rateLimitWord ?? sandboxWord ?? loop?.statusWord ?? statusWord}
                 </span>
               </div>
             </div>

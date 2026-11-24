@@ -1,10 +1,16 @@
 /**
- * Regression: the LHOST field must point the operator at their HOST machine's
- * LAN IP, never the sandbox container's internal 172.x address.
+ * Regression: the LHOST field must point the operator at the RedAmon HOST's
+ * address the target can reach, never the Kali sandbox's own internal address
+ * (10.214.x since per-user sandboxes; 172.x before).
  *
  * Issue #180 — the placeholder used to read "e.g. 172.28.0.2" (a pentest-net
  * container IP), which seeded exactly the wrong choice: a reverse target cannot
- * reach the container, only the host's LAN IP forwarded on port 4444.
+ * reach the container, only the host's address on a port forwarded to it.
+ *
+ * FU-26: the Payload Direction texts describe per-person sandboxes: without a
+ * tunnel only the operator's port pool reaches a sandbox and the agent uses the
+ * sandbox's own port as LPORT; the project's LPORT is never used as LPORT (D-F);
+ * chisel forwards 4444 only.
  *
  * Run: npx vitest run src/components/projects/ProjectForm/sections/AgentBehaviourSection.test.tsx
  */
@@ -12,7 +18,9 @@ import { describe, test, expect, vi, afterEach } from 'vitest'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { render, screen, cleanup, fireEvent } from '@testing-library/react'
-import { AgentBehaviourSection, FIRETEAM_TIMEOUT_SEC_DEFAULT } from './AgentBehaviourSection'
+import {
+  AgentBehaviourSection, FIRETEAM_TIMEOUT_SEC_DEFAULT, LHOST_HINT, LPORT_HINT, NO_TUNNEL_HINT, OWN_TUNNEL_NEEDED,
+} from './AgentBehaviourSection'
 
 vi.mock('@/components/shared/ModelPicker', () => ({ ModelPicker: () => null }))
 vi.mock('@/providers/ProjectProvider', () => ({ useProject: () => ({ userId: 'u1' }) }))
@@ -50,10 +58,60 @@ describe('LHOST field guides to the host LAN IP, not the container IP', () => {
     expect(lhost.placeholder).not.toMatch(/172\./)
   })
 
-  test('hint tells the operator to use the host machine LAN IP', () => {
+  test("hint names the RedAmon host's reachable address, never the sandbox's 10.214.x (FU-26)", () => {
     renderSection()
-    expect(screen.getByText(/host machine's LAN IP/i)).toBeTruthy()
-    expect(screen.getByText(/not the container's 172\.x/i)).toBeTruthy()
+    expect(screen.getByText(LHOST_HINT)).toBeTruthy()
+    expect(LHOST_HINT).toMatch(/RedAmon host that the target can reach/)
+    expect(LHOST_HINT).toMatch(/Never your Kali sandbox's own 10\.214\.x address/)
+    expect(document.body.textContent).not.toMatch(/172\.x|host machine's LAN IP/)
+  })
+})
+
+describe('Payload Direction texts (FU-26)', () => {
+  const text = () => document.body.textContent ?? ''
+
+  test('no tunnel: the port pool reaches the sandbox and its port is LPORT; otherwise a tunnel or a bind payload', () => {
+    renderSection()
+    expect(screen.getByText(NO_TUNNEL_HINT)).toBeTruthy()
+    expect(NO_TUNNEL_HINT).toMatch(/only through a port of the port pool your operator configured \(KALI_SANDBOX_PORT_POOL\)/)
+    expect(NO_TUNNEL_HINT).toMatch(/uses your sandbox's own port as LPORT/)
+    expect(NO_TUNNEL_HINT).toMatch(/use a tunnel or a bind payload/)
+    expect(text()).not.toMatch(/configure LHOST\/LPORT manually/)
+  })
+
+  test('the project LPORT is never the agent\'s LPORT: pool port, tunnel port, or bind only (D-F)', () => {
+    renderSection()
+    expect(screen.getByText(LPORT_HINT)).toBeTruthy()
+    expect(LPORT_HINT).toBe(
+      "Not used as LPORT: with a port pool the agent uses your sandbox's own port; with a tunnel, the tunnel's; with neither, only bind payloads work. Leave it empty.",
+    )
+    expect(document.body.textContent).not.toMatch(/Used only when your operator configured no port pool|your own forwarding/)
+  })
+
+  test('the registry, which MCP clients and the settings reference read, says the same (D-F)', async () => {
+    const { field } = await import('@/lib/reconSettings/registry')
+    expect(field('agentLport')?.meaning).toBe(
+      "Not used as LPORT: with a port pool the agent uses the person's own sandbox port; with a tunnel, the tunnel's; with neither, only bind payloads work. Leave it empty.",
+    )
+    expect(field('agentLhost')?.meaning).toMatch(/never the Kali sandbox's own 10\.214\.x address/)
+    expect(field('agentLhost')?.meaning).not.toMatch(/&apos;|172\.x/)
+  })
+
+  test('chisel forwards 4444 only: no 8080, no web delivery or HTA, no "multi-port"', () => {
+    renderSection({ agentChiselTunnelEnabled: true })
+    expect(text()).toContain('Tunnels port 4444 of your sandbox only (the handler): no web delivery or HTA.')
+    expect(text()).toContain('Only the handler port (4444) is tunneled.')
+    expect(text()).not.toMatch(/8080|multi-port|web delivery\) ports/)
+    expect(screen.getByRole('option', { name: 'chisel (port 4444 - requires a VPS)' })).toBeTruthy()
+  })
+
+  test('a tunnel needs the person\'s own tunnel on as well as the project setting', () => {
+    for (const on of [{ agentNgrokTunnelEnabled: true }, { agentChiselTunnelEnabled: true }]) {
+      const { unmount } = renderSection(on)
+      expect(text()).toContain(OWN_TUNNEL_NEEDED)
+      expect(OWN_TUNNEL_NEEDED).toMatch(/your own tunnel turned on in Global Settings → Tunneling/)
+      unmount()
+    }
   })
 })
 

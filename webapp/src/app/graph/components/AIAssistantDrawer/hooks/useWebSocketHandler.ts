@@ -86,6 +86,8 @@ interface WebSocketHandlerDeps {
   setLoopStatus?: (status: LoopStatusView | null) => void
   // A model call waiting for the provider's rate limit (never persisted).
   setRateLimitWait?: (wait: RateLimitWait | null) => void
+  // The run's Kali sandbox status frame (sandboxStatus.ts; never persisted).
+  onSandboxStatus?: (payload: unknown) => void
 }
 
 export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
@@ -100,7 +102,7 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
     awaitingQuestionRef, isProcessingQuestion,
     awaitingToolConfirmationRef, isProcessingToolConfirmation,
     pendingApprovalToolId, pendingApprovalWaveId, answerUndo, setAnswerText, setSelectedOptions,
-    onGraphMutation, setLoopStatus, setRateLimitWait,
+    onGraphMutation, setLoopStatus, setRateLimitWait, onSandboxStatus,
   } = deps
 
   // Use a ref to avoid recreating the callback when todoList changes
@@ -205,6 +207,10 @@ export function useWebSocketHandler(deps: WebSocketHandlerDeps) {
 
       case MessageType.RATE_LIMIT_WAIT:
         setRateLimitWait?.(rateLimitWaitFromPayload(message.payload, Date.now()))
+        break
+
+      case MessageType.SANDBOX_STATUS:
+        onSandboxStatus?.(message.payload)
         break
 
       case MessageType.THINKING: {

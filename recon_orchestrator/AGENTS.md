@@ -23,6 +23,14 @@ When performing these actions, ALWAYS invoke the corresponding skill FIRST:
 - **NEVER** assume a `.env` var reaches this service. The orchestrator has **no
   `env_file`**; a var is honoured only if it is listed in its `environment:`
   block in `docker-compose.yml`. A knob added to `.env` alone is silently inert.
+  The Kali sandbox knobs (`KALI_SANDBOX_IDLE_MINUTES`, `KALI_SANDBOX_MAX_CONCURRENT`,
+  `KALI_SANDBOX_PORT_POOL`, `KALI_SANDBOX_PORT_HOLD_HOURS`) and `TERMINAL_MAX_SESSIONS`
+  reach it that way.
+- **NEVER** start a Kali sandbox with a mount, network or variable outside the
+  contract: `sandbox_contract.py` (byte-identical to `agentic/sandbox_contract.py`,
+  mirrored in `webapp/src/lib/sandbox/contract.ts`, all kept equal by
+  `tests/test_sandbox_contract.py`) is the mount plan, the container spec and the
+  network rules, and the orchestrator only enforces the project list the webapp sends.
 
 ---
 
@@ -31,14 +39,17 @@ When performing these actions, ALWAYS invoke the corresponding skill FIRST:
 Python 3.11 · FastAPI HTTP surface. **Volume-mounted** (`./recon_orchestrator:/app`)
 so a `.py` change is live after `docker compose restart recon-orchestrator` (no
 rebuild). It spawns the scan containers (recon, partial-recon, gvm, github-hunt,
-trufflehog, supply-chain) via `container_manager.py` and gates them through a
-memory governor.
+trufflehog, supply-chain) via `container_manager.py`, and each person's Kali
+sandbox via `sandbox_manager.py`, and gates both through a memory governor.
 
 ## PROJECT STRUCTURE
 
 ```
 api.py                 the HTTP surface (scan lifecycle, /defaults, RUNTIME_ONLY_KEYS)
 container_manager.py   spawns scan containers; sibling bind mounts + security hardening
+sandbox_manager.py     per-person Kali sandboxes: start, stop, adoption, leases, idle loop
+sandbox_templates.py   the nuclei templates volume and its daily refresher
+sandbox_contract.py    the sandbox contract (see the rule above)
 resource_governor.py   memory-envelope admission control        mem_calibrate.py  calibration
 scan_scheduler.py      scheduled scans           admission_ledger.py  in-flight accounting
 hard_guardrail.py  auth.py  local_llm_manager.py

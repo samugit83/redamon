@@ -118,6 +118,16 @@ class _RecordingConsole:
         self._chat_session_map[msf_session_id] = chat_session_id
         return None
 
+    def register_non_msf_session(self, body):
+        self.calls.append("register_non_msf")
+        sid = f"raw-{len(self._non_msf_sessions) + 1}"
+        self._non_msf_sessions[sid] = {**body, "id": sid}
+        return sid
+
+    def forget_non_msf_session(self, sid):
+        self.calls.append(("forget_non_msf", sid))
+        self._non_msf_sessions.pop(sid, None)
+
 
 class _Served:
     """One handler class served on 127.0.0.1:<free port> in a daemon thread."""
@@ -181,9 +191,12 @@ class MetasploitManagerAuth(_ServerCase):
     def setUp(self):
         super().setUp()
         self.console = _RecordingConsole()
-        patcher = mock.patch.object(metasploit_server, "get_msf_console", return_value=self.console)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        # A console already started: a list from one never started answers empty.
+        for name, value in (("get_msf_console", mock.Mock(return_value=self.console)),
+                            ("_msf_console", self.console)):
+            patcher = mock.patch.object(metasploit_server, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def test_no_token_401_on_every_route_of_8013(self):
         self.assertRefusedEverywhere(headers={})

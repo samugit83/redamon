@@ -120,7 +120,7 @@ describe('member sets (PE-14, §4.6, §5.14)', () => {
     expect(byId(DEFAULT_MEMBER_SET_ID).permissions).toEqual(expected)
     expect(expected).toEqual(MEMBER_SIDE)
     expect(expected).toHaveLength(71)
-    // OQ-46: the Kali sandbox stays in today's member abilities, labelled sandboxShared.
+    // OQ-46: the Kali sandbox stays in today's member abilities (each person's own sandbox, group 1).
     expect(held(DEFAULT_MEMBER_SET_ID).has('agent:kali_exec')).toBe(true)
   })
 

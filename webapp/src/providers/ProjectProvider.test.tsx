@@ -13,20 +13,30 @@
  * Run: npx vitest run src/providers/ProjectProvider.test.tsx
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, cleanup, act } from '@testing-library/react'
 import React from 'react'
 
 // Mutable auth + URL state the mocks read (hoisted-safe: referenced lazily).
-let mockAuth: { user: { id: string } | null; isLoading: boolean; canSwitchUser: boolean } = {
+let mockAuth: {
+  user: { id: string } | null; isLoading: boolean; canSwitchUser: boolean
+  /** The RBAC switches /api/auth/me answered; `permissions: true` makes the server own act-as. */
+  flags?: { permissions?: boolean } | null
+} = {
   user: { id: 'me' }, isLoading: false, canSwitchUser: false,
 }
 let searchParamsStr = ''
 
 // Whether the signed-in person may act as others (users:impersonate, hooks/useCan.ts).
-vi.mock('@/hooks/useCan', () => ({ useCan: () => mockAuth.canSwitchUser, useRbacFlags: () => null }))
+vi.mock('@/hooks/useCan', () => ({ useCan: () => mockAuth.canSwitchUser, useRbacFlags: () => mockAuth.flags ?? null }))
 vi.mock('@/providers/AuthProvider', () => ({ useAuth: () => mockAuth }))
+// One object per query string, as Next's own hook keeps it: a new one per render would re-run the
+// project load at every render, and a load that succeeds would then never stop.
+let searchParamsMemo: { str: string; params: URLSearchParams } | null = null
 vi.mock('next/navigation', () => ({
-  useSearchParams: () => new URLSearchParams(searchParamsStr),
+  useSearchParams: () => {
+    if (searchParamsMemo?.str !== searchParamsStr) searchParamsMemo = { str: searchParamsStr, params: new URLSearchParams(searchParamsStr) }
+    return searchParamsMemo.params
+  },
   useRouter: () => ({ replace: vi.fn() }),
   usePathname: () => '/graph',
 }))
@@ -242,5 +252,291 @@ describe('ProjectProvider failures keep their cause', () => {
     stubFetch({ project: () => new Response(JSON.stringify({ error: 'Project not found' }), { status: 404 }) })
     render(<ProjectProvider><ErrorConsumer /></ProjectProvider>)
     await waitFor(() => expect(localStorage.getItem('redamon-current-project')).toBeNull())
+  })
+})
+
+// The saved project's read that got no answer (Chromium aborts every request in flight with
+// net::ERR_NETWORK_CHANGED when a host address appears or goes away) left the page on
+// "No Project" for good. It is tried again, bounded; an answer is never tried again.
+function LoadConsumer() {
+  const { currentProject, isLoading, projectLoadError } = useProject()
+  return (
+    <div>
+      <span data-testid="project">{currentProject?.id ?? 'none'}</span>
+      <span data-testid="loading">{String(isLoading)}</span>
+      <span data-testid="loadError">{projectLoadError?.message ?? ''}</span>
+    </div>
+  )
+}
+
+describe('ProjectProvider saved project read that got no answer', () => {
+  afterEach(() => { vi.useRealTimers() })
+  const advance = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms) }) }
+  const projectReads = () => fetchCalls.filter(c => c.url === '/api/projects/P1').length
+
+  test('an aborted read is tried again and the project loads', async () => {
+    vi.useFakeTimers()
+    localStorage.setItem('redamon-current-project', 'P1')
+    let reads = 0
+    stubFetch({
+      project: () => {
+        reads += 1
+        if (reads === 1) throw new TypeError('Failed to fetch')
+        return new Response(JSON.stringify({ id: 'P1', name: 'One' }), { status: 200 })
+      },
+    })
+    render(<ProjectProvider><LoadConsumer /></ProjectProvider>)
+    await advance(0)
+    expect(screen.getByTestId('project').textContent).toBe('none')
+    expect(screen.getByTestId('loading').textContent).toBe('true')
+
+    await advance(1000)
+    expect(projectReads()).toBe(2)
+    expect(screen.getByTestId('project').textContent).toBe('P1')
+    expect(screen.getByTestId('loadError').textContent).toBe('')
+    expect(screen.getByTestId('loading').textContent).toBe('false')
+  })
+
+  test('reads that never get an answer stop, bounded, at a load error; the saved selection stays', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    localStorage.setItem('redamon-current-project', 'P1')
+    stubFetch({ project: () => { throw new TypeError('Failed to fetch') } })
+    render(<ProjectProvider><LoadConsumer /></ProjectProvider>)
+    await advance(7000)
+    expect(screen.getByTestId('loading').textContent).toBe('true')
+    await advance(1000)
+    expect(projectReads()).toBe(5)
+    expect(screen.getByTestId('loading').textContent).toBe('false')
+    expect(screen.getByTestId('project').textContent).toBe('none')
+    expect(screen.getByTestId('loadError').textContent).toBe('Could not load the saved project (network_error)')
+    expect(localStorage.getItem('redamon-current-project')).toBe('P1')
+    await advance(60_000)
+    expect(projectReads()).toBe(5)
+  })
+
+  test('a project named by a new URL while the saved one is still being retried is not overwritten by its late answer', async () => {
+    vi.useFakeTimers()
+    localStorage.setItem('redamon-current-project', 'P1')
+    let p1Reads = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url)
+      fetchCalls.push({ url: u, method: init?.method ?? 'GET', body: '' })
+      if (u === '/api/projects/P1') {
+        p1Reads += 1
+        if (p1Reads === 1) throw new TypeError('Failed to fetch')
+        return new Response(JSON.stringify({ id: 'P1', name: 'One' }), { status: 200 })
+      }
+      if (u === '/api/projects/P2') return new Response(JSON.stringify({ id: 'P2', name: 'Two' }), { status: 200 })
+      return new Response('{}', { status: 200 })
+    }))
+    const { rerender } = render(<ProjectProvider><LoadConsumer /></ProjectProvider>)
+    await advance(0)
+    expect(p1Reads).toBe(1)
+
+    searchParamsStr = 'project=P2'
+    rerender(<ProjectProvider><LoadConsumer /></ProjectProvider>)
+    await advance(0)
+    expect(screen.getByTestId('project').textContent).toBe('P2')
+
+    await advance(10_000)
+    expect(screen.getByTestId('project').textContent).toBe('P2')
+    expect(localStorage.getItem('redamon-current-project')).toBe('P2')
+    expect(screen.getByTestId('loadError').textContent).toBe('')
+  })
+
+  test.each([
+    [500, { error: 'Failed to fetch project', code: 'P1001' }, 'P1'],
+    [404, { error: 'Project not found' }, null],
+    [403, { error: 'Forbidden' }, 'P1'],
+  ])('an answered %i is never tried again and is no load error', async (status, body, saved) => {
+    vi.useFakeTimers()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    localStorage.setItem('redamon-current-project', 'P1')
+    stubFetch({ project: () => new Response(JSON.stringify(body), { status }) })
+    render(<ProjectProvider><LoadConsumer /></ProjectProvider>)
+    await advance(0)
+    const answered = projectReads()
+    expect(answered).toBeGreaterThan(0)
+    await advance(10_000)
+    expect(projectReads()).toBe(answered)
+    expect(screen.getByTestId('loading').textContent).toBe('false')
+    expect(screen.getByTestId('loadError').textContent).toBe('')
+    expect(localStorage.getItem('redamon-current-project')).toBe(saved)
+  })
+})
+
+// The saved project's read belongs to the view that asked for it. A pick (on a page whose URL names
+// no project, too), a clear, or a switch of whom the person acts as supersedes it: its answer, late
+// after a retry or simply in flight across the change, changes nothing, and it stops retrying.
+describe('ProjectProvider saved project read superseded by a pick, a clear or a switch', () => {
+  let api: ReturnType<typeof useProject> | null = null
+  function ApiConsumer() {
+    api = useProject()
+    return <LoadConsumer />
+  }
+  afterEach(() => { vi.useRealTimers(); api = null })
+  const advance = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms) }) }
+  const p1Reads = () => fetchCalls.filter(c => c.url === '/api/projects/P1').length
+  const P1 = () => new Response(JSON.stringify({ id: 'P1', name: 'One' }), { status: 200 })
+  const GONE = () => new Response(JSON.stringify({ error: 'Project not found' }), { status: 404 })
+
+  /** `/api/projects/P1`, n-th read: 'throw' (no answer), 'hold' (the test answers it), or an answer. */
+  function stubP1(plan: (n: number) => 'throw' | 'hold' | Response) {
+    let n = 0
+    const held: ((res: Response) => void)[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url)
+      fetchCalls.push({ url: u, method: init?.method ?? 'GET', body: init?.body ? String(init.body) : '' })
+      if (u === '/api/projects/P1') {
+        n += 1
+        const step = plan(n)
+        if (step === 'throw') throw new TypeError('Failed to fetch')
+        if (step === 'hold') return new Promise<Response>(resolve => held.push(resolve))
+        return step
+      }
+      if (u === '/api/projects/P2') return new Response(JSON.stringify({ id: 'P2', name: 'Two' }), { status: 200 })
+      return new Response('{}', { status: 200 })
+    }))
+    return held
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    localStorage.setItem('redamon-current-project', 'P1')
+  })
+
+  test('a pick that changes no URL (as on /settings or /cypherfix) while the saved project is retried: the pick stays, no more reads', async () => {
+    stubP1(n => (n === 1 ? 'throw' : P1()))
+    render(<ProjectProvider><ApiConsumer /></ProjectProvider>)
+    await advance(0)
+    act(() => api!.setCurrentProject({ id: 'P2', name: 'Two' } as never))
+    await advance(10_000)
+    expect(screen.getByTestId('project').textContent).toBe('P2')
+    expect(localStorage.getItem('redamon-current-project')).toBe('P2')
+    expect(p1Reads()).toBe(1)
+  })
+
+  test.each([
+    ['a 200', P1, 'P2'],
+    ['a 404', GONE, 'P2'],
+  ])('%s in flight when the project is picked lands afterwards and changes nothing', async (_what, answer, saved) => {
+    const held = stubP1(() => 'hold')
+    render(<ProjectProvider><ApiConsumer /></ProjectProvider>)
+    await advance(0)
+    act(() => api!.setCurrentProject({ id: 'P2', name: 'Two' } as never))
+    await act(async () => { held[0](answer()) })
+    await advance(0)
+    expect(screen.getByTestId('project').textContent).toBe('P2')
+    expect(localStorage.getItem('redamon-current-project')).toBe(saved)
+  })
+
+  test('cleared (the user switcher clears the project) while the saved one is retried: nothing comes back', async () => {
+    stubP1(n => (n === 1 ? 'throw' : P1()))
+    render(<ProjectProvider><ApiConsumer /></ProjectProvider>)
+    await advance(0)
+    act(() => api!.setCurrentProject(null))
+    await advance(10_000)
+    expect(screen.getByTestId('project').textContent).toBe('none')
+    expect(localStorage.getItem('redamon-current-project')).toBeNull()
+  })
+
+  test('permissions on: an act-as switch during the retry wait: the retry never re-applies the previous view\'s project', async () => {
+    mockAuth = { user: { id: 'admin' }, isLoading: false, canSwitchUser: true, flags: { permissions: true } }
+    stubP1(n => (n === 1 ? 'throw' : P1()))
+    render(<ProjectProvider><ApiConsumer /></ProjectProvider>)
+    await advance(0)
+    await act(async () => { await api!.setUserId('Y', { stepUpPassword: 'pw', reason: 'r', durationMinutes: 10 }) })
+    expect(api!.userId).toBe('Y')
+    await advance(10_000)
+    expect(screen.getByTestId('project').textContent).toBe('none')
+    expect(localStorage.getItem('redamon-current-project')).toBeNull()
+    expect(p1Reads()).toBe(1)
+  })
+
+  test('permissions on: a read in flight across the act-as switch lands afterwards and changes nothing', async () => {
+    mockAuth = { user: { id: 'admin' }, isLoading: false, canSwitchUser: true, flags: { permissions: true } }
+    const held = stubP1(() => 'hold')
+    render(<ProjectProvider><ApiConsumer /></ProjectProvider>)
+    await advance(0)
+    await act(async () => { await api!.setUserId('Y', { stepUpPassword: 'pw', reason: 'r', durationMinutes: 10 }) })
+    await act(async () => { held[0](P1()) })
+    await advance(0)
+    expect(api!.userId).toBe('Y')
+    expect(screen.getByTestId('project').textContent).toBe('none')
+    expect(localStorage.getItem('redamon-current-project')).toBeNull()
+  })
+
+  test('permissions off: a read in flight across a user switch lands afterwards and changes nothing', async () => {
+    mockAuth = { user: { id: 'admin' }, isLoading: false, canSwitchUser: true }
+    const held = stubP1(() => 'hold')
+    render(<ProjectProvider><ApiConsumer /></ProjectProvider>)
+    await advance(0)
+    expect(held).toHaveLength(1)
+    await act(async () => { await api!.setUserId('userX') })
+    expect(api!.userId).toBe('userX')
+    await act(async () => { held[0](P1()) })
+    await advance(0)
+    expect(screen.getByTestId('project').textContent).toBe('none')
+  })
+
+  test('five URL changes in one second during a blip: superseded reads stop retrying', async () => {
+    stubP1(() => 'throw')
+    const { rerender } = render(<ProjectProvider><ApiConsumer /></ProjectProvider>)
+    for (let i = 0; i < 5; i++) {
+      await advance(200)
+      searchParamsStr = `project=P1&tab=${i}`
+      rerender(<ProjectProvider><ApiConsumer /></ProjectProvider>)
+    }
+    await advance(60_000)
+    // Six loads, one read each, and the last one's four retries.
+    expect(p1Reads()).toBe(10)
+  })
+
+  test('a 200 whose body was lost after the headers is tried again, and the project loads', async () => {
+    stubP1(n => (n === 1 ? ({ ok: true, status: 200, json: async () => { throw new TypeError('network error') } } as unknown as Response) : P1()))
+    render(<ProjectProvider><ApiConsumer /></ProjectProvider>)
+    await advance(1000)
+    expect(p1Reads()).toBe(2)
+    expect(screen.getByTestId('project').textContent).toBe('P1')
+    expect(screen.getByTestId('loadError').textContent).toBe('')
+  })
+
+  test('the Retry goes away with a pick', async () => {
+    stubP1(() => 'throw')
+    render(<ProjectProvider><ApiConsumer /></ProjectProvider>)
+    await advance(10_000)
+    expect(screen.getByTestId('loadError').textContent).toBe('Could not load the saved project (network_error)')
+    act(() => api!.setCurrentProject({ id: 'P2', name: 'Two' } as never))
+    expect(screen.getByTestId('loadError').textContent).toBe('')
+  })
+
+  test('the Retry goes away with an act-as switch', async () => {
+    mockAuth = { user: { id: 'admin' }, isLoading: false, canSwitchUser: true, flags: { permissions: true } }
+    stubP1(() => 'throw')
+    render(<ProjectProvider><ApiConsumer /></ProjectProvider>)
+    await advance(10_000)
+    expect(screen.getByTestId('loadError').textContent).not.toBe('')
+    await act(async () => { await api!.setUserId('Y', { stepUpPassword: 'pw', reason: 'r', durationMinutes: 10 }) })
+    expect(screen.getByTestId('loadError').textContent).toBe('')
+  })
+
+  test('unmounted during a wait, the provider reads nothing more', async () => {
+    stubP1(() => 'throw')
+    const { unmount } = render(<ProjectProvider><ApiConsumer /></ProjectProvider>)
+    await advance(0)
+    unmount()
+    await advance(60_000)
+    expect(p1Reads()).toBe(1)
+  })
+
+  test('a failure while applying an answer (a client bug) is logged, never shown as "could not reach the server"', async () => {
+    stubP1(() => new Response(JSON.stringify({ id: 'P1', name: 'One', targetIps: 5 }), { status: 200 }))
+    render(<ProjectProvider><ApiConsumer /></ProjectProvider>)
+    await advance(10_000)
+    expect(p1Reads()).toBe(1)
+    expect(screen.getByTestId('loadError').textContent).toBe('')
+    expect(console.error).toHaveBeenCalled()
   })
 })

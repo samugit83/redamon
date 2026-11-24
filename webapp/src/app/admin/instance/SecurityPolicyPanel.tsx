@@ -8,7 +8,7 @@ import {
   type InstanceSettingsView, type PolicyDraft,
 } from './instanceView'
 import { putInstanceSettings } from './instanceSettingsClient'
-import { CheckField, FieldRow, Panel, RootOnlyNote } from './Panel'
+import { CheckField, FieldRow, Panel, RootOnlyNote, Rows } from './Panel'
 import styles from './instance.module.css'
 
 interface Props {
@@ -47,7 +47,7 @@ export function SecurityPolicyPanel({ settings, unconfirmedRoot, onSaved }: Prop
     return (
       <Panel id="security" title="Security policy" lead={lead}>
         {SECURITY_POLICY_GROUPS.map((g) => (
-          <div key={g.title}>
+          <div key={g.title} className={styles.group}>
             <h3 className={styles.groupTitle}>{g.title}</h3>
             <dl className={styles.readList}>
               {g.integers.map((f) => (
@@ -72,11 +72,11 @@ export function SecurityPolicyPanel({ settings, unconfirmedRoot, onSaved }: Prop
 
   return (
     <Panel id="security" title="Security policy" lead={lead}>
-      <form onSubmit={submit} noValidate className={styles.page} style={{ gap: 'var(--space-3)' }}>
+      <form onSubmit={submit} noValidate className={styles.page}>
         {SECURITY_POLICY_GROUPS.map((g) => (
-          <fieldset key={g.title} style={{ border: 'none', margin: 0, padding: 0 }}>
+          <fieldset key={g.title} className={styles.group}>
             <legend className={styles.groupTitle}>{g.title}</legend>
-            <div className={styles.fields}>
+            <Rows>
               {g.integers.map((f) => {
                 const id = `policy-${f.field}`
                 return (
@@ -93,18 +93,17 @@ export function SecurityPolicyPanel({ settings, unconfirmedRoot, onSaved }: Prop
                   </FieldRow>
                 )
               })}
-            </div>
-            {g.booleans.map((f) => (
-              <div key={f.field} style={{ marginTop: 'var(--space-2)' }}>
+              {g.booleans.map((f) => (
                 <CheckField
+                  key={f.field}
                   id={`policy-${f.field}`}
                   label={f.label}
                   hint={f.hint}
                   checked={draft[f.field]}
                   onChange={(checked) => setDraft((d) => ({ ...d, [f.field]: checked }))}
                 />
-              </div>
-            ))}
+              ))}
+            </Rows>
           </fieldset>
         ))}
         <div className={styles.actions}>
@@ -170,20 +169,21 @@ export function PublicUrlPanel({ settings, unconfirmedRoot, onSaved }: Props) {
         onSubmit={(e) => { e.preventDefault(); if (dirty && !problem) setConfirming(true) }}
         noValidate
         className={styles.page}
-        style={{ gap: 'var(--space-2)' }}
       >
-        <FieldRow id="policy-publicBaseUrl" label="Public base URL" hint="No query or fragment; leave it empty to clear it." error={problem}>
-          <input
-            id="policy-publicBaseUrl"
-            className="textInput"
-            type="url"
-            value={value}
-            placeholder="https://redamon.example.com"
-            aria-invalid={problem ? true : undefined}
-            aria-describedby="policy-publicBaseUrl-hint"
-            onChange={(e) => setValue(e.target.value)}
-          />
-        </FieldRow>
+        <Rows>
+          <FieldRow id="policy-publicBaseUrl" label="Public base URL" hint="No query or fragment; leave it empty to clear it." error={problem}>
+            <input
+              id="policy-publicBaseUrl"
+              className="textInput"
+              type="url"
+              value={value}
+              placeholder="https://redamon.example.com"
+              aria-invalid={problem ? true : undefined}
+              aria-describedby="policy-publicBaseUrl-hint"
+              onChange={(e) => setValue(e.target.value)}
+            />
+          </FieldRow>
+        </Rows>
         <div className={styles.actions}>
           <button type="submit" className="primaryButton" disabled={!dirty || !!problem}>Save the public address</button>
           <span className={styles.hint}>Saving asks for your password.</span>

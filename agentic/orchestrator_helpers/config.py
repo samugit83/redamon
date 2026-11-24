@@ -220,60 +220,27 @@ def get_tenant_id(state: AgentState, config=None) -> str:
 
 def is_session_config_complete() -> Tuple[bool, List[str]]:
     """
-    Check if session configuration is complete for exploitation.
+    Whether a session-based exploit has the payload values it needs, by the same plan the
+    payload-settings block shows (utils.payload_plan):
 
-    Decision Logic:
-        IF ngrok tunnel is enabled and reachable:
-            → LHOST/LPORT auto-detected from ngrok, config is complete
-        ELSE IF LPORT is set (not None, > 0):
-            → Use REVERSE payload (target connects TO attacker)
-            → Requires: LHOST + LPORT
-        ELSE IF BIND_PORT_ON_TARGET is set:
-            → Use BIND payload (attacker connects TO target)
-            → Requires: BIND_PORT_ON_TARGET only (no LHOST needed)
-        ELSE:
-            → No mode configured, cannot proceed
+    - REVERSE (a tunnel that is on, or the sandbox's pool port as LPORT with an LHOST) and
+      BIND (a bind port) are complete. A pool port counts as LPORT: the project's LPORT is
+      not needed.
+    - A pool port without LHOST misses ["LHOST"].
+    - No pool port and no tunnel (nothing can connect back) without a bind port misses
+      ["BIND_PORT_ON_TARGET"]: a reverse LHOST/LPORT would not help.
+    - Not known yet (no Kali call in this message and nothing remembered of the sandbox,
+      or an enabled tunnel not read yet) is complete: the gate never asks for a value the
+      next step may already show.
 
     Returns:
         Tuple of (is_complete, missing_params_list)
-        - is_complete: True if all required params are set
-        - missing_params_list: List of parameter names that are missing
     """
-    # Check ngrok tunnel first — if active, LHOST/LPORT are auto-detected
-    NGROK_TUNNEL_ENABLED = get_setting('NGROK_TUNNEL_ENABLED', False)
-    if NGROK_TUNNEL_ENABLED:
-        from utils import _query_ngrok_tunnel
-        tunnel_info = _query_ngrok_tunnel()
-        if tunnel_info:
-            return (True, [])
+    from utils import payload_plan
 
-    # Check chisel tunnel — if active, LHOST/LPORT are derived from VPS URL
-    CHISEL_TUNNEL_ENABLED = get_setting('CHISEL_TUNNEL_ENABLED', False)
-    if CHISEL_TUNNEL_ENABLED:
-        from utils import _query_chisel_tunnel
-        tunnel_info = _query_chisel_tunnel()
-        if tunnel_info:
-            return (True, [])
-
-    LPORT = get_setting('LPORT')
-    LHOST = get_setting('LHOST', '') or None
-    BIND_PORT_ON_TARGET = get_setting('BIND_PORT_ON_TARGET', 4444)
-
-    use_reverse = LPORT is not None and LPORT > 0
-    use_bind = not use_reverse and BIND_PORT_ON_TARGET is not None and BIND_PORT_ON_TARGET > 0
-
-    missing = []
-
-    if use_reverse:
-        # REVERSE mode: need LHOST and LPORT
-        if not LHOST:
-            missing.append("LHOST")
-        # LPORT is already set (that's why use_reverse is True)
-    elif use_bind:
-        # BIND mode: only needs BIND_PORT_ON_TARGET, which is already set
-        pass
-    else:
-        # Neither mode configured - need at least one
-        missing.append("LPORT or BIND_PORT_ON_TARGET")
-
-    return (len(missing) == 0, missing)
+    mode = payload_plan().mode
+    if mode == "ask_lhost":
+        return (False, ["LHOST"])
+    if mode == "ask_bind":
+        return (False, ["BIND_PORT_ON_TARGET"])
+    return (True, [])

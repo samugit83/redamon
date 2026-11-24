@@ -14,8 +14,8 @@ credentials only). Every request this module sends to the resource's own host (t
 URL; its http to https upgrade) then carries the login as ``same_host_headers``, which
 ``net`` adds again only on a hop to that host, never on a redirect elsewhere. While a login is
 bound the browser is never used (§5): ``smart_fetch`` and ``render`` refuse it whatever
-"always use the browser" says, so no script, which other sessions' commands can read in the
-shared sandbox, ever holds a login value; ``render`` takes no headers anyway.
+"always use the browser" says, so no script, which other commands in the sandbox can read,
+ever holds a login value; ``render`` takes no headers anyway.
 """
 
 from __future__ import annotations

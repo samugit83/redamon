@@ -19,8 +19,10 @@ katana, arjun and the other crawlers hit the lab earlier in the same scan.
 
 An agent scenario (plan §23.13) is driven in the browser; `agent-mark` empties
 the hit logs and opens its window, `agent-verify` reads the session's CONFIRMS
-edges over MCP, the hit logs since the mark, the Kali sandbox's /tmp and the
-transcript (saved under reports/agent/, gitignored), and runs the leak scan.
+edges over MCP, the hit logs since the mark, the /tmp of every running Kali
+sandbox of this stack the session may have run in (its person's, both views,
+found by their labels; run it before they idle out) and the transcript (saved
+under reports/agent/, gitignored), and runs the leak scan.
 """
 
 from __future__ import annotations
@@ -430,6 +432,29 @@ def _transcript(session_id: str) -> list:
     return json.loads(raw or "[]")
 
 
+def _stack_owner() -> str:
+    """This stack's compose project, the owner label the orchestrator puts on every sandbox it
+    starts; '' when no redamon-recon-orchestrator runs."""
+    out = subprocess.run(["docker", "ps", "--filter", "name=^redamon-recon-orchestrator$",
+                          "--format", '{{.Label "com.docker.compose.project"}}'],
+                         capture_output=True, text=True).stdout.split()
+    return out[0] if out else ""
+
+
+def _session_sandboxes(session_id: str, owner: str) -> list:
+    """Every running Kali sandbox of this stack the session's tools may have run in: each
+    instance of its person (the conversation's author), both views (act-as work runs in the
+    act_as one), a draining one included, found by their labels."""
+    assert _ID.match(session_id)
+    user_id = _psql(f"select user_id from conversations where session_id = '{session_id}'")
+    if not _ID.match(user_id or "") or not owner:
+        return []
+    return subprocess.run(["docker", "ps", "--filter", "label=redamon.sandbox=1",
+                           "--filter", f"label=redamon.sandbox.user={user_id}",
+                           "--filter", f"label=redamon.sandbox.owner={owner}", "--format", "{{.Names}}"],
+                          capture_output=True, text=True).stdout.split()
+
+
 def _typed_messages(session_id: str) -> list:
     assert _ID.match(session_id)
     raw = _psql("select coalesce(json_agg(json_build_object('type', m.type, 'data', m.data) "
@@ -643,11 +668,20 @@ def agent_verify(name: str, project_id: str, session_id: str | None = None) -> i
         if clear:
             failures.append(f"{len(clear)} credential value(s) stored in clear in the capture store")
 
-    leftovers = subprocess.run(["docker", "exec", "redamon-kali", "sh", "-c", "ls /tmp | grep '^rex-' || true"],
-                               capture_output=True, text=True).stdout.split()
-    report.append(f"- kali /tmp rex-* files left: {len(leftovers)}")
-    if leftovers:
-        failures.append(f"{len(leftovers)} rex-* file(s) left in the Kali sandbox's /tmp")
+    owner = _stack_owner()
+    sandboxes = _session_sandboxes(session_id, owner)
+    if not owner:
+        report.append("- kali /tmp rex-* files left: unknown (this stack's owner label cannot be read)")
+        failures.append("no compose project on a running redamon-recon-orchestrator: the sandboxes cannot be found")
+    elif not sandboxes:
+        report.append("- kali /tmp rex-* files left: unknown (no running sandbox of the session's person)")
+        failures.append("the session's Kali sandbox does not run: its /tmp cannot be checked")
+    for sandbox in sandboxes:
+        leftovers = subprocess.run(["docker", "exec", sandbox, "sh", "-c", "ls /tmp | grep '^rex-' || true"],
+                                   capture_output=True, text=True).stdout.split()
+        report.append(f"- kali /tmp rex-* files left: {len(leftovers)} (sandbox {sandbox})")
+        if leftovers:
+            failures.append(f"{len(leftovers)} rex-* file(s) left in the /tmp of Kali sandbox {sandbox}")
 
     messages = _transcript(session_id)
     AGENT_DIR.mkdir(parents=True, exist_ok=True)

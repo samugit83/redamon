@@ -21,6 +21,7 @@ import type { Managed, Manager } from './hierarchy'
 import { PERMISSIONS, isPermissionId, type PermissionId } from './permissions'
 import { invalidatePrincipal, loadPrincipal, type Principal } from './principal'
 import { onAccessReduced } from './revocation'
+import { sandboxAccountsEnded } from '@/lib/sandbox/lifecycle'
 import { accountTypeOf, loadInstanceRoot } from './root'
 import { sessionPrincipal } from './sessionPrincipal'
 
@@ -169,6 +170,8 @@ export async function endSessionsOf(userIds: readonly string[]): Promise<{ close
     if (rest > 0 && ended.every((e) => !('closed' in e.sockets))) {
       console.error(`[rbac] socket-close failed for ${rest} more account(s): the agent did not answer`)
       failed += rest
+      // Their Kali sandboxes still stop (group 1): that step asks the orchestrator, not the agent.
+      await sandboxAccountsEnded(userIds.slice(i + batch.length), 'access_lost')
       break
     }
   }

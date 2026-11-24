@@ -135,12 +135,21 @@
 
 /* Terminal area */
 
-.sharedNotice {
+.sandboxBanner {
   flex-shrink: 0;
   padding: 4px 12px;
   font-size: 11px;
-  color: #ffd580;
-  background: rgba(255, 213, 128, 0.08);
+  color: #73d0ff;
+  background: rgba(115, 208, 255, 0.08);
+  border-bottom: 1px solid #1a1e29;
+}
+
+.reversePort {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  font-size: 11px;
+  color: #bae67e;
+  background: rgba(186, 230, 126, 0.06);
   border-bottom: 1px solid #1a1e29;
 }
 

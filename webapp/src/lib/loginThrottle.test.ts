@@ -6,7 +6,9 @@
  * @vitest-environment node
  */
 import { describe, test, expect, beforeEach, vi, afterEach } from 'vitest'
-import { checkLockout, recordFailure, clearAttempts, __resetThrottle } from './loginThrottle'
+import {
+  checkLockout, recordFailure, clearAttempts, checkDeviceLockout, recordDeviceFailure, clearDeviceAttempts, __resetThrottle,
+} from './loginThrottle'
 
 beforeEach(() => {
   __resetThrottle()
@@ -52,5 +54,43 @@ describe('login throttle', () => {
   test('another account/ip is unaffected', () => {
     for (let i = 0; i < 3; i++) recordFailure('locked@x.com', '4.4.4.4')
     expect(checkLockout('free@x.com', '5.5.5.5').locked).toBe(false)
+  })
+})
+
+// D6: a known device is counted on its own key, apart from the e-mail and IP keys.
+describe('known-device keys', () => {
+  test('a locked e-mail does not lock a known device', () => {
+    for (let i = 0; i < 3; i++) recordFailure('root@x.com', null)
+    expect(checkLockout('root@x.com', null).locked).toBe(true)
+    expect(checkDeviceLockout('dev-1').locked).toBe(false)
+  })
+
+  test('a device locks after N failures of its own, and only itself', () => {
+    for (let i = 0; i < 2; i++) recordDeviceFailure('dev-1')
+    expect(checkDeviceLockout('dev-1').locked).toBe(false)
+    expect(recordDeviceFailure('dev-1').locked).toBe(true)
+    expect(checkDeviceLockout('dev-1').locked).toBe(true)
+    expect(checkDeviceLockout('dev-2').locked).toBe(false)
+    expect(checkLockout('root@x.com', null).locked).toBe(false)
+  })
+
+  test('a device success clears the device, never the e-mail', () => {
+    for (let i = 0; i < 3; i++) recordFailure('root@x.com', null)
+    for (let i = 0; i < 3; i++) recordDeviceFailure('dev-1')
+    clearDeviceAttempts('dev-1')
+    expect(checkDeviceLockout('dev-1').locked).toBe(false)
+    expect(checkLockout('root@x.com', null).locked).toBe(true)
+  })
+
+  test('an e-mail that reads like a device key stays an e-mail key', () => {
+    for (let i = 0; i < 3; i++) recordFailure('device:dev-1', null)
+    expect(checkDeviceLockout('dev-1').locked).toBe(false)
+  })
+
+  test('a device lockout expires like any other', () => {
+    const t0 = 2_000_000
+    for (let i = 0; i < 3; i++) recordDeviceFailure('dev-1', t0)
+    expect(checkDeviceLockout('dev-1', t0).locked).toBe(true)
+    expect(checkDeviceLockout('dev-1', t0 + 61_000).locked).toBe(false)
   })
 })

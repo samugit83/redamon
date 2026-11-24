@@ -7,7 +7,7 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 
 const h = vi.hoisted(() => ({ session: null as unknown, principal: null as unknown, audits: [] as Array<Record<string, unknown>> }))
-vi.mock('@/lib/session', () => ({ requireSession: async () => h.session }))
+vi.mock('@/lib/session', () => ({ requireSession: async () => h.session, authzIdentityOf: async () => ({ actingAs: null }) }))
 vi.mock('@/lib/authz/principal', () => ({ loadPrincipal: async () => h.principal }))
 vi.mock('@/lib/audit', () => ({ writeAudit: async (e: Record<string, unknown>) => { h.audits.push(e) } }))
 vi.mock('@/lib/prisma', () => ({ default: { auditLog: { findFirst: async () => ({ createdAt: new Date('2026-06-01') }) } } }))
@@ -49,7 +49,7 @@ describe('emergency stop and AI Navigator', () => {
     const mine = live('member-1')
     const other = live('member-2')
     const res = await POST()
-    expect(await res.json()).toEqual({ scope: 'own', stopped: 2 })
+    expect(await res.json()).toEqual({ scope: 'own', stopped: 2, sandboxes: { stopped: 0 } })
     expect(mine.abort.signal.aborted).toBe(true)
     expect(other.abort.signal.aborted).toBe(false)
   })
@@ -60,7 +60,7 @@ describe('emergency stop and AI Navigator', () => {
     const a = live('member-1')
     const b = live('member-2')
     const res = await POST()
-    expect(await res.json()).toEqual({ scope: 'all', stopped: 3 })
+    expect(await res.json()).toEqual({ scope: 'all', stopped: 3, sandboxes: { stopped: 0 } })
     expect([a.abort.signal.aborted, b.abort.signal.aborted]).toEqual([true, true])
     expect(h.audits.find((e) => e.action === 'agent.emergency_stop')).toMatchObject({ after: { scope: 'all', count: 3 } })
   })

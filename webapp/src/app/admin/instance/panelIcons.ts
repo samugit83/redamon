@@ -1,5 +1,5 @@
 import {
-  Bot, Compass, FileCode, Gauge, Globe, History, Network, Puzzle, Radar, Share2, ShieldCheck, UserPlus, Wrench,
+  Bot, Compass, FileCode, Gauge, Globe, History, Share2, ShieldCheck, UserPlus,
   type LucideIcon,
 } from 'lucide-react'
 import type { PanelId } from './instanceView'
@@ -13,9 +13,5 @@ export const PANEL_ICONS: Record<PanelId, LucideIcon> = {
   'default-set': UserPlus,
   'llm-providers': Bot,
   quotas: Gauge,
-  tunnels: Network,
-  traffic: Radar,
   nuclei: FileCode,
-  plugins: Puzzle,
-  'other-tools': Wrench,
 }

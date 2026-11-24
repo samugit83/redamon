@@ -23,7 +23,12 @@ import os
 import re
 import json
 import atexit
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import collections
+import contextlib
+import select
+import socket
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional, Set, List, Dict, Tuple
 
 from _auth_middleware import BearerAuthHTTPHandlerMixin
@@ -53,19 +58,66 @@ MSF_DEFAULT_QUIET_PERIOD = float(os.getenv("MSF_DEFAULT_QUIET_PERIOD", "3"))
 # the console itself. Tab is the one control byte a command legitimately carries.
 _SESSION_CMD_CONTROL_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
 
-# One msfconsole serves every project of the instance, so its sessions, jobs, module
-# context and global datastore are shared: a project at the console could list, type
-# into or kill another project's sessions (`sessions -i`, `set SESSION`, `route`, `irb`,
-# `sessions -K`, msf_restart), and a `setg RHOSTS` left by one engagement would aim the
-# next one's exploit at the wrong target. So the console is held by one project at a
-# time (GHSA-w454-6hwp-fm58): the holder keeps it while it runs a command, while it has
-# a live session or job, and for this long after its last command, so that a `use` /
+# One msfconsole serves every project of the person's sandbox, so its sessions, jobs,
+# module context and global datastore are shared: a project at the console could list,
+# type into or kill another project's sessions (`sessions -i`, `set SESSION`, `route`,
+# `irb`, `sessions -K`, msf_restart), and a `setg RHOSTS` left by one engagement would
+# aim the next one's exploit at the wrong target. So the console is held by one project
+# at a time (GHSA-w454-6hwp-fm58): the holder keeps it while it runs a command, while it
+# has a live session or job, and for this long after its last command, so that a `use` /
 # `set` / `exploit` sequence is not cut in the middle. Every session and job in the
 # console is the holder's; the next project gets a restarted msfconsole.
 MSF_PROJECT_LEASE_IDLE_S = float(os.getenv("MSF_PROJECT_LEASE_IDLE_S", "600"))
+
+# The sandbox's one reverse-shell port (the orchestrator sets it: its pool port, or 4444
+# without one), shared by every chat and project of the person. 4444 is also the local
+# port a tunnel (ngrok, chisel) forwards to.
+REVERSE_PORT_ENV = "MSF_REVERSE_PORT"
+DEFAULT_REVERSE_PORT = 4444
+
+
+def reverse_port() -> int:
+    raw = os.environ.get(REVERSE_PORT_ENV, "").strip()
+    if re.fullmatch(r"[0-9]{1,5}", raw) and 1 <= int(raw) <= 65535:
+        return int(raw)
+    return DEFAULT_REVERSE_PORT
 # The refresh loop rewrites the session/job cache every few seconds while the console
 # is idle; an older cache cannot prove the holder has nothing left to lose.
 _LEASE_CACHE_MAX_AGE_S = 30.0
+# How long a drive from the Sessions panel waits for the console while a command runs. The
+# session manager serves each request on its own thread, so a drive no longer queues in the
+# listen backlog behind a running command: it waits here instead. Each stays under the agent's
+# budget for that drive (agentic/api.py `_SESSION_DRIVE_S`: interact 40 s, kill 15 s); a kill
+# itself takes 3-4 s (`sessions -k` waits out a 3 s quiet period). Past the wait it answers busy.
+INTERACT_CONSOLE_WAIT_S = 30
+KILL_CONSOLE_WAIT_S = 10
+# A kill answers within this long of its arrival (the agent gives up at 15 s): the read after
+# `sessions -k` / `jobs -k` gets what the wait left, at least 1 s. A short read is harmless, the
+# command is already sent; an unbounded one restarted its quiet clock on every line of a teardown.
+KILL_ANSWER_BUDGET_S = 13.0
+# An interact answers within this long of its arrival (the agent gives up at 40 s): after a wait for
+# the console, its read gets only what is left, and an answer cut short says the command is still
+# running (`still_running`). An uncontended interact keeps its full INTERACT_READ_S. With less than
+# INTERACT_MIN_READ_S left nothing is sent: the command could not be read.
+INTERACT_ANSWER_BUDGET_S = 38.0
+INTERACT_READ_S = 30.0
+INTERACT_MIN_READ_S = 3.0
+# A meterpreter interact still needs to leave the command and background the session after its read.
+_METERPRETER_AFTER_READ_S = 6.0
+# The caller check runs only for a drive that waited this long for the console: the poll cannot tell
+# a client that shut its sending side (still reading) from one that left.
+_CALLER_CHECK_AFTER_WAIT_S = 0.5
+
+# The HTTP request a drive runs for, per thread (SessionProgressHandler sets it): a drive that
+# waited for the console checks its caller is still there before sending anything. MCP tool calls
+# have none and are never refused this way.
+_drive_caller = threading.local()
+_CALLER_GONE = {"busy": True, "message": "The caller stopped waiting before the console was free; nothing was sent"}
+
+
+def _caller_gave_up() -> bool:
+    connected = getattr(_drive_caller, "connected", None)
+    return connected is not None and not connected()
 
 mcp = FastMCP(SERVER_NAME)
 
@@ -106,12 +158,208 @@ NO_OWNER_REFUSAL = (
 
 def _busy_refusal(reason: str) -> str:
     return (
-        f"[REFUSED] Metasploit is held by another project on this RedAmon instance ({reason}), "
-        "so nothing was sent to the console. The sandbox runs one msfconsole for every "
-        "project: it serves one project at a time and never shows or drives another "
-        "project's sessions. Try again later or continue without Metasploit; an "
-        "administrator can end that project's sessions and jobs in the Reverse Shell tab."
+        f"[REFUSED] Metasploit in your Kali sandbox is held by another of your projects ({reason}), "
+        "so nothing was sent to the console. Your sandbox runs one msfconsole for all of your "
+        "projects and chats: it serves one project at a time and never shows or drives another "
+        "project's sessions. Try again once that project's sessions and jobs have ended (you can "
+        "end them in the Sessions panel of the Reverse Shell tab), or continue without Metasploit."
     )
+
+
+# A handler that could not bind, as msfconsole reports it. It tries LHOST first and
+# falls back to 0.0.0.0, so "Handler failed to bind to <LHOST>:<port>" followed by
+# "Started reverse TCP handler on 0.0.0.0:<port>" is a normal start (LHOST is the
+# address targets dial, which is not the sandbox's). The handler failed only when the
+# final "Rex::BindFailed The address is already in use or unavailable: (<addr>:<port>)"
+# comes, or no start follows a failed bind.
+_HANDLER_BIND_FAILED_RE = re.compile(r"Handler failed to bind to (\[[^\]]*\]|[^\s\[\]]+?):(\d+)", re.I)
+_REX_BIND_FAILED_RE = re.compile(r"Rex::BindFailed[^\n]*?\(\s*(\[[^\]]*\]|[^()\s]*):(\d+)\s*\)", re.I)
+# "Started reverse TCP handler on 0.0.0.0:4444", "Started HTTPS reverse handler on
+# https://0.0.0.0:8443", "Started bind TCP handler against 10.0.0.5:4444".
+_HANDLER_STARTED_RE = re.compile(
+    r"Started .+? handler (on|against) (?:[a-z][a-z0-9+.-]*://)?(\[[^\]]*\]|[^\s/]+?):(\d+)", re.I)
+# A command that starts a handler as a background job: `handler`, `to_handler`, or an
+# exploit or run with -j. Its job and "Started ... handler" lines come seconds later on a
+# cold console (module loading), well past the command's quiet period, so the command
+# waits for them: else the model fires its exploit before anything listens.
+_JOB_COMMAND_RE = re.compile(r"^\s*(?:handler|to_handler)\b|^\s*(?:exploit|run)\b.*\s-j\b", re.I)
+_LISTENER_JOB_RE = re.compile(r"(?:Exploit|Payload handler) running as background job \d+", re.I)
+_OTHER_JOB_RE = re.compile(r"(?:Auxiliary|Post) module running as background job \d+", re.I)
+_JOB_FAILED_RE = re.compile(r"Exploit failed|Handler failed to start", re.I)
+LISTENER_WAIT_S = float(os.getenv("MSF_LISTENER_WAIT_S", "20"))
+# Once the handler listens, the lines that follow it at once (a second handler, a
+# warning) are read for this long more.
+LISTENER_TAIL_S = 0.5
+# Output that arrives after its command returned: kept, and handed to the next command.
+LATE_OUTPUT_MAX_LINES = 400
+LATE_OUTPUT_MARK = "[output that arrived after the previous command returned]"
+LATE_OUTPUT_END = "[end of that output]"
+# The asynchronous lines msfconsole prints (a job, a handler, a session opened or
+# closed): kept even when a read for the session list consumes them.
+_EVENT_PREFIXES = ("[*]", "[+]", "[-]", "[!]")
+
+
+def starts_a_listener(command: str, output: str) -> bool:
+    """Whether ``command`` (with the output it has printed so far) starts a handler
+    whose start the command must wait for: an exploit or handler job, never an
+    auxiliary or post module's."""
+    text = output or ""
+    if _LISTENER_JOB_RE.search(text):
+        return True
+    if _OTHER_JOB_RE.search(text):
+        return False
+    return any(_JOB_COMMAND_RE.search(part) for part in (command or "").split(";"))
+
+
+def _listener_settled(text: str) -> bool:
+    """A started handler job has said it listens, or failed, for every job it started."""
+    if _OTHER_JOB_RE.search(text) and not _LISTENER_JOB_RE.search(text):
+        return True
+    jobs = len(_LISTENER_JOB_RE.findall(text))
+    started = sum(1 for m in _HANDLER_STARTED_RE.finditer(text))
+    failed = len(_JOB_FAILED_RE.findall(text))
+    return started + failed >= max(1, jobs)
+
+
+# "Meterpreter session 1 opened (10.214.0.2:4444 -> 203.0.113.9:51234) at ...": the
+# local end is the handler's port for a reverse payload, the remote one a bind payload's.
+_SESSION_OPENED_RE = re.compile(
+    r"session (\d+) opened \(\s*([^\s()]+):(\d+)\s*->\s*([^\s()]+):(\d+)\s*\)", re.I)
+
+
+def bind_failure(output: str) -> Optional[Tuple[str, int]]:
+    """(address, port) a handler of this output could not bind, or None."""
+    text = output or ""
+    final = _REX_BIND_FAILED_RE.search(text)
+    if final:
+        return final.group(1).strip("[]"), int(final.group(2))
+    started = [(m.end(), int(m.group(3))) for m in _HANDLER_STARTED_RE.finditer(text)
+               if m.group(1).lower() == "on"]
+    for failed in _HANDLER_BIND_FAILED_RE.finditer(text):
+        port = int(failed.group(2))
+        if not any(end > failed.end() and started_port == port for end, started_port in started):
+            return failed.group(1).strip("[]"), port
+    return None
+
+
+# The sandbox's own process table: this server runs inside the sandbox, as root.
+PROC_ROOT = "/proc"
+_TCP_LISTEN = "0A"
+
+
+def listening_pids(port: int) -> Optional[set]:
+    """The pids holding a TCP socket that listens on ``port`` in this sandbox, from
+    /proc (an empty set when none listens), or None when /proc cannot say."""
+    inodes, readable = set(), False
+    for table in ("tcp", "tcp6"):
+        try:
+            with open(os.path.join(PROC_ROOT, "net", table), encoding="ascii", errors="replace") as f:
+                rows = f.read().splitlines()[1:]
+        except OSError:
+            continue
+        readable = True
+        for row in rows:
+            cols = row.split()
+            if len(cols) < 10 or cols[3] != _TCP_LISTEN:
+                continue
+            try:
+                if int(cols[1].rsplit(":", 1)[-1], 16) == port:
+                    inodes.add(f"socket:[{cols[9]}]")
+            except ValueError:
+                continue
+    if not readable:
+        return None
+    pids = set()
+    if not inodes:
+        return pids
+    for pid in os.listdir(PROC_ROOT):
+        if not pid.isdigit():
+            continue
+        fd_dir = os.path.join(PROC_ROOT, pid, "fd")
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                if os.readlink(os.path.join(fd_dir, fd)) in inodes:
+                    pids.add(int(pid))
+                    break
+            except OSError:
+                continue
+    # A listening socket whose owner cannot be found still holds the port.
+    return pids or {0}
+
+
+def process_name(pid: int) -> str:
+    try:
+        with open(os.path.join(PROC_ROOT, str(pid), "comm"), encoding="utf-8", errors="replace") as f:
+            name = f.read().strip()
+    except OSError:
+        return "unknown"
+    return re.sub(r"[^A-Za-z0-9._ -]", "?", name)[:32] or "unknown"
+
+
+def _parent_pid(pid: int) -> Optional[int]:
+    try:
+        with open(os.path.join(PROC_ROOT, str(pid), "stat"), encoding="ascii", errors="replace") as f:
+            # The name in parentheses may hold spaces: the fields after it are plain.
+            return int(f.read().rsplit(")", 1)[1].split()[1])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _describe_job(job: dict) -> str:
+    return (f"job {job.get('id')} ({job.get('name', '')}, payload {job.get('payload', '')}"
+            + (f", {job['opts']}" if job.get("opts") else "") + ")")
+
+
+def handler_busy_note(address: str, port: int, holder, jobs: List[dict]) -> str:
+    """What to do when a handler could not bind ``address:port``, by who holds the
+    port in the sandbox: ``holder`` is "metasploit" (``jobs`` then lists the console's
+    jobs), a (pid, name) of another process, "unknown", or None when nothing listens
+    there (then it is the address that the sandbox does not have)."""
+    if holder is None:
+        # Every address and the loopback are the sandbox's own (a tunnel's handler binds
+        # 127.0.0.1:4444): failing on one is no wrong address.
+        if address in ("0.0.0.0", "::", "", "::1") or address.startswith("127."):
+            return (f"[REDAMON] Metasploit could not bind {address or '0.0.0.0'}:{port}, although nothing in "
+                    f"your Kali sandbox listens on port {port} now: start the handler again, or choose "
+                    f"another LPORT.")
+        return (f"[REDAMON] Address {address} is not an address of your Kali sandbox, so this handler did not "
+                f"start (nothing listens on port {port} there). Leave ReverseListenerBindAddress unset, so "
+                f"Metasploit binds 0.0.0.0, and keep LHOST as the address targets dial.")
+    lines = [f"[REDAMON] Port {port} is already in use in your Kali sandbox, so this handler did not start."]
+    if holder == "metasploit":
+        named = [j for j in jobs if j.get("port") == port] or jobs
+        if not named:
+            lines.append("A Metasploit handler of your console listens on it (`jobs -v` shows each job's bind "
+                         "port): reuse it, or stop it with `jobs -k <id>` and start yours again.")
+        elif len(named) == 1:
+            job = named[0]
+            lines.append(f"Metasploit {_describe_job(job)} already listens on it: reuse it (run `jobs` to see "
+                         f"it; a shell it catches shows in `sessions -l`), or stop it with "
+                         f"`jobs -k {job.get('id')}` and start yours again.")
+        else:
+            lines.append(f"One of your Metasploit jobs listens on it ({'; '.join(map(_describe_job, named))}; "
+                         f"`jobs -v` shows each one's bind port): reuse it, or stop it with `jobs -k <id>` "
+                         f"and start yours again.")
+    elif isinstance(holder, tuple) and holder[0]:
+        pid, name = holder
+        lines.append(f"Process {name} (pid {pid}) listens on it, outside Metasploit (a listener started with "
+                     f"kali_shell, such as nc or socat): catch the shell with it, or stop it with "
+                     f"`kill {pid}` from kali_shell and start yours again.")
+    else:
+        lines.append(f"Another process in your sandbox listens on it (`ss -ltnp 'sport = :{port}'` in "
+                     f"kali_shell names it): catch the shell with it, or stop it and start yours again.")
+    if port == reverse_port():
+        lines.append(f"All of your chats and projects share this sandbox and its one reverse-shell port "
+                     f"(LPORT {port}): a handler another chat started there catches this chat's shells "
+                     f"too, so reuse it rather than starting a second one.")
+    elif port == DEFAULT_REVERSE_PORT:
+        lines.append(f"Port {port} is where your tunnel (ngrok or chisel) delivers shells, one port for all "
+                     f"of your chats and projects: reuse the handler there rather than starting a second one.")
+    return "\n".join(lines)
 
 
 class PersistentMsfConsole:
@@ -144,6 +392,13 @@ class PersistentMsfConsole:
         self._detail_cache_time: float = 0
         self._detail_lock = threading.Lock()
         self._chat_session_map: Dict[int, str] = {}
+        # The chat whose command started each handler: ("lport", port) for a reverse
+        # handler, ("bind", host, port) for a bind one. A session goes to the chat of
+        # the handler that caught it. Under _detail_lock.
+        self._handler_chats: Dict[tuple, str] = {}
+        # The chat whose command runs now (set under self.lock by execute()); read
+        # without a lock by the reader thread.
+        self._command_chat: Optional[str] = None
         self._non_msf_sessions: Dict[str, dict] = {}
         self._detail_thread_started = False
 
@@ -157,6 +412,9 @@ class PersistentMsfConsole:
         # An "opened" line read after the last cache refresh: a session the cache has not
         # caught up with yet.
         self._last_session_open_at: float = 0.0
+        # Output that arrived after its command returned, for the next command (under
+        # self.lock, as every drain of the queue).
+        self._late_lines: collections.deque = collections.deque(maxlen=LATE_OUTPUT_MAX_LINES)
 
     def start(self) -> bool:
         """Start the persistent msfconsole process."""
@@ -187,6 +445,7 @@ class PersistentMsfConsole:
 
             # Wait for msfconsole to be ready (can take 60-120s on first start)
             self._wait_for_output(timeout=120, quiet_period=5.0)
+            self._apply_reverse_port()
             self._initialized = True
             print(f"[MSF] Persistent msfconsole ready (PID: {self.process.pid})")
 
@@ -205,6 +464,20 @@ class PersistentMsfConsole:
             print(f"[MSF] Failed to start msfconsole: {e}")
             return False
 
+    def _apply_reverse_port(self) -> None:
+        """Every new msfconsole (a start, a restart, the reset for the next project)
+        defaults LPORT to the sandbox's reverse port: only that port is published to
+        the targets, and Metasploit's own default (4444; 4433 for `sessions -u`) is
+        reached by nothing but a tunnel. A module's own `set LPORT` still wins."""
+        port = reverse_port()
+        if port == DEFAULT_REVERSE_PORT:
+            return
+        try:
+            self._quick_execute(f"setg LPORT {port}", timeout=10, quiet_period=1.0)
+            print(f"[MSF] LPORT defaults to the sandbox's reverse port {port}")
+        except Exception as e:  # the console still serves; the agent sets LPORT itself
+            print(f"[MSF] Could not set the default LPORT: {e}")
+
     def _read_output(self):
         """Background thread to continuously read msfconsole output."""
         if DEBUG:
@@ -222,9 +495,43 @@ class PersistentMsfConsole:
         if DEBUG:
             print("[MSF] Reader thread exited")
 
+    def _note_handler(self, line: str) -> None:
+        """Remember which chat's command started the handler this line announces."""
+        chat = self._command_chat
+        match = _HANDLER_STARTED_RE.search(line)
+        if not chat or not match:
+            return
+        side, host, port = match.group(1).lower(), match.group(2).strip("[]"), int(match.group(3))
+        key = ("lport", port) if side == "on" else ("bind", host, port)
+        with self._detail_lock:
+            self._handler_chats[key] = chat
+
+    def _chat_of_new_session(self, line: str) -> Optional[str]:
+        """The chat a session that just opened belongs to: the one whose command
+        started the handler that caught it (its local port for a reverse payload, its
+        remote end for a bind one), else the one whose command is running (a
+        foreground exploit), else, when the console cannot tell, the holder's latest
+        chat. Every one of them is the holder project's."""
+        match = _SESSION_OPENED_RE.search(line)
+        if match:
+            lport, rhost, rport = int(match.group(3)), match.group(4).strip("[]"), int(match.group(5))
+            with self._detail_lock:
+                chat = self._handler_chats.get(("lport", lport)) or self._handler_chats.get(("bind", rhost, rport))
+            if chat:
+                return chat
+        if self._command_chat:
+            return self._command_chat
+        # Read without _lease_lock: this thread feeds the output queue a running
+        # command waits on, so it never blocks.
+        holder = self._holder
+        return (holder or {}).get("chat_session_id") or None
+
     def _detect_session_events(self, line: str):
-        """Simple session event detection - just tracks session IDs."""
+        """Session event detection: tracks session ids, the handler each chat started,
+        and the chat each new session is listed under."""
         line_lower = line.lower()
+        if 'handler' in line_lower and 'started' in line_lower:
+            self._note_handler(line)
 
         # Detect "session X opened"
         if 'session' in line_lower and 'opened' in line_lower:
@@ -239,11 +546,10 @@ class PersistentMsfConsole:
                     # A close line that was missed must not hand this id the old chat.
                     self._unlink_chat_session(session_id)
                     # Every session in the console is the holder's, a handler's late
-                    # catch included. Read without _lease_lock: this thread feeds the
-                    # output queue a running command waits on, so it never blocks.
-                    holder = self._holder
-                    if holder and holder.get("chat_session_id"):
-                        self.link_chat_session(session_id, holder["chat_session_id"])
+                    # catch included.
+                    chat = self._chat_of_new_session(line)
+                    if chat:
+                        self.link_chat_session(session_id, chat)
                     print(f"[MSF] Session {session_id} opened")
             except (ValueError, IndexError):
                 pass
@@ -348,42 +654,102 @@ class PersistentMsfConsole:
 
         return '\n'.join(output_lines)
 
-    def execute(self, command: str, timeout: float = 120, quiet_period: float = 2.0) -> str:
-        """Execute a command in the persistent msfconsole."""
+    def execute(self, command: str, timeout: float = 120, quiet_period: float = 2.0,
+                chat: Optional[str] = None) -> str:
+        """Execute a command in the persistent msfconsole. ``chat`` is the chat the
+        command runs for: a handler it starts catches sessions for that chat."""
         with self.lock:
             if not self.process or self.process.poll() is not None:
                 if not self.start():
                     return "[ERROR] Failed to start msfconsole"
-
-            # Track current command for progress endpoint
-            with self._progress_lock:
-                self._current_command = command
-
-            # Clear any pending output
-            while not self.output_queue.empty():
-                try:
-                    self.output_queue.get_nowait()
-                except queue.Empty:
-                    break
-
-            # Send command(s) - split by semicolons to support chaining
-            # msfconsole doesn't parse semicolons in stdin, so we convert them to newlines
+            self._command_chat = chat or None
             try:
-                if ';' in command:
-                    # Split by semicolons and send each as separate line
-                    commands = [cmd.strip() for cmd in command.split(';') if cmd.strip()]
-                    for cmd in commands:
-                        self.process.stdin.write(cmd + "\n")
-                    self.process.stdin.flush()
-                else:
-                    self.process.stdin.write(command + "\n")
-                    self.process.stdin.flush()
-            except Exception as e:
-                return f"[ERROR] Failed to send command: {e}"
+                return self._execute_locked(command, timeout, quiet_period)
+            finally:
+                self._command_chat = None
 
-            # Collect output
-            output = self._wait_for_output(timeout=timeout, quiet_period=quiet_period)
-            return output if output else "(no output)"
+    def _execute_locked(self, command: str, timeout: float, quiet_period: float) -> str:
+        """The body of execute(), under self.lock."""
+        # Track current command for progress endpoint
+        with self._progress_lock:
+            self._current_command = command
+
+        # What arrived since the last command returned goes in front of this one's output.
+        self._drain_pending()
+        late = self._take_late()
+
+        # Send command(s) - split by semicolons to support chaining
+        # msfconsole doesn't parse semicolons in stdin, so we convert them to newlines
+        try:
+            if ';' in command:
+                # Split by semicolons and send each as separate line
+                commands = [cmd.strip() for cmd in command.split(';') if cmd.strip()]
+                for cmd in commands:
+                    self.process.stdin.write(cmd + "\n")
+                self.process.stdin.flush()
+            else:
+                self.process.stdin.write(command + "\n")
+                self.process.stdin.flush()
+        except Exception as e:
+            return f"[ERROR] Failed to send command: {e}"
+
+        # Collect output
+        output = self._wait_for_output(timeout=timeout, quiet_period=quiet_period)
+        if starts_a_listener(command, output) and not _listener_settled(output):
+            output = self._wait_for_listener(output)
+        output = output if output else "(no output)"
+        if late:
+            output = f"{LATE_OUTPUT_MARK}\n{late}\n{LATE_OUTPUT_END}\n{output}"
+        return output
+
+    def _wait_for_listener(self, output: str) -> str:
+        """Read on until every handler job the command started listens or failed, at
+        most LISTENER_WAIT_S; past it, say so plainly."""
+        lines = output.split("\n") if output else []
+        with self._progress_lock:
+            self._execution_active = True
+        deadline = time.monotonic() + LISTENER_WAIT_S
+        settled_at = None
+        try:
+            while True:
+                now = time.monotonic()
+                if settled_at is None and _listener_settled("\n".join(lines)):
+                    settled_at = now
+                if settled_at is not None and now - settled_at >= LISTENER_TAIL_S:
+                    return "\n".join(lines)
+                if settled_at is None and now >= deadline:
+                    lines.append(f"[REDAMON] The handler did not start listening within {LISTENER_WAIT_S:g} s; "
+                                 f"check `jobs` before firing the exploit.")
+                    return "\n".join(lines)
+                try:
+                    line = self.output_queue.get(timeout=0.1).rstrip()
+                except queue.Empty:
+                    continue
+                lines.append(line)
+                with self._progress_lock:
+                    self._current_output.append(line)
+        finally:
+            with self._progress_lock:
+                self._execution_active = False
+
+    def _keep_late(self, line: str) -> None:
+        stripped = line.rstrip()
+        if self._is_meaningful_output(stripped):
+            self._late_lines.append(stripped)
+
+    def _drain_pending(self) -> None:
+        """Move what waits in the queue (the tail of an earlier command) into the
+        late output; never discard it."""
+        while True:
+            try:
+                self._keep_late(self.output_queue.get_nowait())
+            except queue.Empty:
+                return
+
+    def _take_late(self) -> str:
+        text = "\n".join(self._late_lines)
+        self._late_lines.clear()
+        return text
 
     def stop(self, force: bool = False):
         """Stop the msfconsole process."""
@@ -420,6 +786,49 @@ class PersistentMsfConsole:
     def _forget_chat_links(self) -> None:
         with self._detail_lock:
             self._chat_session_map.clear()
+            self._handler_chats.clear()
+
+    def current_jobs(self) -> List[dict]:
+        """The console's jobs, read fresh (the cache may predate the command that just
+        ran), or from the cache when the console is busy."""
+        if self.lock.acquire(timeout=10):
+            try:
+                raw = self._quick_execute("jobs -l", timeout=10, quiet_period=1.0, keep_events=True)
+                with self._detail_lock:
+                    self._job_details = self._parse_jobs_output(raw)
+                return self._parse_jobs_output(raw, with_opts=True)
+            finally:
+                self.lock.release()
+        with self._detail_lock:
+            return list(self._job_details)
+
+    def port_holder(self, port: int):
+        """Who listens on ``port`` in the sandbox: "metasploit" (this console's
+        process or a child of it), (pid, name) of another process, "unknown" when
+        /proc cannot say, or None when nothing listens."""
+        pids = listening_pids(port)
+        if pids is None:
+            return "unknown"
+        if not pids:
+            return None
+        console = self.process.pid if self.process else None
+        for pid in sorted(pids):
+            seen, current = 0, pid
+            while current and seen < 8:
+                if current == console:
+                    return "metasploit"
+                current, seen = _parent_pid(current), seen + 1
+        pid = min(pids)
+        return (pid, process_name(pid)) if pid else "unknown"
+
+    def busy_note(self, output: str) -> Optional[str]:
+        """The note for a handler of ``output`` that could not bind, or None."""
+        failed = bind_failure(output)
+        if failed is None:
+            return None
+        address, port = failed
+        holder = self.port_holder(port)
+        return handler_busy_note(address, port, holder, self.current_jobs() if holder == "metasploit" else [])
 
     # ─── One project at a time (GHSA-w454-6hwp-fm58) ───
 
@@ -527,12 +936,13 @@ class PersistentMsfConsole:
             self._execution_active = False
             self._current_command = ""
             self._execution_start_time = 0
-        # Clear output queue
+        # The old console's output, late or not, ends with it.
         while not self.output_queue.empty():
             try:
                 self.output_queue.get_nowait()
             except queue.Empty:
                 break
+        self._late_lines.clear()
         print("[MSF] Old process terminated, ready for fresh start")
 
     def get_progress(self) -> dict:
@@ -553,21 +963,20 @@ class PersistentMsfConsole:
     # SESSION MANAGEMENT — quick execute, detail refresh, interaction
     # =========================================================================
 
-    def _quick_execute(self, command: str, timeout: float = 15, quiet_period: float = 3.0) -> str:
+    def _quick_execute(self, command: str, timeout: float = 15, quiet_period: float = 3.0,
+                       keep_events: bool = False) -> str:
         """
         Execute a quick command without acquiring self.lock.
         Caller MUST hold self.lock before calling this method.
         Does not update progress tracking (used for internal session queries).
+        ``keep_events``: a read for the session or job list also hands msfconsole's
+        asynchronous lines it consumes (a handler started, a session opened) to the
+        next command.
         """
         if not self.process or self.process.poll() is not None:
             return "[ERROR] msfconsole not running"
 
-        # Clear pending output
-        while not self.output_queue.empty():
-            try:
-                self.output_queue.get_nowait()
-            except queue.Empty:
-                break
+        self._drain_pending()
 
         # Send command
         try:
@@ -590,6 +999,8 @@ class PersistentMsfConsole:
                 output_lines.append(stripped)
                 if self._is_meaningful_output(stripped):
                     last_output_time = time.time()
+                if keep_events and stripped.lstrip().startswith(_EVENT_PREFIXES):
+                    self._keep_late(stripped)
             except queue.Empty:
                 elapsed = time.time() - start_time
                 time_since_last = time.time() - last_output_time
@@ -607,12 +1018,8 @@ class PersistentMsfConsole:
         after an agent exploit), send 'background' to return to msf>.
         Caller MUST hold self.lock.
         """
-        # Drain any pending output from previous commands
-        while not self.output_queue.empty():
-            try:
-                self.output_queue.get_nowait()
-            except queue.Empty:
-                break
+        # Pending output of previous commands is kept for the next one.
+        self._drain_pending()
         # Send a blank line to trigger a prompt redraw
         self.process.stdin.write("\n")
         self.process.stdin.flush()
@@ -625,6 +1032,9 @@ class PersistentMsfConsole:
             except queue.Empty:
                 if prompt_lines:
                     break
+        for line in prompt_lines:
+            if line.lstrip().startswith(_EVENT_PREFIXES):
+                self._keep_late(line)
         prompt_text = ' '.join(prompt_lines).lower().strip()
         if not prompt_text:
             return  # No prompt detected, assume msf> (safe default)
@@ -647,11 +1057,7 @@ class PersistentMsfConsole:
             print(f"[MSF] Console stuck in raw shell (prompt: {prompt_text!r}) — sending 'exit' to recover msf>")
             self._quick_execute("exit", timeout=5, quiet_period=1.0)
             # After exiting the OS shell, we might be at meterpreter > — check and background
-            while not self.output_queue.empty():
-                try:
-                    self.output_queue.get_nowait()
-                except queue.Empty:
-                    break
+            self._drain_pending()
             self.process.stdin.write("\n")
             self.process.stdin.flush()
             post_lines = []
@@ -686,8 +1092,8 @@ class PersistentMsfConsole:
             try:
                 # Ensure we're at msf> prompt, not inside a session
                 self._ensure_msf_prompt()
-                raw_sessions = self._quick_execute("sessions -l", timeout=10, quiet_period=1.0)
-                raw_jobs = self._quick_execute("jobs -l", timeout=10, quiet_period=1.0)
+                raw_sessions = self._quick_execute("sessions -l", timeout=10, quiet_period=1.0, keep_events=True)
+                raw_jobs = self._quick_execute("jobs -l", timeout=10, quiet_period=1.0, keep_events=True)
                 parsed_sessions = self._parse_sessions_output(raw_sessions)
                 parsed_jobs = self._parse_jobs_output(raw_jobs)
                 with self._detail_lock:
@@ -789,8 +1195,9 @@ class PersistentMsfConsole:
 
         return sessions
 
-    def _parse_jobs_output(self, raw: str) -> List[dict]:
-        """Parse 'jobs -l' output into structured dicts."""
+    def _parse_jobs_output(self, raw: str, with_opts: bool = False) -> List[dict]:
+        """Parse 'jobs -l' output into structured dicts (``with_opts``: and each one's
+        payload options, which the session list does not carry)."""
         jobs = []
         if not raw or 'No active jobs' in raw:
             return jobs
@@ -826,12 +1233,30 @@ class PersistentMsfConsole:
                     "name": name,
                     "payload": payload,
                     "port": port,
+                    **({"opts": opts} if with_opts else {}),
                 })
 
         return jobs
 
+    def register_non_msf_session(self, body: dict) -> str:
+        """Store a listener the agent started outside Metasploit, under a new `raw-<ms>` id.
+
+        The session manager answers requests concurrently: an id already taken in the same
+        millisecond is bumped, so two registrations never overwrite each other."""
+        with self._detail_lock:
+            stamp = int(time.time() * 1000)
+            while f"raw-{stamp}" in self._non_msf_sessions:
+                stamp += 1
+            sid = f"raw-{stamp}"
+            self._non_msf_sessions[sid] = {**body, "id": sid}
+        return sid
+
+    def forget_non_msf_session(self, sid: str) -> None:
+        with self._detail_lock:
+            self._non_msf_sessions.pop(sid, None)
+
     def get_sessions_data(self) -> dict:
-        """Get cached session data for the HTTP endpoint (no lock needed)."""
+        """Get cached session data for the HTTP endpoint (never waits for the console lock)."""
         with self._detail_lock:
             return {
                 "sessions": list(self._session_details),
@@ -859,10 +1284,15 @@ class PersistentMsfConsole:
             return {"busy": False,
                     "output": "[ERROR] Command must be a single line without control characters"}
 
-        acquired = self.lock.acquire(timeout=8)
+        started = time.monotonic()
+        acquired = self.lock.acquire(timeout=INTERACT_CONSOLE_WAIT_S)
         if not acquired:
             return {"busy": True, "message": "Agent is executing a command, try again shortly"}
         try:
+            # Nobody would see the answer, and a retry would run the command twice.
+            if time.monotonic() - started > _CALLER_CHECK_AFTER_WAIT_S and _caller_gave_up():
+                return dict(_CALLER_GONE)
+
             # Determine session type from cache
             session_type = None
             with self._detail_lock:
@@ -873,7 +1303,7 @@ class PersistentMsfConsole:
 
             # Cache miss — force an inline lookup
             if session_type is None:
-                raw = self._quick_execute("sessions -l", timeout=10, quiet_period=2.0)
+                raw = self._quick_execute("sessions -l", timeout=10, quiet_period=2.0, keep_events=True)
                 parsed = self._parse_sessions_output(raw)
                 with self._detail_lock:
                     self._session_details = parsed
@@ -889,17 +1319,16 @@ class PersistentMsfConsole:
 
             # ─── SHELL SESSIONS: non-interactive via `sessions -c` ───
             if session_type != "meterpreter":
+                read_s = self._interact_read_s(started)
+                if read_s < INTERACT_MIN_READ_S:
+                    return {"busy": True, "message": "Agent is executing a command, try again shortly"}
                 # msfconsole splits the line with Shellwords rules, where a
                 # backslash inside double quotes escapes the next character: an
                 # unescaped trailing backslash would swallow the closing quote.
                 escaped_cmd = command.replace('\\', '\\\\').replace('"', '\\"')
 
-                # Clear pending output
-                while not self.output_queue.empty():
-                    try:
-                        self.output_queue.get_nowait()
-                    except queue.Empty:
-                        break
+                # Pending output of earlier commands is kept for the next one.
+                self._drain_pending()
 
                 # Send command
                 try:
@@ -922,8 +1351,9 @@ class PersistentMsfConsole:
                 _msf_prompt_re = re.compile(r'^msf\d?\s|^msf6')
 
                 output_lines = []
-                end_time = time.time() + 30
+                end_time = time.time() + read_s
                 saw_echo = False
+                finished = False
 
                 while time.time() < end_time:
                     try:
@@ -942,6 +1372,7 @@ class PersistentMsfConsole:
 
                         # msf prompt after echo — command is done
                         if saw_echo and _msf_prompt_re.match(clean):
+                            finished = True
                             break
 
                         # After echo: collect output, skip [*] noise lines
@@ -958,7 +1389,10 @@ class PersistentMsfConsole:
                 output = '\n'.join(output_lines).strip()
                 if not output:
                     output = "(no output)"
-                return {"busy": False, "output": _clean_ansi_output(output)}
+                answer = {"busy": False, "output": _clean_ansi_output(output)}
+                if not finished:
+                    answer["still_running"] = True
+                return answer
 
             # ─── METERPRETER SESSIONS: interactive mode ───
             # Detect command type for meterpreter sessions
@@ -968,6 +1402,9 @@ class PersistentMsfConsole:
             has_inline_flag = len(cmd_parts) > 1 and cmd_parts[1] == "-c"
             opens_subshell = cmd_lower in _SHELL_COMMANDS and not has_inline_flag
             is_inline_shell = cmd_lower == "shell" and has_inline_flag
+
+            if self._interact_read_s(started, reserve=_METERPRETER_AFTER_READ_S) < INTERACT_MIN_READ_S:
+                return {"busy": True, "message": "Agent is executing a command, try again shortly"}
 
             # Enter meterpreter session
             enter_output = self._quick_execute(f"sessions -i {session_id}", timeout=10, quiet_period=1.0)
@@ -984,30 +1421,49 @@ class PersistentMsfConsole:
                         and inner_cmd[-1] == inner_cmd[0]):
                     inner_cmd = inner_cmd[1:-1]
                 self._quick_execute("shell", timeout=10, quiet_period=1.5)
-                output = self._quick_execute(inner_cmd, timeout=30, quiet_period=1.5)
+                output, cut_short = self._meterpreter_read(inner_cmd, started)
                 self._quick_execute("exit", timeout=5, quiet_period=0.5)
                 self._quick_execute("background", timeout=5, quiet_period=0.5)
             else:
-                output = self._quick_execute(command, timeout=30, quiet_period=1.5)
+                output, cut_short = self._meterpreter_read(command, started)
                 if opens_subshell:
                     self._quick_execute("exit", timeout=5, quiet_period=0.5)
                     self._quick_execute("background", timeout=5, quiet_period=0.5)
                 else:
                     self._quick_execute("background", timeout=5, quiet_period=0.5)
 
-            return {"busy": False, "output": _clean_ansi_output(output)}
+            answer = {"busy": False, "output": _clean_ansi_output(output)}
+            if cut_short:
+                answer["still_running"] = True
+            return answer
         except Exception as e:
             return {"busy": False, "output": f"[ERROR] {str(e)}"}
         finally:
             self.lock.release()
 
+    @staticmethod
+    def _interact_read_s(started: float, reserve: float = 0.0) -> float:
+        """The interact's read: its full INTERACT_READ_S, or what INTERACT_ANSWER_BUDGET_S (less
+        `reserve` for the steps after the read) leaves since it arrived, whichever is shorter."""
+        return min(INTERACT_READ_S, INTERACT_ANSWER_BUDGET_S - reserve - (time.monotonic() - started))
+
+    def _meterpreter_read(self, command: str, started: float) -> Tuple[str, bool]:
+        """(output, cut short): a read that used its whole time stopped while the command still ran."""
+        read_s = max(1.0, self._interact_read_s(started, reserve=_METERPRETER_AFTER_READ_S))
+        began = time.monotonic()
+        output = self._quick_execute(command, timeout=read_s, quiet_period=1.5)
+        return output, time.monotonic() - began >= read_s - 0.25
+
     def kill_session(self, session_id: int) -> dict:
         """Kill a specific session."""
-        acquired = self.lock.acquire(timeout=5)
+        started = time.monotonic()
+        acquired = self.lock.acquire(timeout=KILL_CONSOLE_WAIT_S)
         if not acquired:
             return {"busy": True, "message": "Agent is busy"}
         try:
-            output = self._quick_execute(f"sessions -k {session_id}")
+            if time.monotonic() - started > _CALLER_CHECK_AFTER_WAIT_S and _caller_gave_up():
+                return dict(_CALLER_GONE)
+            output = self._quick_execute(f"sessions -k {session_id}", timeout=self._kill_read_s(started))
             self.session_ids.discard(session_id)
             self._unlink_chat_session(session_id)
             return {"busy": False, "output": _clean_ansi_output(output)}
@@ -1016,14 +1472,22 @@ class PersistentMsfConsole:
 
     def kill_job(self, job_id: int) -> dict:
         """Kill a background job."""
-        acquired = self.lock.acquire(timeout=5)
+        started = time.monotonic()
+        acquired = self.lock.acquire(timeout=KILL_CONSOLE_WAIT_S)
         if not acquired:
             return {"busy": True, "message": "Agent is busy"}
         try:
-            output = self._quick_execute(f"jobs -k {job_id}")
+            if time.monotonic() - started > _CALLER_CHECK_AFTER_WAIT_S and _caller_gave_up():
+                return dict(_CALLER_GONE)
+            output = self._quick_execute(f"jobs -k {job_id}", timeout=self._kill_read_s(started))
             return {"busy": False, "output": _clean_ansi_output(output)}
         finally:
             self.lock.release()
+
+    @staticmethod
+    def _kill_read_s(started: float) -> float:
+        """What KILL_ANSWER_BUDGET_S leaves after the wait for the console, at least 1 s."""
+        return max(1.0, KILL_ANSWER_BUDGET_S - (time.monotonic() - started))
 
 
 # Global singleton instance
@@ -1231,8 +1695,12 @@ def metasploit_console(command: str, _redamon_owner: str = "") -> str:
         if DEBUG:
             print(f"[MSF] timeout={timeout}s, quiet_period={quiet_period}s")
 
-        result = msf.execute(command, timeout=timeout, quiet_period=quiet_period)
+        result = msf.execute(command, timeout=timeout, quiet_period=quiet_period,
+                             chat=owner["chat_session_id"])
         result = _clean_ansi_output(result)
+        note = msf.busy_note(result)
+        if note:
+            result = f"{result}\n\n{note}"
     finally:
         msf.release(owner)
 
@@ -1288,6 +1756,38 @@ def msf_restart(_redamon_owner: str = "") -> str:
 # =============================================================================
 
 PROGRESS_PORT = int(os.getenv("MSF_PROGRESS_PORT", "8013"))
+# An interact holds its request far longer than the agent's per-sandbox budget for the session list
+# (FANOUT_TIMEOUT_S, 5 s): up to INTERACT_CONSOLE_WAIT_S for the console, then about 40 s for a shell
+# session (a 10 s `sessions -l` on a cache miss, a 30 s read to the msf prompt) and up to about 70 s
+# for a meterpreter one; the agent gives up at 40 s. So each request runs on its own thread and the list
+# is answered from the cache meanwhile. The caps keep threads for it: at most
+# SESSION_SERVER_MAX_UNAUTHENTICATED connections still sending their head, at most
+# SESSION_SERVER_MAX_CONSOLE_DRIVES drives waiting for or holding the console, the rest of
+# SESSION_SERVER_MAX_THREADS for everything else (lists, progress, chat links, listeners).
+SESSION_SERVER_MAX_THREADS = 24
+SESSION_SERVER_MAX_UNAUTHENTICATED = 8
+SESSION_SERVER_MAX_CONSOLE_DRIVES = 6
+# Of those, kept for kills: queued interacts never leave a kill without a slot.
+SESSION_SERVER_KILL_RESERVED_DRIVES = 2
+# A head (request line and headers) must arrive whole within this long, however slowly it drips:
+# the bearer is checked only once the head is read.
+SESSION_HEAD_DEADLINE_S = 5.0
+# Bounds each socket read and write of the body and the answer, not the handler's own work.
+SESSION_REQUEST_TIMEOUT_S = 15
+_DRIVES_FULL = {"busy": True, "message": "Too many commands are waiting for the Kali console; try again shortly"}
+
+
+def _sessions_of_an_unstarted_console() -> Optional[dict]:
+    """The session list of a sandbox whose console was never started, or None.
+
+    The agent's hold watcher reads every sandbox's /sessions once a minute, and
+    get_msf_console() would start msfconsole (seconds, and hundreds of MB of the sandbox's
+    memory) for a console that holds nothing: no session, job or non-MSF session exists
+    before it starts."""
+    if _msf_console is not None:
+        return None
+    return {"sessions": [], "jobs": [], "non_msf_sessions": [],
+            "cache_age_seconds": -1, "agent_busy": False}
 
 
 class SessionProgressHandler(BearerAuthHTTPHandlerMixin, BaseHTTPRequestHandler):
@@ -1297,6 +1797,42 @@ class SessionProgressHandler(BearerAuthHTTPHandlerMixin, BaseHTTPRequestHandler)
     reachable from every container on the Docker networks, the guinea-pig targets on
     pentest-net included, and ``/session-chat-map`` decides which project a session
     shows under."""
+
+    timeout = SESSION_REQUEST_TIMEOUT_S
+
+    def _head_authenticated(self) -> None:
+        """Every do_* calls this first. They run only once parse_request (the mixin's, never
+        overridden) has checked the bearer, so the connection stops counting as an
+        unauthenticated head (SessionHTTPServer)."""
+        mark = getattr(getattr(self, "server", None), "head_authenticated", None)
+        if mark is not None:
+            mark(self.connection)
+
+    def _caller_connected(self) -> bool:
+        """False once the caller hung up: the agent closes its connection when it stops waiting, which
+        leaves the socket readable with nothing to read (the request was read in full)."""
+        conn = getattr(self, "connection", None)
+        if conn is None:
+            return True
+        try:
+            # poll, not select: select refuses descriptors past FD_SETSIZE, which would read as gone.
+            watch = select.poll()
+            watch.register(conn, select.POLLIN | select.POLLHUP | select.POLLERR)
+            return not watch.poll(0) or conn.recv(1, socket.MSG_PEEK) != b""
+        except (OSError, ValueError):
+            return False
+
+    def _console_drive(self, drive, kind: str = "interact"):
+        """Run a drive that waits for the console lock, or answer busy when too many already do."""
+        _drive_caller.connected = self._caller_connected
+        try:
+            gate = getattr(getattr(self, "server", None), "console_drive", None)
+            if gate is None:
+                return drive()
+            with gate(kind) as admitted:
+                return drive() if admitted else dict(_DRIVES_FULL)
+        finally:
+            _drive_caller.connected = None
 
     def _parse_route(self) -> Tuple[str, Optional[int], Optional[str]]:
         """Parse URL path into (resource, id, action).
@@ -1368,6 +1904,7 @@ class SessionProgressHandler(BearerAuthHTTPHandlerMixin, BaseHTTPRequestHandler)
             pass
 
     def do_GET(self):
+        self._head_authenticated()
         resource, res_id, action = self._parse_route()
 
         if resource == 'progress':
@@ -1380,6 +1917,10 @@ class SessionProgressHandler(BearerAuthHTTPHandlerMixin, BaseHTTPRequestHandler)
 
         elif resource == 'sessions':
             try:
+                idle = _sessions_of_an_unstarted_console()
+                if idle is not None:
+                    self._send_json(200, idle)
+                    return
                 msf = get_msf_console()
                 data = msf.get_sessions_data()
                 self._send_json(200, data)
@@ -1393,6 +1934,7 @@ class SessionProgressHandler(BearerAuthHTTPHandlerMixin, BaseHTTPRequestHandler)
             self._send_status(404)
 
     def do_POST(self):
+        self._head_authenticated()
         resource, res_id, action = self._parse_route()
         body = self._read_json_body()
 
@@ -1404,15 +1946,15 @@ class SessionProgressHandler(BearerAuthHTTPHandlerMixin, BaseHTTPRequestHandler)
                 if not command or not isinstance(command, str):
                     self._send_json(400, {"error": "Missing 'command' in request body"})
                     return
-                result = msf.interact_session(res_id, command)
+                result = self._console_drive(lambda: msf.interact_session(res_id, command))
                 self._send_json(200, result)
 
             elif resource == 'sessions' and res_id is not None and action == 'kill':
-                result = msf.kill_session(res_id)
+                result = self._console_drive(lambda: msf.kill_session(res_id), kind="kill")
                 self._send_json(200, result)
 
             elif resource == 'jobs' and res_id is not None and action == 'kill':
-                result = msf.kill_job(res_id)
+                result = self._console_drive(lambda: msf.kill_job(res_id), kind="kill")
                 self._send_json(200, result)
 
             elif resource == 'session-chat-map':
@@ -1428,9 +1970,7 @@ class SessionProgressHandler(BearerAuthHTTPHandlerMixin, BaseHTTPRequestHandler)
                     self._send_json(400, {"error": "Missing msf_session_id or chat_session_id"})
 
             elif resource == 'non-msf-sessions':
-                sid = f"raw-{int(time.time()*1000)}"
-                body["id"] = sid
-                msf._non_msf_sessions[sid] = body
+                sid = msf.register_non_msf_session(body)
                 self._send_json(200, {"ok": True, "id": sid})
 
             else:
@@ -1440,12 +1980,12 @@ class SessionProgressHandler(BearerAuthHTTPHandlerMixin, BaseHTTPRequestHandler)
             self._send_json(500, {"error": str(e)})
 
     def do_DELETE(self):
+        self._head_authenticated()
         resource, res_id, action = self._parse_route()
 
         if resource == 'non-msf-sessions' and res_id is not None:
             msf = get_msf_console()
-            sid = f"raw-{res_id}"
-            msf._non_msf_sessions.pop(sid, None)
+            msf.forget_non_msf_session(f"raw-{res_id}")
             self._send_json(200, {"ok": True})
         else:
             self._send_status(404)
@@ -1453,6 +1993,7 @@ class SessionProgressHandler(BearerAuthHTTPHandlerMixin, BaseHTTPRequestHandler)
     def do_OPTIONS(self):
         """Preflight: no CORS allowance (I9). Cross-origin browser reads of this
         server-side-only endpoint are intentionally rejected."""
+        self._head_authenticated()
         self._send_status(204)
 
     def log_message(self, format, *args):
@@ -1460,9 +2001,137 @@ class SessionProgressHandler(BearerAuthHTTPHandlerMixin, BaseHTTPRequestHandler)
         pass
 
 
+class SessionHTTPServer(ThreadingHTTPServer):
+    """The session manager's server: one daemon thread per request, at most `max_threads` at once.
+
+    The handlers share only the console's state, each piece behind its own lock (self.lock for the
+    console's I/O, _detail_lock for the caches and the non-MSF store, _lease_lock for the holder,
+    _progress_lock for the progress), and the bearer is checked on every request in parse_request
+    before any handler runs. No route takes or changes the project hold: only the MCP tools claim
+    the console.
+
+    Threads are kept for authenticated requests. A connection counts as an unauthenticated head
+    until its bearer is checked: its head must arrive whole within `head_deadline_s` (one reaper
+    thread cuts it after that, however slowly it drips), and a new connection beyond
+    `max_unauthenticated` cuts the oldest head (a slow one: the agent sends its head at once).
+    Drives that wait for the console are capped at `max_console_drives` (the next answers busy), of
+    which interacts may take all but `kill_reserved_drives`. A
+    connection beyond `max_threads` is closed before it is read, so it reaches no handler; the agent
+    then counts this sandbox as not answering, as it would a timeout."""
+
+    daemon_threads = True
+    # Closing never waits for a command that hangs.
+    block_on_close = False
+
+    def __init__(self, server_address, RequestHandlerClass, max_threads: int = SESSION_SERVER_MAX_THREADS,
+                 max_unauthenticated: int = SESSION_SERVER_MAX_UNAUTHENTICATED,
+                 max_console_drives: int = SESSION_SERVER_MAX_CONSOLE_DRIVES,
+                 head_deadline_s: float = SESSION_HEAD_DEADLINE_S,
+                 kill_reserved_drives: int = SESSION_SERVER_KILL_RESERVED_DRIVES):
+        super().__init__(server_address, RequestHandlerClass)
+        self.max_threads = max_threads
+        self.max_unauthenticated = max_unauthenticated
+        self.head_deadline_s = head_deadline_s
+        self._slots_lock = threading.Lock()
+        self._serving = 0
+        # Each connection whose head is not authenticated yet, with the time it must be by.
+        self._heads: Dict[socket.socket, float] = {}
+        self._drives = threading.BoundedSemaphore(max_console_drives)
+        self._interact_drives = threading.BoundedSemaphore(max(1, max_console_drives - kill_reserved_drives))
+        self._turned_away = 0
+        self._last_full_log: Optional[float] = None
+        self._closed = threading.Event()
+        threading.Thread(target=self._cut_late_heads, daemon=True, name="msf-session-heads").start()
+
+    def process_request(self, request, client_address):
+        with self._slots_lock:
+            admitted = self._serving < self.max_threads
+            if admitted:
+                if len(self._heads) >= self.max_unauthenticated:
+                    self._cut(min(self._heads, key=self._heads.__getitem__))
+                self._serving += 1
+                self._heads[request] = time.monotonic() + self.head_deadline_s
+        if not admitted:
+            self._note_turned_away()
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            # No thread was started: its slot is free again.
+            self._finished(request)
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._finished(request)
+
+    def head_authenticated(self, request) -> None:
+        with self._slots_lock:
+            self._heads.pop(request, None)
+
+    @contextlib.contextmanager
+    def console_drive(self, kind: str = "interact"):
+        own = self._interact_drives if kind == "interact" else None
+        if own is not None and not own.acquire(blocking=False):
+            yield False
+            return
+        admitted = self._drives.acquire(blocking=False)
+        try:
+            yield admitted
+        finally:
+            if admitted:
+                self._drives.release()
+            if own is not None:
+                own.release()
+
+    def server_close(self):
+        self._closed.set()
+        super().server_close()
+
+    def handle_error(self, request, client_address):
+        # A cut head's 400 goes into a closed socket, and a client may hang up: the stdlib would
+        # print a traceback for each, which any peer could repeat to flood the log.
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
+    def _finished(self, request) -> None:
+        with self._slots_lock:
+            self._heads.pop(request, None)
+            self._serving -= 1
+
+    def _cut(self, request) -> None:
+        # Called with _slots_lock held. The handler's next read sees the end of the stream.
+        self._heads.pop(request, None)
+        try:
+            request.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def _cut_late_heads(self) -> None:
+        while not self._closed.wait(0.25):
+            now = time.monotonic()
+            with self._slots_lock:
+                for request in [r for r, deadline in self._heads.items() if deadline <= now]:
+                    self._cut(request)
+
+    def _note_turned_away(self) -> None:
+        # Called on the accepting thread only. One line a minute with a count.
+        self._turned_away += 1
+        now = time.monotonic()
+        if self._last_full_log is None or now - self._last_full_log >= 60:
+            print(f"[MSF] Session manager full: closed {self._turned_away} connection(s) "
+                  f"beyond {self.max_threads} at once")
+            self._turned_away = 0
+            self._last_full_log = now
+
+
 def start_progress_server(port: int = PROGRESS_PORT):
     """Start HTTP server for progress + session management in a background thread."""
-    server = HTTPServer(('0.0.0.0', port), SessionProgressHandler)
+    server = SessionHTTPServer(('0.0.0.0', port), SessionProgressHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     print(f"[MSF] Progress & session server started on port {port}")

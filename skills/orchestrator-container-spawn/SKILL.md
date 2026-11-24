@@ -109,7 +109,13 @@ For the no-`env_file` knob rule, see the recon_orchestrator
   restart an orphan only has its labels. Run labels are advisory (a compromised
   recon container can write any label), which is why the broker-owned label is
   always part of the filter (`_run_tool_containers` in
-  [container_manager.py](../../recon_orchestrator/container_manager.py)).
+  [container_manager.py](../../recon_orchestrator/container_manager.py)). The
+  broker also scopes each caller to the run its `X-Redamon-Run` header names: a
+  listing shows, and a verb on an existing container reaches, only broker-owned
+  containers carrying exactly that run's three labels (`caller_run` and
+  `container_run` in [broker.py](../../services/docker_broker/broker.py)). The
+  header is a claim, not a proof, so this scope stops one run reaching another by
+  mistake or by a listing; it is no tenant boundary.
   Changing `recon/entrypoint.sh` needs a recon IMAGE rebuild: it is COPY-baked to
   `/app/entrypoint.sh`, outside the `/app/recon` source mount.
 

@@ -15,7 +15,9 @@
  * middleware still lets B through, which is why the handler's isInternalRequest check is
  * the control and must stay; B gets 404 and no row is read. The positive control proves
  * the fixture holds A's values for the one legitimate caller, the agent's chisel lookup
- * (agentic/utils.py), so each 404 is the gate and not an empty table.
+ * (agentic/utils.py) naming A, so each 404 is the gate and not an empty table. The agent
+ * names the person whose own tunnel it wants (group 1: tunnels are per person); the
+ * instance settings row is never answered, whatever the identity switch.
  *
  * @vitest-environment node
  */
@@ -60,12 +62,27 @@ const settingsFindFirst = vi.fn(async (args: { select: Record<string, true> }) =
   if (!hit) return null
   return Object.fromEntries(Object.keys(args.select).map(k => [k, hit[k as keyof SettingsRow]]))
 })
+/** A person's own row, by their account id. */
+const settingsFindUnique = vi.fn(async (args: { where: { userId: string }; select: Record<string, true> }) => {
+  const hit = userRows.find(r => r.userId === args.where.userId)
+  if (!hit) return null
+  return Object.fromEntries(Object.keys(args.select).map(k => [k, hit[k as keyof SettingsRow]]))
+})
 const instanceFindUnique = vi.fn(async () => ({ id: 'singleton', tunnelsEnabled: true, ...INSTANCE_VALUES }))
 
 vi.mock('@/lib/prisma', () => ({
   default: {
-    userSettings: { findFirst: (a: Parameters<typeof settingsFindFirst>[0]) => settingsFindFirst(a) },
+    userSettings: {
+      findFirst: (a: Parameters<typeof settingsFindFirst>[0]) => settingsFindFirst(a),
+      findUnique: (a: Parameters<typeof settingsFindUnique>[0]) => settingsFindUnique(a),
+    },
     instanceSettings: { findUnique: () => instanceFindUnique() },
+    // The route also asks that the person still holds platform:tunnels (G-03): user-a is an admin.
+    user: {
+      findUnique: async (a: { where: { id: string } }) => ({
+        id: a.where.id, email: `${a.where.id}@e2e.local`, role: 'admin', password: 'h', createdAt: new Date(0), legacyGrants: [],
+      }),
+    },
   },
 }))
 
@@ -89,16 +106,16 @@ function forwarded(original: NextRequest, mw: Response): NextRequest {
     const value = mw.headers.get(`x-middleware-request-${name}`)
     if (value !== null) headers.set(name, value)
   }
-  return new NextRequest(ROUTE_URL, { headers })
+  return new NextRequest(original.url, { headers })
 }
 
 type Outcome = { stoppedBy: 'middleware' | 'handler'; res: Response; forwardedUser: string | null }
 
 /** One browser or service request, through the middleware and then the handler. */
-async function send(opts: { cookie?: string; headers?: Record<string, string> } = {}): Promise<Outcome> {
+async function send(opts: { cookie?: string; headers?: Record<string, string>; query?: string } = {}): Promise<Outcome> {
   const headers = new Headers(opts.headers ?? {})
   if (opts.cookie) headers.set('cookie', `redamon-auth=${opts.cookie}`)
-  const req = new NextRequest(ROUTE_URL, { headers })
+  const req = new NextRequest(ROUTE_URL + (opts.query ?? ''), { headers })
   const mw = await middleware(req)
   if (mw.headers.get('x-middleware-next') !== '1') {
     return { stoppedBy: 'middleware', res: mw, forwardedUser: null }
@@ -116,8 +133,9 @@ let warnSpy: ReturnType<typeof vi.spyOn>
 
 beforeEach(() => {
   // Step 1 of the PoC: A saved tunnel values; B, a separate standard account, saved none.
-  userRows = [row('settings-a', 'user-a', A_VALUES), row('settings-b', 'user-b')]
+  userRows = [row('settings-a', 'user-a', { ...A_VALUES, tunnelsEnabled: true }), row('settings-b', 'user-b')]
   settingsFindFirst.mockClear()
+  settingsFindUnique.mockClear()
   instanceFindUnique.mockClear()
   // The middleware logs the scanner key's refused route; the tests assert outcomes instead.
   warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -127,16 +145,18 @@ afterEach(() => {
   warnSpy.mockRestore()
 })
 
+// A's own row in both switch states: the instance settings row is never answered.
 const SWITCH_STATES = [
-  { identity: false, source: 'the user row', values: A_VALUES },
-  { identity: true, source: 'the instance settings row', values: INSTANCE_VALUES },
+  { identity: false, values: A_VALUES },
+  { identity: true, values: A_VALUES },
 ] as const
 
-describe.each(SWITCH_STATES)('GHSA-wgxp-vq94-73h8, identity switch $identity (credentials in $source)', ({ identity, values }) => {
+describe.each(SWITCH_STATES)('GHSA-wgxp-vq94-73h8, identity switch $identity', ({ identity, values }) => {
   beforeEach(() => setFlagsForTests({ identity }))
 
   const expectNoRowRead = () => {
     expect(settingsFindFirst).not.toHaveBeenCalled()
+    expect(settingsFindUnique).not.toHaveBeenCalled()
     expect(instanceFindUnique).not.toHaveBeenCalled()
   }
 
@@ -188,10 +208,19 @@ describe.each(SWITCH_STATES)('GHSA-wgxp-vq94-73h8, identity switch $identity (cr
     expectNoRowRead()
   })
 
-  test("positive control: the agent's internal-key lookup still gets the values, and only the three fields", async () => {
-    const out = await send({ headers: { 'x-internal-key': INTERNAL_KEY } })
+  test("positive control: the agent's internal-key lookup naming A still gets A's values, and only the three fields", async () => {
+    const out = await send({ headers: { 'x-internal-key': INTERNAL_KEY }, query: '?userId=user-a' })
     expect(out.stoppedBy).toBe('handler')
     expect(out.res.status).toBe(200)
-    expect(await out.res.json()).toEqual(values)
+    const body = await out.res.json()
+    expect(body).toEqual(values)
+    for (const v of Object.values(INSTANCE_VALUES)) expect(JSON.stringify(body)).not.toContain(v)
+  })
+
+  test("the agent's lookup naming nobody, or B, gets empty values: never A's tunnel for someone else", async () => {
+    for (const query of ['', '?userId=user-b']) {
+      const out = await send({ headers: { 'x-internal-key': INTERNAL_KEY }, query })
+      expect(await out.res.json()).toEqual({ ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '' })
+    }
   })
 })

@@ -339,13 +339,15 @@ TOOL_REGISTRY = {
     # --- Search & Navigate (7) ---------------------------------------------
 
     "fs_grep": {
-        "purpose": "Ripgrep over the workspace (or a subtree of it)",
+        "purpose": "Regex search over the workspace (or a subtree of it)",
         "when_to_use": "Find specific strings across many offloaded files, search inside a running job's log (jobs/<id>.log), narrow a huge tool output to relevant lines before fs_read.",
-        "args_format": '"pattern": "regex", "path": "subdir" (optional, default \\".\\"), "glob": "*.json" (optional), "output_mode": "files_with_matches|content|count" (optional), "context": int (optional), "case_insensitive": bool, "head_limit": int (optional, default 50)',
+        "args_format": '"pattern": "regex", "path": "subdir or file" (optional, default \\".\\"), "glob": "*.json" (optional), "type": "py|js|md|json|log|..." (optional), "output_mode": "files_with_matches|content|count" (optional), "context": int (optional), "case_insensitive": bool, "multiline": bool, "head_limit": int (optional, default 50)',
         "description": (
-            '**fs_grep** (workspace ripgrep)\n'
-            '   - 30s subprocess timeout; hard cap of 1000 matches.\n'
-            '   - `output_mode="content"` returns matching lines with `-n` line numbers; `"count"` shows per-file counts.\n'
+            '**fs_grep** (workspace search)\n'
+            '   - The pattern is a Python `re` regex, not ripgrep syntax: no `\\p{L}`-style classes (use `[^\\W\\d_]` for a letter).\n'
+            '   - `glob` is fnmatch syntax on the file name (or the path, if it holds a `/`), with `{a,b}` alternatives (`*.{py,txt}`) and a leading `!` to exclude. `.gitignore` is not read; hidden files and binary files are skipped.\n'
+            '   - Limits: 25s per search (what was found by then is returned, marked incomplete); 2s for one line, past which a backtracking pattern is refused (simplify it); 256 MiB per file (16 MiB with `multiline`); 1000 matches per file; 64 folder levels.\n'
+            '   - `output_mode="content"` returns matching lines as `path:line:text`; `"count"` shows per-file counts.\n'
             '   - Common pattern: `fs_grep("CVE-", path="tool-outputs", output_mode="content", head_limit=100)`.\n'
             '   - Works MID-FLIGHT on a job\'s log file - `fs_grep("vulnerable", path="jobs")` while a background scan is still running.'
         ),
@@ -356,7 +358,8 @@ TOOL_REGISTRY = {
         "args_format": '"pattern": "glob pattern", "path": "search root" (optional, default workspace root)',
         "description": (
             '**fs_glob** (workspace glob)\n'
-            '   - Supports `**` recursive globs.\n'
+            '   - Supports `**` recursive globs and `{a,b}` alternatives (`**/*.{json,txt}`); at most 64 pattern parts.\n'
+            '   - A link is listed by its name but never entered; the walk stops after 10s.\n'
             '   - Caps at 500 results.\n'
             '   - Common: `fs_glob("tool-outputs/*-execute_nuclei.txt")` to list all nuclei runs.'
         ),
@@ -856,7 +859,14 @@ TOOL_REGISTRY = {
             'use `--severity ERROR` for high-confidence findings only; pair with `git clone` of operator-provided repo URLs)\n'
             '   - **Passive recon:** paramspider (`paramspider -d domain`)\n'
             '   - **DoS/stress:** hping3 (`hping3 -S -p 80 --flood IP`), slowhttptest (`slowhttptest -c 1000 -u URL`)\n'
-            '   - **Tunneling:** ngrok (`ngrok tcp PORT`), chisel (`chisel server -p 8080 --reverse` / `chisel client HOST:8080 R:socks`)\n'
+            '   - **Tunneling:** the tunnel that EXPOSES your sandbox inbound is managed by RedAmon, '
+            'NOT started by hand. Your reverse port and that tunnel (ngrok/chisel) come from the person\'s '
+            'Tunneling settings and are surfaced in the "Pre-Configured Payload Settings" block — read '
+            'LHOST/LPORT and the bind from there. Do NOT run `ngrok tcp`, `chisel server`, or a reverse '
+            '`chisel client ... R:...` that re-exposes the sandbox; a tunnel you start to expose yourself is '
+            'tracked by nothing. A forward/OUTBOUND pivot through a foothold you already control (e.g. an '
+            'operator-supplied chisel endpoint, or `chisel client ... <local>:<host:port>` to reach a service '
+            'inside the target network) is fine — that reaches out, it does not open an inbound port.\n'
             '   - **Wordlists:**\n'
             '     - `/usr/share/seclists/Discovery/Web-Content/common.txt` (4750) -- standard web content discovery\n'
             '     - `/usr/share/seclists/Discovery/Web-Content/big.txt` (20481) -- comprehensive directory list\n'
@@ -874,7 +884,7 @@ TOOL_REGISTRY = {
             'google-auth/google-api-python-client/google-cloud-storage (GCP IAM/buckets)\n'
             '   - **Node.js** runtime available (`node`/`npm`) for prototype-pollution gadget testing '
             'and any JS exploit POC the agent needs to run\n'
-            '   - **Post-exploit toolkits** (pre-staged for serving to the foothold or running locally):\n'
+            '   - **Post-exploit toolkits** (pre-staged; run locally, or push to the foothold over your existing session):\n'
             '     - `/opt/tools/linux/linpeas.sh`     -- PEASS-ng Linux privesc auditor\n'
             '     - `/opt/tools/linux/LinEnum.sh`     -- rebootuser/LinEnum enumeration\n'
             '     - `/opt/tools/linux/pspy64`         -- real-time process snooper (no root)\n'
@@ -882,7 +892,12 @@ TOOL_REGISTRY = {
             '     - `/opt/tools/windows/winPEASx64.exe` -- PEASS-ng Windows privesc auditor\n'
             '     - `/opt/tools/windows/PowerUp.ps1`    -- PowerSploit privilege-escalation suite\n'
             '     - `/opt/tools/windows/PrivescCheck.ps1` -- itm4n PrivescCheck audit\n'
-            '     - Serve via `python3 -m http.server` from /opt/tools/<os>/ then download on the foothold\n'
+            '     - Push to the foothold by `upload` over the session (Meterpreter AND Metasploit '
+            'command-shell sessions both have it; `sessions -u` upgrades a shell first), by SMB/SCP with '
+            'creds (`nxc smb --put-file`, `smbclient ... put`, `scp`), or by chunked base64 for a small '
+            'text file (winPEAS ~11 MB / linpeas ~1 MB / pspy ~3 MB are too big for a one-shot paste). Do NOT '
+            '`python3 -m http.server` for the foothold to fetch: the sandbox has no target-reachable port '
+            'except the single reverse handler port.\n'
             '   - For multi-line scripts use **execute_code** instead (avoids shell escaping)\n'
             '   - Do NOT use kali_shell for: curl, httpx, nmap, naabu, nuclei, jsluice, subfinder, '
             'amass, gau, katana, ffuf, arjun, masscan, wpscan, hydra, msfconsole, playwright, vulnx '

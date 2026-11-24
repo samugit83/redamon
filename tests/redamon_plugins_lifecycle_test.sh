@@ -77,6 +77,9 @@ docker() {
             if [[ "$2" == inspect && "$*" == *redamon-plugin-runner* ]]; then
                 [[ "$STUB_RUNNER_IMAGE" == present ]]; return
             fi
+            # The Kali image refreshed today: update's daily Metasploit refresh
+            # (_kali_msf_refresh) has nothing to build here.
+            [[ "$2" == inspect && "$*" == *redamon.msf_refresh* ]] && date -u +%Y%m%d
             return 0 ;;
     esac
     return 0

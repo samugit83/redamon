@@ -3,7 +3,7 @@ import type { Prisma } from '@prisma/client'
 import { projectTargetLabel } from '@/lib/projectSummary'
 import prisma from '@/lib/prisma'
 import { actsAsAccount, getSession, isInternalRequest } from '@/lib/session'
-import { internalError } from '@/lib/routeErrors'
+import { internalError, safeErrorCode } from '@/lib/routeErrors'
 import { readJsonBody } from '@/lib/jsonBody'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { teardownProject } from '@/lib/projectTeardown'
@@ -30,6 +30,7 @@ import { refuseWhileActingAs } from '@/lib/authz/actAsRefusals'
 import { endOpenImpersonationsQuietly } from '@/lib/authz/actAs'
 import { reassignConversationsOfDeletedAuthor } from '@/lib/authz/conversationAccess'
 import { onAccessReduced } from '@/lib/authz/revocation'
+import { enforceTunnelPermission } from '@/lib/sharedSettingsEffects'
 import { deletionWizardOff, endDeletedAccountWork, resolveSharedProjects, unresolvedResponse } from '@/lib/authz/userDeletion'
 import type { Session } from '@/lib/session'
 import { cancelUserTradecraftJobs } from '@/lib/tradecraft/deleteCleanup'
@@ -240,7 +241,14 @@ async function updateWithIdentity(
         return NextResponse.json(LAST_ADMIN_REFUSAL, { status: 409 })
       }
       invalidatePrincipal(id)
-      await onAccessReduced(null, id, 'sessions_revoked')
+      // A demotion takes the admin-only permissions away (platform:tunnels, every session, the
+      // global stop): the capability plan, which also stops the person's Kali sandboxes, and the
+      // tunnel the demoted admin may still have up is turned off with its stored flag.
+      await onAccessReduced(null, id, 'capability_removed')
+      // The demotion stands whatever this answers; the sandbox backstop turns the flag off later.
+      await enforceTunnelPermission(id).catch((err: unknown) => {
+        console.error(`[rbac] tunnel turn-off after a demotion failed user=${id}: ${safeErrorCode(err)}`)
+      })
       return NextResponse.json(publicUser(result.value))
     }
 
@@ -257,7 +265,7 @@ async function updateWithIdentity(
     if ('missing' in result) return NextResponse.json({ error: 'User not found' }, { status: 404 })
     invalidatePrincipal(id)
     // The raised session version ends the cookies signed for the old role; its open sockets close too (step 5.9).
-    if (roleChange) await onAccessReduced(null, id, 'sessions_revoked')
+    if (roleChange) await onAccessReduced(null, id, 'role_promoted')
     return NextResponse.json(publicUser(result.user))
   } catch (err) {
     if (err instanceof AccountChanged) return NextResponse.json(ACCOUNT_CHANGED, { status: 409 })

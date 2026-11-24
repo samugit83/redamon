@@ -277,9 +277,11 @@ describe('anyone else: root_only, nothing written', () => {
 
   test('the refusal comes before the tunnel part is written: an admin changing both changes neither', async () => {
     await signIn('admin-a')
-    const res = await put({ tunnelsEnabled: true, sharingPolicy: { adminsSeeAllShares: false }, stepUpPassword: 'right-password' })
+    // The instance tunnel takes only its "off" (tunnels are per person, group 1).
+    h.instance = { ...h.instance!, tunnelsEnabled: true }
+    const res = await put({ tunnelsEnabled: false, sharingPolicy: { adminsSeeAllShares: false }, stepUpPassword: 'right-password' })
     expect(res.status).toBe(403)
-    expect(h.instance!.tunnelsEnabled).toBe(false)
+    expect(h.instance!.tunnelsEnabled).toBe(true)
     expect(changes()).toEqual([])
   })
 })
@@ -287,9 +289,10 @@ describe('anyone else: root_only, nothing written', () => {
 describe('what needs neither', () => {
   test('an admin saving the policy as it reads (the defaults over the stored {}) with a tunnel change', async () => {
     await signIn('admin-a')
-    const res = await put({ sharingPolicy: DEFAULTS, tunnelsEnabled: true })
+    h.instance = { ...h.instance!, tunnelsEnabled: true }
+    const res = await put({ sharingPolicy: DEFAULTS, tunnelsEnabled: false })
     expect(res.status).toBe(200)
-    expect(h.instance!.tunnelsEnabled).toBe(true)
+    expect(h.instance!.tunnelsEnabled).toBe(false)
     expect(stored()).toEqual({})
     expect(changes()).toMatchObject([{ after: { fields: ['tunnelsEnabled'] } }])
   })

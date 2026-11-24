@@ -422,6 +422,10 @@ _FALLBACK_PROFILE = {
     "plan_tool_slot_envelope_bytes": 400_000_000,
     "background_job_envelope_bytes": 512_000_000,
     "mcp_terminal_session_envelope_bytes": 64_000_000,
+    # A per-user Kali sandbox: its mem_limit and its reservation. Measured ~0.4 GiB at
+    # rest and ~0.9 GiB peak under msfconsole plus headless Chromium, so 1 GiB is
+    # tight; a host running heavier tools raises it in resource_profile.json.
+    "kali_sandbox_envelope_bytes": 1_073_741_824,
     "service_baseline_bytes": None,
 }
 

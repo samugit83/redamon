@@ -536,3 +536,54 @@ class AiAttackSurfaceListResponse(BaseModel):
     """Response listing all AI Attack Surface runs for a project"""
     project_id: str
     runs: list[AiAttackSurfaceState]
+
+
+# =============================================================================
+# Per-user Kali sandboxes (group 1; B.9 of docs/readmes/README.KALI_SANDBOX.md)
+# =============================================================================
+# These shape the bodies only. Ids, the view, the lease kind and the stop reason
+# are checked by the sandbox manager, which answers 400 with the contract's code
+# (recon_orchestrator/sandbox_contract.py). Project lists have no default: an
+# omitted list would read as "no project allowed" and stop the person's sandboxes.
+
+class SandboxEnsureRequest(BaseModel):
+    """POST /sandboxes/ensure"""
+    user_id: str
+    view: str = "own"
+    projects: list[str]
+    need_project: Optional[str] = None
+    wait: bool = True
+    touch: bool = False
+    # The custom nuclei templates the person may use (the webapp alone knows their
+    # owners); None from a webapp that sends none, which mounts none.
+    custom_templates: Optional[list[str]] = None
+
+
+class SandboxLeaseRequest(BaseModel):
+    """POST /sandboxes/{user_id}/leases: take or renew (one upsert by lease_id)."""
+    instance: str
+    lease_id: str
+    kind: str
+
+
+class SandboxReconcileRequest(BaseModel):
+    """POST /sandboxes/{user_id}/reconcile"""
+    projects: list[str]
+    act_as_projects: list[str]
+
+
+class SandboxStopRequest(BaseModel):
+    """POST /sandboxes/stop-all"""
+    reason: str
+
+
+class SandboxStopUserRequest(BaseModel):
+    """POST /sandboxes/{user_id}/stop: both views, or only ``view``."""
+    reason: str
+    view: Optional[str] = None
+
+
+class SandboxStopProjectRequest(BaseModel):
+    """POST /sandboxes/stop-project"""
+    project_id: str
+    reason: str

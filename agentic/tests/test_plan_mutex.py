@@ -102,7 +102,6 @@ class PlanNodeMutexRejectionTests(unittest.IsolatedAsyncioTestCase):
                 state, None,
                 tool_executor=tool_executor,
                 streaming_callbacks={},
-                session_manager_base=None,
             )
         finally:
             ms_mod.resolve_streaming_callback = original_resolve

@@ -169,24 +169,25 @@ class ToMcpServersDictTests(unittest.TestCase):
         cfg, _ = reg.to_mcp_servers_dict([srv])
         self.assertEqual(cfg, {})
 
-    def test_bearer_auth_resolves_env(self):
-        # A system server's only (OQ-R1): test_mcp_user_token_env_var.py has the user side.
+    def test_bearer_auth_never_resolves_env(self):
+        # Not even for a system id: each sandbox's servers carry its own literal token
+        # (test_mcp_user_token_env_var.py has the user side).
         with patch.dict(os.environ, {"MY_TOKEN": "secret123"}, clear=False):
             srv = reg.MCPServer.model_validate(_http_server(
                 id="nmap", auth={"type": "bearer", "token_env_var": "MY_TOKEN"},
             ))
             cfg, warnings = reg.to_mcp_servers_dict([srv])
-            self.assertEqual(cfg["nmap"]["headers"]["Authorization"], "Bearer secret123")
+            self.assertNotIn("headers", cfg["nmap"])
+            self.assertNotIn("secret123", repr(cfg))
             self.assertEqual(warnings, [])
 
-    def test_missing_auth_env_surfaces_warning(self):
+    def test_an_unset_auth_env_is_not_looked_up(self):
         with patch.dict(os.environ, {}, clear=True):
             srv = reg.MCPServer.model_validate(_http_server(
                 id="nmap", auth={"type": "bearer", "token_env_var": "ABSENT_TOKEN"},
             ))
             cfg, warnings = reg.to_mcp_servers_dict([srv])
-            self.assertTrue(any(w.code == "env_var_unset" for w in warnings))
-            # Without the token, no Authorization header is added
+            self.assertFalse(any(w.code == "env_var_unset" for w in warnings))
             self.assertNotIn("headers", cfg["nmap"])
 
     def test_bearer_auth_direct_token_used_verbatim(self):

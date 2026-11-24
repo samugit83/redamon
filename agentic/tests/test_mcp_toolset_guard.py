@@ -136,7 +136,7 @@ class _McpManager:
     TOOLS, each tool remembering its server. A server in `down` fails the whole load
     (as MultiServerMCPClient.get_tools does); `gate`, when set, holds every load open."""
 
-    TOOLS = {"nmap": ["execute_nmap"], "srv-a": ["create_issue"], "srv-b": ["create_issue"]}
+    TOOLS = {"srv-a": ["create_issue"], "srv-b": ["create_issue"]}
 
     def __init__(self):
         self.generation = 0
@@ -147,6 +147,9 @@ class _McpManager:
 
     def replace_server_configs(self, configs):
         self.configs = dict(configs)
+
+    async def disconnect(self):
+        self.configs = {}
 
     async def reconnect(self, seen, reason="", force=False):
         ids = sorted(self.configs)
@@ -167,19 +170,16 @@ def _tool_server(orch, name):
 
 
 class _Loading(_FreshGuard):
-    """A real orchestrator reload over a fake MCP client and the real tool executor."""
+    """A real orchestrator reload over a fake MCP client and the real tool executor. The
+    client holds the user servers only: the Kali (system) servers are each person's own
+    sandbox's (sandbox_router), never this shared manager's."""
 
     def setUp(self):
         super().setUp()
-        from mcp_registry import MCPServer
-        system = [MCPServer(id="nmap", name="nmap", transport="sse", url="http://kali.test/sse")]
-        for target, kw in (
-                ("tools._build_system_mcp_servers", {"return_value": system}),
-                ("prompts.tool_registry.apply_mcp_manifests_to_registry",
-                 {"side_effect": lambda servers: {t.name for s in servers for t in s.tools}})):
-            patcher = mock.patch(target, **kw)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        patcher = mock.patch("prompts.tool_registry.apply_mcp_manifests_to_registry",
+                             side_effect=lambda servers: {t.name for s in servers for t in s.tools})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _orch(self):
         from tools import PhaseAwareToolExecutor
@@ -227,13 +227,13 @@ class ReloadRoute(_Loading):
         self.guard.admit_run("owner-a", [SRV_A])
         r = self.client.post("/mcp/reload", json={"ownerId": "owner-a", "userMcpServers": [SRV_B]})
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(self.orch._mcp_manager.loads, [["nmap", "srv-b"]])
+        self.assertEqual(self.orch._mcp_manager.loads, [["srv-b"]])
         self.assertEqual(self.guard.loaded_hash, server_set_hash([SRV_B]))
 
     def test_no_live_run_reloads_the_saved_set(self):
         r = self.client.post("/mcp/reload", json={"ownerId": "owner-b", "userMcpServers": [SRV_B]})
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(self.orch._mcp_manager.loads, [["nmap", "srv-b"]])
+        self.assertEqual(self.orch._mcp_manager.loads, [["srv-b"]])
         self.assertEqual(self.guard.loaded_hash, server_set_hash([SRV_B]))
         self.assertEqual(_tool_server(self.orch, "create_issue"), "srv-b")
 
@@ -243,7 +243,7 @@ class ReloadRoute(_Loading):
         self.guard.admit_run("owner-a", [SRV_A])
         r = self.client.post("/mcp/reload", json={})
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(self.orch._mcp_manager.loads, [["nmap", "srv-a"], ["nmap", "srv-a"]])
+        self.assertEqual(self.orch._mcp_manager.loads, [["srv-a"], ["srv-a"]])
         self.assertEqual(self.guard.loaded_hash, server_set_hash([SRV_A]))
 
     def test_a_save_that_fails_to_load_is_not_recorded_and_says_so(self):
@@ -274,7 +274,7 @@ class ReloadRecordsTheSet(_Loading):
         self.addCleanup(setattr, ps, "_settings", None)
         out = self._reload(orch, None)
         self.assertEqual(self.guard.loaded_hash, server_set_hash([SRV_A]))
-        self.assertEqual([s["id"] for s in out["servers"] if s["id"] != "nmap"], ["srv-a"])
+        self.assertEqual([s["id"] for s in out["servers"]], ["srv-a"])
 
     def test_a_failed_load_drops_the_previous_owners_tools_and_records_nothing(self):
         orch = self._orch()
@@ -286,8 +286,8 @@ class ReloadRecordsTheSet(_Loading):
         self.assertIsNone(orch.tool_executor._all_tools.get("create_issue"),
                           "a call by that name would reach owner-a's server with owner-a's token")
         self.assertIsNone(self.guard.loaded_hash)
-        # The system tools stay: the fallback loads the system servers alone.
-        self.assertEqual(_tool_server(orch, "execute_nmap"), "nmap")
+        # No Kali tool is loaded here either: those are each person's sandbox's.
+        self.assertIsNone(orch.tool_executor._all_tools.get("execute_nmap"))
 
     def test_a_load_cut_short_records_nothing(self):
         # A stopped run can cancel its own load midway: the client then holds the new
@@ -317,10 +317,10 @@ class ReloadRecordsTheSet(_Loading):
             self._reload(orch, [disabled, SRV_B], "owner-b")
         self.assertIn("MCP manifest reload failed: 1 user server(s) not loaded", "\n".join(logs.output))
 
-    def test_a_failed_load_with_the_system_servers_down_leaves_no_mcp_tool(self):
+    def test_a_failed_load_leaves_no_mcp_tool(self):
         orch = self._orch()
         self._reload(orch, [SRV_A], "owner-a")
-        orch._mcp_manager.down = {"srv-b", "nmap"}
+        orch._mcp_manager.down = {"srv-b"}
         self._reload(orch, [SRV_B], "owner-b")
         self.assertIsNone(orch.tool_executor._all_tools.get("create_issue"))
         self.assertIsNone(orch.tool_executor._all_tools.get("execute_nmap"))
@@ -428,7 +428,7 @@ class RunAdmission(_Runs):
         self.assertEqual(resp_b.error, err["message"])
         self.assertNotIn("owner-a", err["message"])
         self.assertIn("[rbac] mcp toolset busy", "\n".join(logs.output))
-        self.assertEqual(orch._mcp_manager.loads, [["nmap", "srv-a"]])
+        self.assertEqual(orch._mcp_manager.loads, [["srv-a"]])
 
     def test_the_run_streams_only_after_its_owners_set_is_loaded(self):
         orch = self._orch()
@@ -466,7 +466,7 @@ class RunAdmission(_Runs):
         graph, cb = asyncio.run(main())
         self.assertEqual(cb.errors, [])
         self.assertEqual(graph.seen["create_issue"], "srv-a")
-        self.assertEqual(orch._mcp_manager.loads, [["nmap", "srv-b"], ["nmap", "srv-a"]])
+        self.assertEqual(orch._mcp_manager.loads, [["srv-b"], ["srv-a"]])
 
     def test_a_resumed_run_executes_on_its_own_set_not_the_last_runs(self):
         # owner-a pauses for a dangerous-tool confirmation (no lease while paused);
