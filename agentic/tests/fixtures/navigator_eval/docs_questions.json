@@ -393,14 +393,14 @@
    "id": "doc55",
    "question": "Where do I see the audit log?",
    "expect": [
-    "Admin-Console#audit"
+    "Identity-and-Access-Management#audit"
    ]
   },
   {
    "id": "doc56",
    "question": "How do I revoke a device session?",
    "expect": [
-    "Admin-Console#device-sessions"
+    "Identity-and-Access-Management#device-sessions"
    ]
   },
   {
