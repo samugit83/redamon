@@ -12,12 +12,14 @@ BASE="${BASE_URL:-http://localhost:3000}"
 DC="docker compose"
 TMP="$(mktemp -d)"
 OKEY="$($DC exec -T recon-orchestrator sh -c 'printf %s "$ORCHESTRATOR_API_KEY"')"
-KEY="$($DC exec -T recon-orchestrator sh -c 'printf %s "$SCANNER_API_KEY"')"
 IKEY="$($DC exec -T recon-orchestrator sh -c 'printf %s "$INTERNAL_API_KEY"')"
 SHA="deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+# Stop the proxy on exit only when this run started it: a proxy that was already up
+# serves the stack's own captures, and its stop removes it without bringing it back.
+PROXY_WAS_RUNNING="$(docker inspect -f '{{.State.Running}}' redamon-capture-proxy 2>/dev/null || echo false)"
 
 trap 'rm -rf "$TMP"; \
-  curl -s -X POST "http://127.0.0.1:8010/capture-proxy/stop" -H "X-Orchestrator-Key: '"$OKEY"'" >/dev/null 2>&1 || true; \
+  [ "$PROXY_WAS_RUNNING" = true ] || curl -s -X POST "http://127.0.0.1:8010/capture-proxy/stop" -H "X-Orchestrator-Key: '"$OKEY"'" >/dev/null 2>&1 || true; \
   $DC exec -T webapp node scripts/e2e-bola-cleanup.mjs >/dev/null 2>&1 || true' EXIT
 
 PASS=0; FAIL=0
@@ -31,7 +33,7 @@ gbody(){ curl -s -b "$1" "$BASE$2"; }
 psql_(){ $DC exec -T postgres psql -U redamon -d redamon -tAc "$1"; }
 
 echo "== Preconditions =="
-[ -n "$KEY" ] && [ "$KEY" != "changeme" ] || { echo "SCANNER_API_KEY unset"; exit 1; }
+[ -n "$IKEY" ] && [ "$IKEY" != "changeme" ] || { echo "INTERNAL_API_KEY unset"; exit 1; }
 
 echo "== Ensure the bodies volume is writable by all capture components =="
 # The named volume's owner depends on which container created it first; a one-time
@@ -40,8 +42,13 @@ echo "== Ensure the bodies volume is writable by all capture components =="
 docker run --rm -v redamon_capture_bodies:/b alpine sh -c 'chmod 777 /b' >/dev/null 2>&1 || true
 
 echo "== Start capture proxy =="
-curl -s -X POST "http://127.0.0.1:8010/capture-proxy/start" -H "X-Orchestrator-Key: $OKEY" -o /dev/null -w "start %{http_code}\n"
-sleep 3
+# A start recreates the pair, so a proxy that is already up is left as it is.
+if [ "$PROXY_WAS_RUNNING" = true ]; then
+  echo "already running, left as it is"
+else
+  curl -s -X POST "http://127.0.0.1:8010/capture-proxy/start" -H "X-Orchestrator-Key: $OKEY" -o /dev/null -w "start %{http_code}\n"
+  sleep 3
+fi
 
 echo "== Seed + login =="
 SEED="$($DC exec -T webapp node scripts/e2e-bola-seed.mjs)" || { echo "seed failed"; exit 1; }
@@ -53,8 +60,10 @@ echo "== Write an offloaded body blob (root, via the shared volume) =="
 docker run --rm -v redamon_capture_bodies:/b alpine sh -c "printf 'OFFLOADED-BODY-MARKER-XYZ' > /b/$SHA && chmod 666 /b/$SHA" >/dev/null 2>&1
 
 echo "== Create rows: 1 inline (webapp ingest) + 1 offloaded (SQL, as the proxy ingest would) =="
+# The agent's path (internal key): the bare scanner key writes only with its scan's job
+# credential (X-Redamon-Job, HD-20), which this run has none of.
 ING='{"source":"recon","runId":"ttest-p2","transactions":[{"tool":"httpx","host":"p2b.example","scheme":"https","port":443,"path":"/b","method":"GET","statusCode":500,"respHeaders":{},"respBody":"inline","respBodySize":6,"startedAt":"2026-07-19T10:00:00Z"}]}'
-contains "webapp ingest inline row" "$(curl -s -X POST "$BASE/api/traffic/$PA_ID/ingest" -H "X-Internal-Key: $KEY" -H 'Content-Type: application/json' -d "$ING")" '"stored":1'
+contains "webapp ingest inline row" "$(curl -s -X POST "$BASE/api/traffic/$PA_ID/ingest" -H "X-Internal-Key: $IKEY" -H 'Content-Type: application/json' -d "$ING")" '"stored":1'
 # Offloaded row (resp_body_ref -> disk blob), stamped to PA's owner (A_ID).
 psql_ "INSERT INTO captured_http_transactions (id, project_id, user_id, source, run_id, tool, method, scheme, host, port, path, req_headers, resp_headers, resp_body_ref, resp_body_size, status_code, started_at) VALUES ('ttest-p2-off', '$PA_ID', '$A_ID', 'recon', 'ttest-p2', 'katana', 'GET', 'https', 'p2a.example', 443, '/a', '{}', '{}', '$SHA', 25, 200, now());" >/dev/null
 

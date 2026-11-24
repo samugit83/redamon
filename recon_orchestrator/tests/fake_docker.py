@@ -60,9 +60,10 @@ class FakeContainer:
         self._record("wait")
         return {"StatusCode": self.exit_code}
 
-    def remove(self, force=False):
+    def remove(self, force=False, v=False):
         self._record("remove:force" if force else "remove")
         self.removed = True
+        self.removed_volumes = v
 
 
 class FakeContainers:

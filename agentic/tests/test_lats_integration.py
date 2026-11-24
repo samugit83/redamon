@@ -129,15 +129,31 @@ class TestDriveThroughThinkNode(unittest.IsolatedAsyncioTestCase):
             project_settings._settings = None
 
     async def test_metasploit_probe_without_session_reroutes_to_ask_user(self):
-        # §20.4: a bare metasploit_console probe under cve_exploit with no
-        # LHOST/LPORT is re-routed to ask_user by think_node's pre-exploitation
-        # forcing. LATS proposed it; the safety mechanism (which runs AFTER the
-        # hook) correctly re-routes. Validates the hook does not bypass it.
+        # §20.4: a bare metasploit_console probe under cve_exploit is re-routed to
+        # ask_user by think_node's pre-exploitation forcing when nothing can carry a
+        # session: a known sandbox with no reverse port, no tunnel and no bind port
+        # (payload_plan's ask_bind). LATS proposed it; the forcing runs AFTER the hook,
+        # so this proves the hook does not bypass it.
+        import utils
+        project_settings._settings = _settings()
+        try:
+            probes = [{"tool_name": "metasploit_console", "tool_args": {"a": 1}, "rationale": "x"}]
+            with patch.object(utils, "_reverse_port_facts", return_value=("no_pool", None)):
+                updates = await self._run(probes)
+            self.assertEqual(updates["_decision"]["action"], "ask_user")
+            self.assertIn("BIND_PORT_ON_TARGET", updates["pending_question"]["question"])
+        finally:
+            project_settings._settings = None
+
+    async def test_metasploit_probe_before_the_sandbox_is_known_is_not_rerouted(self):
+        # Before any Kali call the sandbox's reverse port is not known, and the
+        # forcing never asks for a value the next step may already show.
         project_settings._settings = _settings()
         try:
             probes = [{"tool_name": "metasploit_console", "tool_args": {"a": 1}, "rationale": "x"}]
             updates = await self._run(probes)
-            self.assertEqual(updates["_decision"]["action"], "ask_user")
+            self.assertEqual(updates["_decision"]["action"], "use_tool")
+            self.assertEqual(updates["_decision"]["tool_name"], "metasploit_console")
         finally:
             project_settings._settings = None
 

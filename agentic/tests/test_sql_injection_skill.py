@@ -269,7 +269,7 @@ class TestPromptTemplates(unittest.TestCase):
     def test_oob_workflow_interactsh_steps(self):
         """OOB workflow should describe the correct interactsh-client pattern."""
         self.assertIn("interactsh-client", SQLI_OOB_WORKFLOW)
-        self.assertIn("/tmp/interactsh.log", SQLI_OOB_WORKFLOW)
+        self.assertIn("/tmp/interactsh-RUN.log", SQLI_OOB_WORKFLOW)
         self.assertIn("& echo $!", SQLI_OOB_WORKFLOW)
         self.assertIn("sleep 5", SQLI_OOB_WORKFLOW)
         self.assertIn("oast.fun", SQLI_OOB_WORKFLOW)

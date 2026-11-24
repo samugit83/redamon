@@ -72,7 +72,7 @@ def _manager(containers=(), fail=None):
     m.admitted = []
     m.ledger = SimpleNamespace(release_nowait=lambda key: None)
 
-    async def _admit(kind, project_id, run_id=None, user_id=None):
+    async def _admit(kind, project_id, run_id=None, user_id=None, max_per_user=None):
         m.admitted.append(kind)
         return kind
 

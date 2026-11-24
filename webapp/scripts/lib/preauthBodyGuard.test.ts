@@ -328,6 +328,14 @@ describe('the guard is wired where Next.js creates its server', () => {
     expect(serve.indexOf("require('../server.js')")).toBeGreaterThan(install)
   })
 
+  test('serve.cjs sets the keep-alive default before server.js reads it', () => {
+    // Node's 5 s default raced the agent's httpx pool, which gives an idle socket up at 5 s too.
+    const serve = readFileSync(path.join(WEBAPP, 'scripts/serve.cjs'), 'utf8')
+    const set = serve.indexOf("process.env.KEEP_ALIVE_TIMEOUT ??= '65000'")
+    expect(set).toBeGreaterThan(0)
+    expect(serve.indexOf("require('../server.js')")).toBeGreaterThan(set)
+  })
+
   test('Next.js still buffers bodies above the guard limit, so the guard is what bounds them', () => {
     const config = readFileSync(path.join(WEBAPP, 'next.config.ts'), 'utf8')
     const m = /proxyClientMaxBodySize:\s*'(\d+)mb'/.exec(config)

@@ -79,7 +79,7 @@ class _FakeContainer:
     def logs(self):
         return self._logs
 
-    def remove(self, force=False):
+    def remove(self, force=False, v=False):
         self.removed = True
 
 

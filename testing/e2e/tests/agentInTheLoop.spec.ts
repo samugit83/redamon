@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { envValue, loginThroughUi } from './uiLogin'
-import { ANSWERS, Driver, LAB_IP, mcpCall, newSession, sessionIds, type Step } from './aitlDriver'
+import { ANSWERS, Driver, LAB_IP, labOnSandbox, mcpCall, newSession, sessionIds, type Step } from './aitlDriver'
 
 /**
  * Agent in the Loop, end to end, with a scripted driver.
@@ -36,6 +36,7 @@ test.skip(!USER || !PASSWORD, 'UI_LOGIN_USERNAME / UI_LOGIN_PASSWORD missing fro
 
 let api: APIRequestContext
 let userId = ''
+let detachLab: (() => Promise<void>) | undefined
 let projectId = ''
 const cleanupProjects: string[] = []
 const cleanupTokens: string[] = []
@@ -121,10 +122,14 @@ test.beforeAll(async ({ browser }) => {
 
   driveToken = await mint('AitL e2e driver', ['recon:read', 'agent:loop'], 'agent_in_the_loop')
   broadToken = await mint('AitL e2e broad', ['recon:read', 'agent:loop', 'kali:exec'], 'custom')
+  // MCP sandbox commands are on by default (mcpKaliExecEnabled): labOnSandbox starts the
+  // person's sandbox with a no-op kali_exec on this project.
   projectId = await createLoopProject(`e2e AitL lab ${Date.now()}`)
+  detachLab = await labOnSandbox(api, broadToken, projectId, userId)
 })
 
 test.afterAll(async () => {
+  await detachLab?.()
   for (const id of cleanupProjects) await api?.delete(`/api/projects/${id}`)
   for (const id of cleanupTokens) await api?.delete(`/api/users/${userId}/mcp-tokens/${id}`)
   rmSync(STATE_PATH, { force: true })

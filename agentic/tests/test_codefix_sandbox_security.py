@@ -386,7 +386,7 @@ class _FakeContainer:
         self.removed = False
         self.exec_calls = []
         self._exec_result = (0, b"build-output")
-    def remove(self, force=False):
+    def remove(self, force=False, v=False):
         self.removed = True
     def exec_run(self, cmd, workdir=None, demux=False):
         self.exec_calls.append((cmd, workdir, demux))

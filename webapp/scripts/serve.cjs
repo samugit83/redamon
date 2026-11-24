@@ -7,6 +7,12 @@
 const { installPreauthBodyGuard, guardedServerCount } = require('./lib/preauthBodyGuard.cjs')
 
 installPreauthBodyGuard()
+// server.js keeps an idle keep-alive socket Node's default 5 s, the same 5 s after which httpx
+// (the agent's client) gives one up: a request sent on a socket the server was closing failed
+// with a reset ("socket hang up"). Longer than any client's idle expiry, so the client always
+// lets a socket go first. Set here, not in compose, so the services' environment stays pinned
+// (tests/tradecraft_no_new_env_test.sh); KEEP_ALIVE_TIMEOUT still overrides it.
+process.env.KEEP_ALIVE_TIMEOUT ??= '65000'
 require('../server.js')
 
 // The guard wraps the listener Next.js passes to http.createServer. A Next.js release that

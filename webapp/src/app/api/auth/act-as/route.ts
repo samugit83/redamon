@@ -22,6 +22,7 @@ import { sessionDeviceId } from '@/lib/authz/deviceSessions'
 import { loadPrincipal } from '@/lib/authz/principal'
 import { now } from '@/lib/authz/clock'
 import type { Session } from '@/lib/session'
+import { EXPIRED_COOKIE } from '@/lib/expiredCookie'
 
 // Impersonation ("switch user") is an ADMIN-only, server-authorized act. The
 // client can no longer decide "which user am I" via a localStorage value: the
@@ -87,7 +88,7 @@ export const POST = withRouteErrors('Could not switch user', async (request: Nex
     if (enforced) await endPresentedActAs(admin.userId, presentedActAsToken(request), 'stopped')
     else await writeActAsAudit({ adminId: admin.userId, targetUserId, event: 'end', source: 'self-clear' })
     const res = NextResponse.json({ actingAs: null })
-    res.cookies.set(ACT_AS_COOKIE_NAME, '', { ...cookieOpts(request), maxAge: 0 })
+    res.cookies.set(ACT_AS_COOKIE_NAME, '', { ...cookieOpts(request), ...EXPIRED_COOKIE })
     return res
   }
 
@@ -173,6 +174,6 @@ export const DELETE = withRouteErrors('Could not stop switching user', async (re
     }
   }
   const res = NextResponse.json({ actingAs: null })
-  res.cookies.set(ACT_AS_COOKIE_NAME, '', { ...cookieOpts(request), maxAge: 0 })
+  res.cookies.set(ACT_AS_COOKIE_NAME, '', { ...cookieOpts(request), ...EXPIRED_COOKIE })
   return res
 })

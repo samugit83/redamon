@@ -277,7 +277,7 @@ class TestRegressionGvmBackstopAfterProjectDelete(_Harness):
         m._ingest_github_hunt = MagicMock()
         state = asyncio.run(m.stop_github_hunt("p1", ingest=False))
         m._ingest_github_hunt.assert_not_called()
-        hunt_container.remove.assert_called_once_with()
+        hunt_container.remove.assert_called_once_with(force=False, v=True)
         self.assertEqual(state.status, GithubHuntStatus.IDLE)
 
     def test_the_github_hunt_stop_still_ingests_by_default(self):

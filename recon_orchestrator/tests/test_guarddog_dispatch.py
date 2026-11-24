@@ -48,7 +48,7 @@ class _FakeContainer:
         # stderr must be excluded so GuardDog's progress noise never corrupts JSON.
         return self._logs if stdout and not stderr else b"progress noise"
 
-    def remove(self, force=False):
+    def remove(self, force=False, v=False):
         self.removed = True
 
 

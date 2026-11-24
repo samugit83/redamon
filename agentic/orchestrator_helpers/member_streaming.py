@@ -82,9 +82,14 @@ class MemberScopedCallback:
     async def on_thinking(self, iteration: int, phase: str, thought: str, reasoning: str,
                           action: Optional[str] = None,
                           input_tokens: int = 0,
-                          output_tokens: int = 0):
-        # `action` is root-side only: fireteam_thinking has its own payload
-        # shape and doesn't carry it. Accept and drop.
+                          output_tokens: int = 0,
+                          productivity_score: Optional[float] = None,
+                          productivity_tier: Optional[str] = None,
+                          stall: int = 0):
+        # `action` and the productivity KPIs (the root's status chips) are root-side
+        # only: fireteam_thinking has its own payload shape and doesn't carry them.
+        # Accept and drop; a missing parameter made every member thought a TypeError
+        # that streaming.py logs and swallows, so no member thought reached the UI.
         try:
             await self._real.on_fireteam_thinking(
                 fireteam_id=self._fireteam_id,

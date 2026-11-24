@@ -270,7 +270,7 @@ class TestPromptTemplates(unittest.TestCase):
     def test_blind_workflow_interactsh_steps(self):
         """Blind workflow should describe the interactsh-client lifecycle."""
         self.assertIn("interactsh-client", XSS_BLIND_WORKFLOW)
-        self.assertIn("/tmp/interactsh.log", XSS_BLIND_WORKFLOW)
+        self.assertIn("/tmp/interactsh-RUN.log", XSS_BLIND_WORKFLOW)
         self.assertIn("oast.fun", XSS_BLIND_WORKFLOW)
         self.assertIn("kill SAVED_PID", XSS_BLIND_WORKFLOW)
 

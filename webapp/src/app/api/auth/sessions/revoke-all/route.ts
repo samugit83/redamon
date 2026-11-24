@@ -7,6 +7,7 @@ import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { isSecureRequest } from '@/lib/cookieSecurity'
 import { rbacFlags } from '@/lib/authz/flags'
 import { revokeSessions, routeNotFound } from '@/lib/authz/accountStatus'
+import { EXPIRED_COOKIE } from '@/lib/expiredCookie'
 
 /**
  * POST: "sign out everywhere" for the signed-in account (ID-21): every login cookie of it
@@ -25,7 +26,7 @@ export const POST = withRouteErrors('Could not sign out everywhere', async (requ
   if (!response.ok) return response
   // The version this cookie carries is gone: clear it here, with any act-as, so the browser
   // goes to /login at once rather than at its next refused request.
-  const expire = { httpOnly: true, sameSite: 'lax' as const, secure: isSecureRequest(request), path: '/', maxAge: 0 }
+  const expire = { httpOnly: true, sameSite: 'lax' as const, secure: isSecureRequest(request), path: '/', ...EXPIRED_COOKIE }
   response.cookies.set(AUTH_COOKIE_NAME, '', expire)
   response.cookies.set(ACT_AS_COOKIE_NAME, '', expire)
   return response

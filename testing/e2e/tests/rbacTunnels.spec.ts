@@ -40,6 +40,11 @@ test.beforeAll(() => {
   const id = seed.MEMBER_A_ID
   if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error('unexpected seed id')
   psql(`UPDATE users SET legacy_grants = ARRAY['tunnels'] WHERE id = '${id}';`)
+  // With RBAC_PERMISSIONS_ENABLED on, the first boot converts the column into override grants and
+  // the column no longer counts: write what that conversion writes, as test_e2e_bola_live.sh does.
+  psql(`INSERT INTO user_permission_overrides (user_id, permission, effect, expires_at, reason, granted_by_id)
+        VALUES ('${id}', 'platform:tunnels', 'grant', (now() AT TIME ZONE 'UTC') + interval '90 days', 'kept from 7.7.x', 'system')
+        ON CONFLICT (user_id, permission) DO NOTHING;`)
 })
 
 test.afterAll(() => {

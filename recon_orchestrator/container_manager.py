@@ -57,6 +57,12 @@ logger = logging.getLogger(__name__)
 ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;]*m|\033\[[0-9;]*m')
 
 
+def _discard(container, *, force: bool = False) -> None:
+    """Remove a scan container together with its anonymous volumes. The recon image declares
+    VOLUME /data and /var/run/docker.sock, so a plain remove left two volumes behind per run."""
+    container.remove(force=force, v=True)
+
+
 def _env_unset_if_blank(name: str, default: str) -> str:
     """os.environ.get where a BLANK value counts as unset.
 
@@ -1215,7 +1221,7 @@ class ContainerManager:
                         # Auto-cleanup: remove finished container
                         self._remove_trufflehog_stages(self._run_id_of(container))
                         try:
-                            container.remove()
+                            _discard(container)
                             logger.info(f"Auto-removed finished container for project {project_id}")
                         except Exception as e:
                             logger.warning(f"Failed to auto-remove container: {e}")
@@ -1324,7 +1330,7 @@ class ContainerManager:
         # By id, not by name: the name may already belong to a newer container.
         if leftover is not None:
             try:
-                leftover.remove(force=True)
+                _discard(leftover, force=True)
                 logger.info(f"Removed old container {container_name}")
             except NotFound:
                 pass
@@ -1539,7 +1545,7 @@ class ContainerManager:
         # Best-effort: a leftover container with this name blocks the run.
         try:
             old = self.client.containers.get(name)
-            old.remove(force=True)
+            _discard(old, force=True)
         except NotFound:
             pass
         except APIError as e:
@@ -1625,7 +1631,7 @@ class ContainerManager:
         if entry:
             try:
                 container = self.client.containers.get(entry["container_id"])
-                container.remove(force=True)
+                _discard(container, force=True)
                 logger.info(f"[codefix] removed sandbox for job {job_id}")
             except NotFound:
                 pass
@@ -1753,7 +1759,7 @@ class ContainerManager:
                 # A frozen process cannot take the kill a forced remove sends.
                 if container.status == "paused":
                     container.unpause()
-                container.remove(force=True)
+                _discard(container, force=True)
                 removed += 1
                 logger.info(f"Removed tool container {container.name} of run {run_id}")
             except NotFound:
@@ -2086,7 +2092,7 @@ class ContainerManager:
 
     def _remove_container_if_exists(self, name: str) -> None:
         try:
-            self.client.containers.get(name).remove(force=True)
+            _discard(self.client.containers.get(name), force=True)
         except NotFound:
             pass
         except APIError as e:
@@ -2269,7 +2275,7 @@ class ContainerManager:
             try:
                 c = self.client.containers.get(name)
                 c.stop(timeout=10)
-                c.remove()
+                _discard(c)
             except NotFound:
                 pass
             except Exception as e:
@@ -2647,7 +2653,7 @@ class ContainerManager:
                     state.completed_at = datetime.now(timezone.utc)
                 self._remove_trufflehog_stages(state.run_id)
                 try:
-                    container.remove()
+                    _discard(container)
                     logger.info(f"Auto-removed partial recon container for {state.project_id}/{state.run_id}")
                 except Exception as e:
                     logger.warning(f"Failed to auto-remove partial container: {e}")
@@ -3057,7 +3063,7 @@ class ContainerManager:
                 # Job ended on its own -> free the shared judge lease.
                 self._release_llm(state)
                 try:
-                    container.remove()
+                    _discard(container)
                     logger.info(f"Auto-removed AI attack container for {state.project_id}/{state.run_id}")
                 except Exception as e:
                     logger.warning(f"Failed to auto-remove AI attack container: {e}")
@@ -3249,7 +3255,7 @@ class ContainerManager:
                 def _kill(cid: str):
                     container = self.client.containers.get(cid)
                     container.stop(timeout=timeout)
-                    container.remove()
+                    _discard(container)
                 try:
                     await asyncio.to_thread(_kill, state.container_id)
                     state.status = AiAttackSurfaceStatus.IDLE
@@ -3429,7 +3435,7 @@ class ContainerManager:
                             state.completed_at = datetime.now(timezone.utc)
 
                         try:
-                            container.remove()
+                            _discard(container)
                             logger.info(f"Auto-removed finished GVM container for project {project_id}")
                         except Exception as e:
                             logger.warning(f"Failed to auto-remove GVM container: {e}")
@@ -3493,7 +3499,7 @@ class ContainerManager:
         container_name = self._get_gvm_container_name(project_id)
         try:
             old_container = self.client.containers.get(container_name)
-            old_container.remove(force=True)
+            _discard(old_container, force=True)
             logger.info(f"Removed old GVM container {container_name}")
         except NotFound:
             pass
@@ -3670,7 +3676,7 @@ class ContainerManager:
                 # each target is the only copy of what it found.
                 if claim.ingest:
                     self._ingest_gvm_after_stop(state, container)
-                container.remove()
+                _discard(container)
             try:
                 # Off the event loop: the stop waits out the grace period and the
                 # backstop may write a whole run.
@@ -3915,7 +3921,7 @@ class ContainerManager:
                         self._ingest_github_hunt(state)
 
                         try:
-                            container.remove()
+                            _discard(container)
                             logger.info(f"Auto-removed finished GitHub hunt container for project {project_id}")
                         except Exception as e:
                             logger.warning(f"Failed to auto-remove GitHub hunt container: {e}")
@@ -3974,7 +3980,7 @@ class ContainerManager:
         container_name = self._get_github_hunt_container_name(project_id)
         try:
             old_container = self.client.containers.get(container_name)
-            old_container.remove(force=True)
+            _discard(old_container, force=True)
             logger.info(f"Removed old GitHub hunt container {container_name}")
         except NotFound:
             pass
@@ -4119,7 +4125,7 @@ class ContainerManager:
                 # last chance to keep the run's findings.
                 if ingest:
                     self._ingest_github_hunt(state)
-                container.remove()
+                _discard(container)
                 state.status = GithubHuntStatus.IDLE
                 state.completed_at = datetime.now(timezone.utc)
                 logger.info(f"Stopped GitHub hunt container for project {project_id}")
@@ -4489,7 +4495,7 @@ class ContainerManager:
                         self._ingest_trufflehog(state)
 
                         try:
-                            container.remove()
+                            _discard(container)
                             state.container_removed = True
                             logger.info(
                                 f"Auto-removed finished TruffleHog container for {project_id}/{source}")
@@ -4632,7 +4638,7 @@ class ContainerManager:
         finally:
             if container is not None:
                 try:
-                    container.remove(force=True)
+                    _discard(container, force=True)
                 except APIError:
                     pass
 
@@ -4735,7 +4741,7 @@ class ContainerManager:
         finally:
             if container is not None:
                 try:
-                    container.remove(force=True)
+                    _discard(container, force=True)
                 except APIError:
                     pass
 
@@ -4934,7 +4940,7 @@ exit $RC
             self._osv_db_refresh_lock.release()
             if container is not None:
                 try:
-                    container.remove(force=True)
+                    _discard(container, force=True)
                 except APIError:
                     pass
 
@@ -5090,7 +5096,7 @@ exit $RC
             self._sca_intel_refresh_lock.release()
             if container is not None:
                 try:
-                    container.remove(force=True)
+                    _discard(container, force=True)
                 except APIError:
                     pass
 
@@ -5150,7 +5156,7 @@ exit $RC
         container_name = self._get_supply_chain_container_name(project_id)
         try:
             old = self.client.containers.get(container_name)
-            old.remove(force=True)
+            _discard(old, force=True)
         except NotFound:
             pass
 
@@ -5273,7 +5279,7 @@ exit $RC
                             state.error = _exit_reason_of(container)
                         state.completed_at = datetime.now(timezone.utc)
                         try:
-                            container.remove()
+                            _discard(container)
                         except Exception as e:
                             logger.warning(f"Failed to auto-remove Supply-Chain container: {e}")
                 except NotFound:
@@ -5322,7 +5328,7 @@ exit $RC
                 if container.status == "paused":
                     container.unpause()
                 container.stop(timeout=timeout)
-                container.remove()
+                _discard(container)
             except NotFound:
                 pass
             except Exception as e:
@@ -5531,7 +5537,7 @@ exit $RC
 
         container_name = self._get_trufflehog_container_name(project_id, source)
         try:
-            self.client.containers.get(container_name).remove(force=True)
+            _discard(self.client.containers.get(container_name), force=True)
             logger.info(f"Removed old TruffleHog container {container_name}")
         except NotFound:
             pass
@@ -5868,7 +5874,7 @@ exit $RC
                     if container.status == "paused":
                         container.unpause()
                     container.stop(timeout=timeout)
-                    container.remove()
+                    _discard(container)
                 try:
                     await asyncio.to_thread(_kill, state.container_id)
                     state.status = TrufflehogStatus.IDLE

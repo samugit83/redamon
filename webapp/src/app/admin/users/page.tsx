@@ -71,9 +71,12 @@ export default function AdminUsersPage() {
   const [setOptions, setSetOptions] = useState<SetOption[]>([])
   const generation = useRef(0)
 
-  const load = useCallback(async (f: Filters) => {
+  // A refresh after a row action keeps the rows on screen: each row owns its dialogs, so
+  // swapping the table for the loading line unmounted a dialog still showing its result
+  // (the reset link of Reset credentials). A failed refresh says so below the rows.
+  const load = useCallback(async (f: Filters, keepRows = false) => {
     const mine = ++generation.current
-    setView({ kind: 'loading' })
+    if (!keepRows) setView({ kind: 'loading' })
     try {
       const page = await fetchJson<DirectoryPage>(`/api/admin/users?${queryOf(f)}`, { cache: 'no-store' }, 'Could not list the accounts')
       if (mine !== generation.current) return
@@ -83,7 +86,9 @@ export default function AdminUsersPage() {
       if (mine !== generation.current) return
       const error = toApiError(err, 'Could not list the accounts')
       const permission = forbiddenPermission(error)
-      setView(permission ? { kind: 'denied', permission } : { kind: 'error', message: error.message })
+      setView((v) => keepRows && v.kind === 'ready' && !permission
+        ? { ...v, more: error.message }
+        : permission ? { kind: 'denied', permission } : { kind: 'error', message: error.message })
     }
   }, [])
 
@@ -116,6 +121,7 @@ export default function AdminUsersPage() {
   }
 
   const reload = () => void load(filters)
+  const refresh = () => void load(filters, true)
   const filtered = FILTER_KEYS.some((k) => filters[k].trim() !== '')
   const confirmedRoot = me?.accountType === 'root' && me?.rbac?.root?.confirmed === true
 
@@ -220,7 +226,7 @@ export default function AdminUsersPage() {
                 </thead>
                 <tbody>
                   {view.page.users.map((row) => (
-                    <DirectoryRowView key={row.id} row={row} sharing={view.page.sharing} policy={policy} onChanged={reload} />
+                    <DirectoryRowView key={row.id} row={row} sharing={view.page.sharing} policy={policy} onChanged={refresh} />
                   ))}
                 </tbody>
               </table>
@@ -237,7 +243,7 @@ export default function AdminUsersPage() {
         )
       )}
 
-      <InviteUserModal isOpen={inviting} onClose={() => setInviting(false)} onInvited={reload} selfId={me?.id} />
+      <InviteUserModal isOpen={inviting} onClose={() => setInviting(false)} onInvited={refresh} selfId={me?.id} />
     </div>
   )
 }

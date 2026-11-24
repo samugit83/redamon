@@ -24,7 +24,10 @@ export function AuthenticationSection({ projectId, mode }: AuthenticationSection
   const { alertError, alert } = useAlertModal()
   const [isOpen, setIsOpen] = useState(false)
   const [meta, setMeta] = useState<AuthProfileMetadata | null>(null)
-  const [loading, setLoading] = useState(false)
+  // Starts true so the switches are never clickable before the first load answers:
+  // a gate flipped meanwhile was saved, then overwritten on screen by the load's
+  // older value, so the switch showed the opposite of what the server holds.
+  const [loading, setLoading] = useState(Boolean(projectId))
   const [saving, setSaving] = useState(false)
   const [recordingOpen, setRecordingOpen] = useState(false)
 
@@ -170,7 +173,7 @@ export function AuthenticationSection({ projectId, mode }: AuthenticationSection
                       Crawlers, fuzzers and probes attach the session to in-scope hosts.
                     </div>
                   </div>
-                  <Toggle checked={reconEnabled} onChange={(v) => setGate('reconEnabled', v)} aria-label="Apply to recon" />
+                  <Toggle checked={reconEnabled} onChange={(v) => setGate('reconEnabled', v)} disabled={loading} aria-label="Apply to recon" />
                 </div>
                 <div className={styles.toggleRow}>
                   <div>
@@ -180,7 +183,7 @@ export function AuthenticationSection({ projectId, mode }: AuthenticationSection
                       keep agent probing anonymous (e.g. for access-control testing).
                     </div>
                   </div>
-                  <Toggle checked={agentEnabled} onChange={(v) => setGate('agentEnabled', v)} aria-label="Apply to agent" />
+                  <Toggle checked={agentEnabled} onChange={(v) => setGate('agentEnabled', v)} disabled={loading} aria-label="Apply to agent" />
                 </div>
               </div>
 
