@@ -5,13 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Changed
-
-- **IAM → Instance shows only what is set there, in the app's standard field layout.** Each panel lists its settings one per row in a bordered container (label and hint on the left, the value on the right), at the same text sizes and with the same inputs, checkboxes and radios as Global Settings; Audit retention, AI Navigator and the instance LLM providers' form were the worst offenders. The Tunnel, TrafficMind and egress policy, Plugins and Platform tools used elsewhere panels are gone: tunnels are each person's own (Global Settings), TrafficMind is set on its own page, and the other platform tools are used where they live. Those platform permissions no longer open the Instance section; `instance:settings`, `instance:quotas` and `platform:nuclei_templates` do.
-- **TrafficMind: Settings opens the settings dialog in place, and the top bar can switch the current project's capture.** With the IAM console on, Settings no longer sends you to the Instance page. Beside *Traffic capture for &lt;project&gt;: Enabled / Disabled*, whoever holds `platform:traffic_capture` gets **Enable** / **Disable**, which makes the same change as that project's switch in the dialog's per-project routing.
-
 ## [7.10.0] - 2026-11-21
 
 Security fixes for what an attacker with no account can do from the network: rewrite or fill the AI attack-surface judge, lock any account out of signing in, and exhaust the webapp's memory with large request bodies.
@@ -119,6 +112,11 @@ Security fixes for what an attacker with no account can do from the network: rew
 - **ESC11 in the AD CS skill relays only on the one reachable port**, and the built-in skills give their interactsh and dalfox output files a per-workflow name, so two chats in one sandbox no longer read each other's callbacks.
 - **The AI drawer no longer stays on "Connecting to agent..." after a network blip, and a new chat no longer falls back to the previous one.** The ticket request the chat socket makes before it connects could get no answer at all (Chromium drops every request in flight when a network address appears or goes away, which on a Docker host happens whenever a container on a Docker bridge network starts or stops, a person's own Kali sandbox included), and the drawer then waited for a reload; it is now retried like a dropped connection, with the same wait and attempt limit, while a ticket the webapp refuses still stops and says why. A ticket that answered after "Start new session" no longer sends the previous session's start message on the new socket, which made the agent bind the new chat to the old session.
 - **A page no longer stays on "No User" / "No Project" after a network blip while it opens.** A page reads the session and the saved project once when it opens; a read that got no answer (the same browser abort) left the header on "No User" or "No Project", with an empty graph, until a reload. Such a read is now tried again a few times over about 7 seconds; if the server still cannot be reached, the header says "Server unreachable · Retry", or offers Retry beside "No Project", and Retry reloads the page. A read the server answers, a sign-out or an outage included, is handled as before. A project read that a newer choice made obsolete (a project picked, or a switch of whom an administrator acts as) is dropped instead of replacing that choice when it answers late.
+
+### Changed
+
+- **IAM → Instance shows only what is set there, in the app's standard field layout.** Each panel lists its settings one per row in a bordered container (label and hint on the left, the value on the right), at the same text sizes and with the same inputs, checkboxes and radios as Global Settings; Audit retention, AI Navigator and the instance LLM providers' form were the worst offenders. The Tunnel, TrafficMind and egress policy, Plugins and Platform tools used elsewhere panels are gone: tunnels are each person's own (Global Settings), TrafficMind is set on its own page, and the other platform tools are used where they live. Those platform permissions no longer open the Instance section; `instance:settings`, `instance:quotas` and `platform:nuclei_templates` do.
+- **TrafficMind: Settings opens the settings dialog in place, and the top bar can switch the current project's capture.** With the IAM console on, Settings no longer sends you to the Instance page. Beside *Traffic capture for &lt;project&gt;: Enabled / Disabled*, whoever holds `platform:traffic_capture` gets **Enable** / **Disable**, which makes the same change as that project's switch in the dialog's per-project routing.
 
 ## [7.9.0] - 2026-11-19
 
