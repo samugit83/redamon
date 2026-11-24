@@ -213,6 +213,24 @@ class MemberScopedCallbackTokenForwardingTests(unittest.IsolatedAsyncioTestCase)
         self.assertEqual(kwargs["input_tokens"], 10)
         self.assertEqual(kwargs["output_tokens"], 2)
 
+    async def test_on_thinking_takes_the_productivity_kwargs_streaming_sends(self):
+        # streaming.py passes the root's KPI chips to every callback; the member
+        # proxy raised TypeError on them, so no member thought was streamed.
+        await self.proxy.on_thinking(
+            3, "exploitation", "t", "r", action="use_tool", input_tokens=5, output_tokens=1,
+            productivity_score=0.42, productivity_tier="low", stall=2,
+        )
+        self.real.on_fireteam_thinking.assert_awaited_once()
+        self.assertEqual(self.real.on_fireteam_thinking.await_args.kwargs["thought"], "t")
+
+    def test_the_proxy_accepts_every_keyword_the_root_callback_takes(self):
+        import inspect
+        from orchestrator_helpers.member_streaming import MemberScopedCallback
+        from websocket_api import StreamingCallback
+        root = inspect.signature(StreamingCallback.on_thinking).parameters
+        member = inspect.signature(MemberScopedCallback.on_thinking).parameters
+        self.assertEqual(sorted(set(root) - set(member)), [])
+
 
 # =============================================================================
 # 5. WebSocketCallback.on_thinking payload shape
