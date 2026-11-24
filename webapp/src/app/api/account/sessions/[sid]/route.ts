@@ -10,6 +10,7 @@ import { routeNotFound } from '@/lib/authz/accountStatus'
 import { actsAsOthers, endPresentedActAs } from '@/lib/authz/actAs'
 import { isDeviceSessionId, sessionDeviceId } from '@/lib/authz/deviceSessions'
 import { revokeAnswer, revokeDeviceSession, sessionNotFound } from '@/lib/authz/deviceSessionAdmin'
+import { EXPIRED_COOKIE } from '@/lib/expiredCookie'
 
 interface RouteParams {
   params: Promise<{ sid: string }>
@@ -40,7 +41,7 @@ export const DELETE = withRouteErrors('Could not end the session', async (reques
       console.error(`[rbac] act-as end not recorded at sign-out code=${safeErrorCode(err)}`)
     }
   }
-  const expire = { httpOnly: true, sameSite: 'lax' as const, secure: isSecureRequest(request), path: '/', maxAge: 0 }
+  const expire = { httpOnly: true, sameSite: 'lax' as const, secure: isSecureRequest(request), path: '/', ...EXPIRED_COOKIE }
   response.cookies.set(AUTH_COOKIE_NAME, '', expire)
   response.cookies.set(ACT_AS_COOKIE_NAME, '', expire)
   return response
