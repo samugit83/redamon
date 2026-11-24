@@ -1020,6 +1020,11 @@ services:
     environment:
       # PostgreSQL (Prisma)
       DATABASE_URL: "postgresql://${POSTGRES_USER:-redamon}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set - run redamon.sh (STRIDE S13)}@postgres:5432/${POSTGRES_DB:-redamon}"
+      # Next's server.js closes an idle keep-alive socket after Node's default 5 s, the same 5 s
+      # after which httpx (the agent's client) gives one up: a request sent on a socket the server
+      # was closing failed with a reset ("socket hang up"). Longer than any client's idle expiry,
+      # so the client always lets a socket go first.
+      KEEP_ALIVE_TIMEOUT: "65000"
       # HTTP traffic capture: body full-text search (Phase 3). Off by default —
       # the GIN-over-bodies index is sizable vs the 1g Postgres cap (§6.3/§15.8).
       # Applied idempotently by the entrypoint after `db push`; drops when off.
