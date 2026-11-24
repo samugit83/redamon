@@ -130,6 +130,7 @@ export default function AdminUsersPage() {
       <ConsoleHeader
         icon={SECTION_ICONS.users}
         title="Users"
+        wiki="adminUsers"
         lead="Every account on this instance: invitations, status, permission sets and sign-ins."
         actions={(confirmedRoot && me) || canInvite ? (
           <>

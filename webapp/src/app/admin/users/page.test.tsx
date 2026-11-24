@@ -132,6 +132,14 @@ describe('what the directory shows', () => {
     expect(screen.getByRole('link', { name: 'm-1 name' })).toHaveAttribute('href', '/admin/users/m-1')
   })
 
+  test('the header links the Users section of the wiki, beside the title and outside the heading', async () => {
+    renderPage()
+    const wiki = await screen.findByRole('link', { name: 'Open Identity & Access Management wiki page' })
+    expect(wiki).toHaveAttribute('href', 'https://github.com/samugit83/redamon/wiki/Identity-and-Access-Management#where-accounts-are-managed-iam--users')
+    expect(wiki).toHaveAttribute('target', '_blank')
+    expect(screen.getByRole('heading', { level: 1, name: 'Users' })).toBeInTheDocument()
+  })
+
   test('without sharing in force no shared count is shown', async () => {
     directory = () => json(page([row('m-1', { projects: { owned: 1, shared: null } })]))
     renderPage()

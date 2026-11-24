@@ -21,6 +21,7 @@ export const PAGE_WIKI: Record<string, { page: string; anchor?: string }> = {
   reports:      { page: 'Pentest-Reports' },
   settings:     { page: 'Global-Settings' },
   settingsUsers:{ page: 'Identity-and-Access-Management' },
+  adminUsers:   { page: 'Identity-and-Access-Management', anchor: 'where-accounts-are-managed-iam--users' },
   cypherfix:    { page: 'CypherFix-Automated-Remediation' },
   plugins:      { page: 'Plugins' },
   login:        { page: 'Getting-Started' },
