@@ -1,4 +1,6 @@
 import { expect, type APIRequestContext } from '@playwright/test'
+import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 
 /**
  * A scripted Agent in the Loop driver: it plays the person's external agent over
@@ -7,6 +9,57 @@ import { expect, type APIRequestContext } from '@playwright/test'
  */
 
 export const LAB_IP = '172.28.0.91'
+const LAB_CONTAINER = 'skiller-sqli'
+let labHost = LAB_IP
+
+const sandboxNetwork = (userId: string) =>
+  `redamon-sbx-${createHash('sha256').update(userId).digest('hex').slice(0, 16)}`
+const docker = (...args: string[]) => new Promise<string>(resolve =>
+  execFile('docker', args, (_err, stdout) => resolve(String(stdout ?? '').trim())))
+const labIpOn = (net: string) =>
+  docker('inspect', '-f', `{{with index .NetworkSettings.Networks "${net}"}}{{.IPAddress}}{{end}}`, LAB_CONTAINER)
+
+/** The lab's address as the person's Kali sandbox reaches it (set by labOnSandbox). */
+export const labAddress = () => labHost
+
+/**
+ * Puts the lab where the person's sandbox can reach it. A sandbox routes only its own network
+ * (redamon-sbx-<sandbox key>, sandbox_contract.network_name, a /28 of 10.214.0.0/16) and an
+ * isolated gateway, so the lab's pentest-net address 172.28.0.91 is never reached from it: the
+ * sandbox is started first (a no-op MCP kali_exec on `projectId`, which must allow MCP sandbox
+ * commands), the lab joins its network as kali_reverse_ports_live.py's labs do, and the answers
+ * then use the lab's address there. A watcher joins it again, and reads the address again, if the
+ * sandbox's network is recreated during the run. Returns the function that stops the watcher and
+ * takes the lab off.
+ */
+export async function labOnSandbox(
+  api: APIRequestContext, kaliToken: string, projectId: string, userId: string,
+): Promise<() => Promise<void>> {
+  for (let i = 0; i < 12; i++) {
+    const r = await mcpCall(api, kaliToken, 'kali_exec', { projectId, command: 'true', waitSeconds: 30 })
+    if (!r.isError && r.json?.status !== 'starting') break
+    expect(i, `the sandbox did not start: ${r.text.slice(0, 200)}`).toBeLessThan(11)
+    await new Promise(res => setTimeout(res, 5_000))
+  }
+  const net = sandboxNetwork(userId)
+  await docker('network', 'connect', net, LAB_CONTAINER)
+  labHost = await labIpOn(net)
+  expect(labHost, `the lab has no address on ${net}`).toMatch(/^10\.214\./)
+  let busy = false
+  const timer = setInterval(() => {
+    if (busy) return
+    busy = true
+    // Refused while the lab is already on the network; fine.
+    void docker('network', 'connect', net, LAB_CONTAINER)
+      .then(() => labIpOn(net)).then(ip => { if (ip) labHost = ip })
+      .finally(() => { busy = false })
+  }, 1_000)
+  return async () => {
+    clearInterval(timer)
+    await docker('network', 'disconnect', net, LAB_CONTAINER)
+    labHost = LAB_IP
+  }
+}
 
 export interface CallResult { isError: boolean; text: string; json: Record<string, any> | null }
 export type Step = Record<string, any>
@@ -151,21 +204,25 @@ const json = (o: unknown) => JSON.stringify(o)
 /** Scripted answers, by purpose (the shapes the agent's parsers expect). */
 export const ANSWERS = {
   scope_guardrail: json({ allowed: true, reason: 'local lab in scope' }),
-  classify: json({
-    attack_path_type: 'sql_injection', required_phase: 'informational', confidence: 0.9,
-    reasoning: 'fingerprinting a lab web server', target_host: LAB_IP, target_port: 5000,
-  }),
+  get classify() {
+    return json({
+      attack_path_type: 'sql_injection', required_phase: 'informational', confidence: 0.9,
+      reasoning: 'fingerprinting a lab web server', target_host: labHost, target_port: 5000,
+    })
+  },
   deep_think: json({
     situation_assessment: 'nothing known yet about the lab web server', competing_hypotheses: [],
     attack_vectors_identified: ['web application'], recommended_approach: 'fingerprint the server first',
     priority_order: ['fetch the landing page'], risks_and_mitigations: 'read-only requests only',
   }),
   report: '# AitL e2e report\n\nThe lab web server answered on port 5000. This report was written by the e2e driver.',
-  curl: json({
-    thought: 'AITL-E2E fetch the landing page', reasoning: 'see what the server answers',
-    action: 'use_tool', tool_name: 'execute_curl', tool_args: { args: `-s -i http://${LAB_IP}:5000/` },
-    updated_todo_list: [],
-  }),
+  get curl() {
+    return json({
+      thought: 'AITL-E2E fetch the landing page', reasoning: 'see what the server answers',
+      action: 'use_tool', tool_name: 'execute_curl', tool_args: { args: `-s -i http://${labHost}:5000/` },
+      updated_todo_list: [],
+    })
+  },
   toExploitation: json({
     thought: 'AITL-E2E the landing page is known', reasoning: 'the objective needs the exploitation phase next',
     action: 'transition_phase',

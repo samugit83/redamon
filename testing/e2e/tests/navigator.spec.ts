@@ -109,10 +109,13 @@ test.describe('AI Navigator', () => {
     await expect(page).toHaveURL(new RegExp(`/graph\\?project=${projectId}$`))
     const drawer = page.locator('[class*="drawerOpen"]').first()
     await expect(drawer).toBeVisible()
-    const d = (await drawer.boundingBox())!
-    const l = (await launcher(page).boundingBox())!
-    const overlap = l.x < d.x + d.width && l.x + l.width > d.x && l.y < d.y + d.height && l.y + l.height > d.y
-    expect(overlap).toBe(false)
+    // The drawer registers as an obstacle once its open transition ends (and 450 ms after it
+    // opens), and only then does the launcher step aside: wait for it to settle.
+    await expect.poll(async () => {
+      const d = (await drawer.boundingBox())!
+      const l = (await launcher(page).boundingBox())!
+      return l.x < d.x + d.width && l.x + l.width > d.x && l.y < d.y + d.height && l.y + l.height > d.y
+    }, { timeout: 5_000 }).toBe(false)
   })
 })
 

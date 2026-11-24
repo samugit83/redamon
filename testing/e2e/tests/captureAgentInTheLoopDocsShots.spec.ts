@@ -3,7 +3,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { envValue, loginThroughUi } from './uiLogin'
-import { Driver, LAB_IP, newSession, sessionIds } from './aitlDriver'
+import { Driver, LAB_IP, labAddress, labOnSandbox, newSession, sessionIds } from './aitlDriver'
 
 /**
  * Regenerates the screenshots on the wiki's Agent in the Loop page. Not an
@@ -33,6 +33,8 @@ test.skip(!envValue('UI_LOGIN_USERNAME') || !PASSWORD, 'UI_LOGIN_USERNAME / UI_L
 
 let api: APIRequestContext
 let userId = ''
+let detachLab: (() => Promise<void>) | undefined
+let kaliTokenId = ''
 let projectId = ''
 let tokenId = ''
 let driveToken = ''
@@ -154,12 +156,22 @@ test.beforeAll(async ({ browser }) => {
   })
   expect(project.ok(), await project.text()).toBeTruthy()
   projectId = (await project.json()).id
+  // A throwaway kali:exec token starts the person's sandbox, so the lab can join its network.
+  const kali = await api.post(`/api/users/${userId}/mcp-tokens`, {
+    data: { name: `${DRIVER_NAME} sandbox`, scopes: ['recon:read', 'kali:exec'], profile: 'custom', expiresInDays: 30, password: PASSWORD },
+  })
+  expect(kali.status(), await kali.text()).toBe(201)
+  const kaliBody = await kali.json()
+  kaliTokenId = kaliBody.token.id
+  detachLab = await labOnSandbox(api, kaliBody.plaintext, projectId, userId)
   // The context stays open: `api` is its request client, used until afterAll.
 })
 
 test.afterAll(async () => {
+  await detachLab?.()
   if (projectId) await api?.delete(`/api/projects/${projectId}`)
   if (tokenId) await api?.delete(`/api/users/${userId}/mcp-tokens/${tokenId}`)
+  if (kaliTokenId) await api?.delete(`/api/users/${userId}/mcp-tokens/${kaliTokenId}`)
   rmSync(STATE_PATH, { force: true })
 })
 
@@ -229,7 +241,7 @@ test('a live loop run: picker, waiting, no agent, a tool, an approval, the repor
 
   const before = await sessionIds(api, projectId)
   await page.getByPlaceholder('Ask a question or type /skill...').fill(
-    `Fingerprint the web server on ${LAB_IP}:5000 and tell me what it runs.`)
+    `Fingerprint the web server on ${labAddress()}:5000 and tell me what it runs.`)
   await page.getByRole('button', { name: 'Send message' }).click()
   d.session = await newSession(api, projectId, before)
   await expect(page.getByText('Waiting for your agent…')).toBeVisible({ timeout: 30_000 })
@@ -243,7 +255,7 @@ test('a live loop run: picker, waiting, no agent, a tool, an approval, the repor
   await d.submit(think1.stepId, JSON.stringify({
     thought: 'Nothing is known about the server yet: start with its landing page and headers.',
     reasoning: 'A plain GET shows the server banner, the framework and the first forms.',
-    action: 'use_tool', tool_name: 'execute_curl', tool_args: { args: `-s -i http://${LAB_IP}:5000/` },
+    action: 'use_tool', tool_name: 'execute_curl', tool_args: { args: `-s -i http://${labAddress()}:5000/` },
     updated_todo_list: [{ description: 'Fetch the landing page', status: 'in_progress' }],
   }))
   await page.getByRole('button', { name: 'Allow' }).first().click({ timeout: 60_000 })

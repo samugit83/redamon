@@ -5,7 +5,7 @@ import { mintToken, signIn } from './auth'
 
 /**
  * Regenerates the Jev screenshots on the wiki (the AI in Pipeline panel with its
- * complete hook list, the Jev token card, and the Serialized Object Scan card
+ * complete hook list, the Jev providers card, and the Serialized Object Scan card
  * with its Jev ranking control). Not an assertion suite: run it when one of them
  * changes so the docs stop drifting from the product.
  *
@@ -13,9 +13,9 @@ import { mintToken, signIn } from './auth'
  *
  * Shots land in redamon.wiki/images/ under the names the pages link. The project
  * is a throwaway on a .test domain and is deleted afterwards: a screenshot is
- * published, so it must never carry a real hostname. The account's Jev token is
+ * published, so it must never carry a real hostname. The account's Jev providers are
  * hidden from the BROWSER only (the providers response is filtered in flight), so
- * the shots show the "no token yet" state without touching the stored token or
+ * the shots show the "no provider yet" state without touching the stored ones or
  * printing a masked key.
  */
 
@@ -50,12 +50,12 @@ test.beforeEach(async ({ page, context, baseURL }) => {
     }))
     localStorage.setItem('redamon-github-star-dismissed', '1')
   })
-  // Show the account as having no Jev token.
+  // Show the account as having no Jev provider, of either type (llmProviderKinds.ts).
   await page.route('**/api/users/*/llm-providers', async route => {
     if (route.request().method() !== 'GET') return route.continue()
     const res = await route.fetch()
     const rows = await res.json()
-    const body = Array.isArray(rows) ? rows.filter((r: { providerType?: string }) => r?.providerType !== 'jev') : rows
+    const body = Array.isArray(rows) ? rows.filter((r: { providerType?: string }) => !['jev', 'jev_openrouter'].includes(r?.providerType ?? '')) : rows
     await route.fulfill({ response: res, json: body })
   })
 })
@@ -98,13 +98,14 @@ test('AI in Pipeline panel', async ({ page }) => {
   await panel.screenshot({ path: join(OUT, 'ai-in-pipeline-target-tab.png') })
 })
 
-test('TypeSafe AI (Jev) token card', async ({ page }) => {
+test('Jev providers card', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 1200 })
   await page.goto('/settings')
   const section = page.locator('section[aria-labelledby="jev-provider-title"]')
   await expect(section).toBeVisible({ timeout: 30_000 })
-  await section.getByRole('button', { name: /Add token/i }).click()
-  await expect(section.getByText('Test Connection', { exact: false }).first()).toBeVisible()
+  await section.getByRole('button', { name: /Add Jev provider/i }).click()
+  // LlmProviderForm.tsx names the button "Check key (free)" for a Jev provider.
+  await expect(section.getByRole('button', { name: 'Check key (free)' })).toBeVisible()
   await page.addStyleTag({ content: NO_MOTION })
   await section.scrollIntoViewIfNeeded()
   await page.waitForTimeout(300)

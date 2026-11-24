@@ -54,9 +54,8 @@ SELECT 'legacy_grants|' || u.email || '|' || string_agg(replace(o.permission, 'p
    AND EXISTS (SELECT 1 FROM audit_log WHERE action = 'system.rbac_legacy_overrides_backfill')
  GROUP BY u.email;
 
--- tunnel_rows: every row holding a tunnel credential, and the one the instance settings took.
+-- tunnel_rows: every row holding a tunnel credential.
 SELECT 'tunnel_rows|' || email || '|' || role || '|' || kinds || '|' || state FROM harness_tunnels;
-SELECT 'tunnel_pick|' || u.email FROM instance_settings i JOIN users u ON u.id = i.tunnel_source_user_id;
 
 -- instance_settings: each group's source account and how many rows were candidates (its marker).
 SELECT 'instance_settings|tunnel|' || coalesce(u.email || '|' || jsonb_array_length(m.after->'tunnelCandidates'), 'none')

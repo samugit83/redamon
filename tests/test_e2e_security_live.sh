@@ -315,6 +315,14 @@ A_USERID="$(seed_user "$A_EMAIL" standard)"
 MARK="GHSA-WGXP-$(openssl rand -hex 6)"
 docker compose exec -T postgres psql -U redamon -d redamon -tA \
   -c "INSERT INTO user_settings (id,user_id,updated_at,tunnels_enabled,ngrok_authtoken,chisel_auth) VALUES ('us_e2e_$(openssl rand -hex 8)','$A_USERID',CURRENT_TIMESTAMP,true,'NGROK-TEST-$MARK','e2e:CHISEL-TEST-$MARK');" >/dev/null
+# The route answers nothing for a person without platform:tunnels (G-03), so A holds the grant as
+# the legacy holder above does: the column, and with the permissions switch on its override.
+docker compose exec -T postgres psql -U redamon -d redamon -tA -c "UPDATE users SET legacy_grants = ARRAY['tunnels'] WHERE id='$A_USERID';" >/dev/null
+if [ "$PERMISSIONS" = on ]; then
+  docker compose exec -T postgres psql -U redamon -d redamon -qtA -c \
+    "INSERT INTO user_permission_overrides (user_id, permission, effect, expires_at, reason, granted_by_id)
+       VALUES ('$A_USERID', 'platform:tunnels', 'grant', (now() AT TIME ZONE 'UTC') + interval '90 days', 'kept from 7.7.x', 'system');" >/dev/null
+fi
 internal_tunnel_config() { # [query] -> HTTP status; the body lands in $BODY, never printed
   docker compose exec -T webapp printenv INTERNAL_API_KEY | tr -d '\r\n' | sed 's/^/header = "X-Internal-Key: /; s/$/"/' \
     | curl -s -o "$BODY" -w '%{http_code}' -K - "http://localhost:3000/api/global/tunnel-config${1:-}"

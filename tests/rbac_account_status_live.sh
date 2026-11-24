@@ -201,7 +201,9 @@ else
   code4="$(login "${SEED[MEMBER_C_EMAIL]}" "$C4")"; code5="$(login "${SEED[MEMBER_C_EMAIL]}" "$C5")"
   ok=0; [ "$code4$code5" = 200200 ] && ok=1; check "the member signs in from two browsers -> $code4 $code5" "$ok"
   code="$(call "$C4" POST /api/auth/sessions/revoke-all '{}')"
-  ok=0; [ "$code" = 200 ] && grep -qiE '^set-cookie: redamon-auth=;.*max-age=0' "$TMP/headers" && ok=1
+  # Cleared means expired: Next drops a zero Max-Age when it re-reads the cookie, so the route's
+  # past Expires (EXPIRED_COOKIE) is what reaches the browser; either one deletes the cookie.
+  ok=0; [ "$code" = 200 ] && grep -qiE '^set-cookie: redamon-auth=;.*(max-age=0|expires=thu, 01 jan 1970)' "$TMP/headers" && ok=1
   check "sign out everywhere from one browser: done, and its cookie cleared -> $code" "$ok"
   code="$(call "$C5" GET /api/auth/me)"; ok=0; [ "$code" = 401 ] && ok=1
   check "the other browser's cookie is refused -> $code" "$ok"
