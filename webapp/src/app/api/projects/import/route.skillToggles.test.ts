@@ -16,6 +16,7 @@ import JSZip from 'jszip'
 const h = vi.hoisted(() => ({
   createProject: vi.fn(),
   createPreset: vi.fn(),
+  presetFindMany: vi.fn(),
   skillFindMany: vi.fn(),
   skills: [] as { id: string; userId: string; name: string; quarantinedAt: Date | null }[],
 }))
@@ -30,7 +31,10 @@ vi.mock('@/lib/prisma', () => ({
     engagementAuthorization: { create: vi.fn() },
     userLlmProvider: { count: async () => 0 },
     userAttackSkill: { findMany: (...a: unknown[]) => h.skillFindMany(...a) },
-    userProjectPreset: { create: (...a: unknown[]) => h.createPreset(...a) },
+    userProjectPreset: {
+      create: (...a: unknown[]) => h.createPreset(...a),
+      findMany: (...a: unknown[]) => h.presetFindMany(...a),
+    },
   },
 }))
 vi.mock('@/app/api/graph/neo4j', () => ({ getGraphSession: vi.fn() }))
@@ -80,6 +84,7 @@ beforeEach(() => {
     h.skills.filter((s) => s.userId === where.userId && where.id.in.includes(s.id)))
   h.createProject.mockResolvedValue({ id: 'new', name: 'imported' })
   h.createPreset.mockResolvedValue({ id: 'preset' })
+  h.presetFindMany.mockResolvedValue([])
 })
 
 describe('the imported project\'s toggles', () => {
@@ -217,5 +222,23 @@ describe('the imported user presets\' toggles', () => {
     expect(skillWarnings((await res.json()).warnings)).toEqual([
       'The preset "Bad"\'s skill toggles were unreadable; the defaults are used.',
     ])
+  })
+})
+
+describe('the imported user presets already in the library', () => {
+  // An export carries the owner's whole library: importing one back into the same account
+  // used to copy every preset again, so a test that round-trips a project doubled it each run.
+  test('a preset the importer already has (same name, description, settings) is not copied again', async () => {
+    h.presetFindMany.mockResolvedValue([{ name: 'Mine', description: '', settings: { katanaDepth: 3 } }])
+    const res = await POST(await bundle({}, [
+      { name: 'Mine', description: '', settings: { katanaDepth: 3 } },
+      { name: 'Mine', description: '', settings: { katanaDepth: 4 } },
+      { name: 'New', description: '', settings: { katanaDepth: 1 } },
+      { name: 'New', description: '', settings: { katanaDepth: 1 } },
+    ]))
+    expect(res.status).toBe(200)
+    const made = h.createPreset.mock.calls.map((c) => [c[0].data.name, c[0].data.settings.katanaDepth])
+    expect(made).toEqual([['Mine', 4], ['New', 1]])
+    expect(h.presetFindMany.mock.calls[0][0].where).toEqual({ userId: 'importer', name: { in: ['Mine', 'New'] } })
   })
 })
