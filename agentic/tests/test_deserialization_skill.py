@@ -443,7 +443,7 @@ class TestSwitchBlocks(unittest.TestCase):
     def test_provider_reaches_the_listener_command(self):
         out = _build(DESERIALIZATION_OOB_PROVIDER='oob.example.test')
         self.assertIn("interactsh-client -server oob.example.test ", out)
-        self.assertIn("\\\\.oob.example.test' /tmp/oast.log", out)
+        self.assertIn("\\\\.oob.example.test' /tmp/oast-RUN.log", out)
         self.assertNotIn("-server oast.fun", out)
 
     def test_an_unsafe_or_empty_provider_falls_back_to_oast_fun(self):
