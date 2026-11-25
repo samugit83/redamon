@@ -600,7 +600,7 @@ model reads.
 
 | Preset kind | Where | Stale-prone because |
 |---|---|---|
-| MCP server templates (33) | `webapp/src/lib/mcp/presets.ts` | third-party URLs, auth rules and quotas ("verified live as of writing"), per-server tool counts in the blurbs; about 20 stdio templates start an unversioned `npx -y` / `uvx` package, two of them `@latest` (`presets.ts:381`, `:724`), in the agent at every server start |
+| MCP server templates (34) | `webapp/src/lib/mcp/presets.ts` | third-party URLs, auth rules and quotas ("verified live as of writing"), per-server tool counts in the blurbs; about 20 stdio templates start an unversioned `npx -y` / `uvx` package, two of them `@latest` (`presets.ts:381`, `:724`), in the agent at every server start |
 | Mute-rule presets | `webapp/src/lib/nodeFilters/presets.ts`, `/api/mute-rule-presets` | name finding kinds from the node-filter catalog |
 | Graph-view presets | `webapp/src/app/graph/components/NodeFilters/Preset*.tsx` | stored filter shapes |
 | User-saved project presets | `UserProjectPreset.settings` (Postgres JSON) | snapshot of every preset column at save time, the whole `agentToolPhaseMap` and `attackSkillConfig` included, which apply replaces (#126); see 4.15 |

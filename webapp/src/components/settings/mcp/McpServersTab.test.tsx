@@ -303,3 +303,22 @@ describe('stdio servers are an administrator\'s (NF-14, OQ-48)', () => {
     expect(((await screen.findByRole('option', { name: 'stdio' })) as HTMLOptionElement).disabled).toBe(false)
   })
 })
+
+describe('Quick add', () => {
+  test('the SecurityContext preset saves from its card alone, with no key and only its read tools', async () => {
+    answers.list = json(200, { servers: [SERVER], stdioAllowed: false })
+    render(<McpServersTab userId="u1" />)
+    await screen.findByText('Probe')
+    const card = screen.getByText('SecurityContext').closest('button') as HTMLButtonElement
+    expect(card.disabled).toBe(false)
+    fireEvent.click(card)
+    fireEvent.click(await screen.findByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/users/u1/mcp', expect.objectContaining({ method: 'POST' })))
+    const [, init] = fetchMock.mock.calls.find(([url, i]) => url === '/api/users/u1/mcp' && i?.method === 'POST')!
+    const sent = JSON.parse(init.body)
+    expect(sent).toMatchObject({ id: 'securitycontext', transport: 'streamable_http', url: 'https://mcp.securitycontext.com' })
+    expect(sent.auth).toBeUndefined()
+    expect(sent.tools.map((t: { name: string }) => t.name)).toEqual(['get_security_context', 'search_security_context'])
+  })
+})
