@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 from collections import OrderedDict
+from functools import reduce
 
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
@@ -22,6 +23,63 @@ from llm_builder import (
 logger = logging.getLogger(__name__)
 
 OLLAMA_REASONING_EFFORTS = frozenset({"low", "medium", "high", "max"})
+
+
+def _stream_usage(reports):
+    """One usage for a streamed response from the usage its chunks reported.
+
+    Running totals (vLLM's continuous usage stats: the same input and a growing
+    output on every chunk) are counted once, by the last; anything else is
+    summed, as LangChain does.
+    """
+    from langchain_core.messages.ai import add_usage
+
+    if not reports:
+        return None
+    running_totals = all(
+        cur["input_tokens"] == prev["input_tokens"] and cur["output_tokens"] >= prev["output_tokens"]
+        for prev, cur in zip(reports, reports[1:])
+    )
+    return reports[-1] if running_totals else reduce(add_usage, reports)
+
+
+class StreamUsageChatOpenAI(ChatOpenAI):
+    """ChatOpenAI for streamed OpenAI-compatible servers (issue #242).
+
+    LangChain sums usage_metadata over the chunks it aggregates, which suits
+    the OpenAI spec (usage once, in the final chunk) but inflates a server that
+    reports running totals on every chunk by roughly the chunk count on input
+    and its square on output. The usage is taken off each chunk and the
+    resolved total put on the last one.
+    """
+
+    @staticmethod
+    def _hold_usage(chunk, reports):
+        if chunk.message.usage_metadata:
+            reports.append(chunk.message.usage_metadata)
+            chunk.message.usage_metadata = None
+        return chunk
+
+    def _stream(self, *args, **kwargs):
+        reports, held = [], None
+        for chunk in super()._stream(*args, **kwargs):
+            if held is not None:
+                yield held
+            held = self._hold_usage(chunk, reports)
+        if held is not None:
+            held.message.usage_metadata = _stream_usage(reports)
+            yield held
+
+    async def _astream(self, *args, **kwargs):
+        reports, held = [], None
+        async for chunk in super()._astream(*args, **kwargs):
+            if held is not None:
+                yield held
+            held = self._hold_usage(chunk, reports)
+        if held is not None:
+            held.message.usage_metadata = _stream_usage(reports)
+            yield held
+
 
 # Anthropic models that reject the `temperature` parameter (HTTP 400
 # "temperature is deprecated for this model"). Anthropic deprecated the param
@@ -329,7 +387,8 @@ def setup_llm(
             # The baseUrl check above judges one DNS answer: these clients follow no
             # redirect and judge the peer of every connection (llm_url_guard).
             kwargs["http_client"], kwargs["http_async_client"] = llm_guarded_clients(verify=bool(ssl_verify))
-            llm = ChatOpenAI(**kwargs)
+            chat_class = StreamUsageChatOpenAI if ptype == "openai_compatible" else ChatOpenAI
+            llm = chat_class(**kwargs)
 
     elif provider == "openai_compat":
         # Legacy: openai_compat/ prefix (env-var based)
@@ -340,7 +399,7 @@ def setup_llm(
             )
         # Operator-set env baseUrl; guard it too for defense in depth (I15).
         validate_llm_base_url(openai_compat_base_url)
-        llm = ChatOpenAI(
+        llm = StreamUsageChatOpenAI(
             model=api_model,
             api_key=openai_compat_api_key or "ollama",
             base_url=openai_compat_base_url,
