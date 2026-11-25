@@ -237,6 +237,14 @@ class TheTerminalProxyMintsAGraphCredential(unittest.TestCase):
         cls.client = TestClient(api_module.app)
 
     def setUp(self):
+        import sandbox_router
+        from one_sandbox import route_to
+
+        # The terminal opens on its person's own sandbox (one_sandbox's handle).
+        sandbox_router._reset()
+        self.addCleanup(sandbox_router._reset)
+        route_to(self, {})
+
         self._e = mock.patch.dict(os.environ, {
             "INTERNAL_API_KEY": MASTER, "AGENT_WS_TICKET_SECRET": SECRET, "MCP_AUTH_TOKEN": "mcp-token-for-test",
         })
@@ -250,14 +258,15 @@ class TheTerminalProxyMintsAGraphCredential(unittest.TestCase):
         with mock.patch.object(self.api.websockets, "connect", connect):
             with self.client.websocket_connect(f"/ws/kali-terminal?ticket={_ticket(**ticket)}") as ws:
                 ws.send_text("hello")
-                self.assertEqual(ws.receive_text(), "hello")
+                self.assertEqual(ws.receive_bytes(), b"hello")
         return connect.call_args
 
     def test_the_proxy_hands_a_graph_credential_bound_to_the_tickets_user_and_project(self):
         before = int(time.time())
         call = self._open(sub="uT", pid="pT")
         headers = call.kwargs["additional_headers"]
-        self.assertEqual(headers["Authorization"], "Bearer mcp-token-for-test")
+        from one_sandbox import TOKEN
+        self.assertEqual(headers["Authorization"], f"Bearer {TOKEN}")
         token = headers["X-Redamon-Run"]
         claims = mc.verify_run_credential(token, "graph")
         self.assertEqual((claims["aud"], claims["ten"], claims["pid"]), ("graph", "uT", "pT"))
@@ -277,7 +286,8 @@ class TheTerminalProxyMintsAGraphCredential(unittest.TestCase):
     def test_no_credential_without_a_master_key_the_terminal_still_opens(self):
         with mock.patch.dict(os.environ, {"INTERNAL_API_KEY": "changeme"}):
             call = self._open()
-        self.assertEqual(call.kwargs["additional_headers"], {"Authorization": "Bearer mcp-token-for-test"})
+        from one_sandbox import TOKEN
+        self.assertEqual(call.kwargs["additional_headers"], {"Authorization": f"Bearer {TOKEN}"})
 
     def test_the_credential_works_while_its_terminal_is_open_and_dies_when_it_closes(self):
         """HD-19: the proxy records the credential's run on its socket; /graph/exec honours
@@ -299,7 +309,7 @@ class TheTerminalProxyMintsAGraphCredential(unittest.TestCase):
                 mock.patch.object(self.api, "_graph_exec_respond", side_effect=respond):
             with self.client.websocket_connect(f"/ws/kali-terminal?ticket={_ticket(sub='uT', pid='pT')}") as ws:
                 ws.send_text("hello")
-                self.assertEqual(ws.receive_text(), "hello")
+                self.assertEqual(ws.receive_bytes(), b"hello")
                 token = connect.call_args.kwargs["additional_headers"]["X-Redamon-Run"]
                 run = mc.verify_run_credential(token, "graph")["run"]
                 [entry] = [e for e in self.api.PROXIED_SOCKETS.matching(kinds=["kali-terminal"], user_id="uT")]
@@ -323,7 +333,7 @@ class TheTerminalProxyMintsAGraphCredential(unittest.TestCase):
                 mock.patch.object(self.api.websockets, "connect", connect):
             with self.client.websocket_connect(f"/ws/kali-terminal?ticket={_ticket(sub='uN', pid='pN')}") as ws:
                 ws.send_text("hello")
-                self.assertEqual(ws.receive_text(), "hello")
+                self.assertEqual(ws.receive_bytes(), b"hello")
                 [entry] = self.api.PROXIED_SOCKETS.matching(kinds=["kali-terminal"], user_id="uN")
                 self.assertIsNone(entry.run)
 

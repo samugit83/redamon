@@ -39,6 +39,38 @@ describe('mintWsTicket', () => {
     expect(out.ok).toBe(false)
     if (!out.ok) expect(out.error).toMatchObject({ code: 'network_error', status: 0 })
   })
+
+  test.each([
+    ['lost on the way (TypeError)', new TypeError('network error'), 'network_error'],
+    ['cancelled (AbortError)', new DOMException('The operation was aborted.', 'AbortError'), 'aborted'],
+  ])('a 200 whose body was %s is no answer, never "no ticket secret"', async (_why, failure, code) => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => { throw failure } }) as unknown as Response))
+    const out = await mintWsTicket('p1', 's1', 'agent')
+    expect(out.ok).toBe(false)
+    if (!out.ok) expect(out.error).toMatchObject({ code, status: 0 })
+  })
+
+  test('a 2xx body that is not JSON (a proxy or portal page) is an answered failure, invalid_json', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>Sign in to the network</html>', { status: 200 })))
+    const out = await mintWsTicket('p1', 's1', 'agent')
+    expect(out.ok).toBe(false)
+    if (!out.ok) {
+      expect(out.error).toMatchObject({ code: 'invalid_json', status: 200 })
+      expect(out.error.message).toBe('Could not get a ticket for the agent connection (invalid_json · HTTP 200)')
+    }
+  })
+
+  test.each([
+    ['no ticket field', {}],
+    ['an empty ticket', { ticket: '' }],
+    ['a ticket that is not a string', { ticket: 7 }],
+    ['a JSON null', null],
+  ])('a 2xx JSON body with %s is an answered failure, never ticketless', async (_what, body) => {
+    vi.stubGlobal('fetch', vi.fn(async () => json(200, body)))
+    const out = await mintWsTicket('p1', 's1', 'agent')
+    expect(out.ok).toBe(false)
+    if (!out.ok) expect(out.error).toMatchObject({ code: 'unexpected_answer', status: 200 })
+  })
 })
 
 describe('isWsSessionId: the one rule for a ticket\'s session id (the mint and the agent\'s writer check)', () => {

@@ -10,6 +10,7 @@ The Recon Orchestrator acts as a bridge between the webapp and the recon Docker 
 - **Real-time Log Streaming** - SSE-based log streaming to the frontend
 - **Phase Detection** - The pipeline's own group headers set each scan's phase (see Phase Detection)
 - **Status Tracking** - Track running/completed/error states per project
+- **Kali Sandboxes** - Start, lease, stop and adopt one Kali sandbox container per person (see [Kali Sandbox Endpoints](#kali-sandbox-endpoints))
 
 ## Architecture
 
@@ -292,6 +293,53 @@ Server-Sent Events stream of TruffleHog log lines. Event format follows the same
 
 ---
 
+## Kali Sandbox Endpoints
+
+The orchestrator starts one Kali sandbox container per person (and per view: `own`,
+or `act_as` for an admin acting as that person) on first need, and stops it when
+unused. `recon_orchestrator/sandbox_manager.py` holds the lifecycle (one lock per
+person, leases, the idle loop every 60 s, adoption of running sandboxes at start),
+`recon_orchestrator/sandbox_templates.py` the read-only nuclei templates volume and
+its daily refresher, and `recon_orchestrator/sandbox_contract.py` every name, label,
+mount, limit and timing. The webapp's gateway (`webapp/src/lib/sandbox/gateway.ts`)
+is the only caller: it decides who may have a sandbox and with which project folders,
+and the orchestrator enforces the list it is given. The full design is in
+[README.KALI_SANDBOX.md](README.KALI_SANDBOX.md).
+
+Every route needs `X-Orchestrator-Key`, like the others. Bodies and errors are JSON;
+an error is FastAPI's `{"detail": {"code": ..., "detail": ...}}` with a contract code.
+
+| Route | Does |
+|---|---|
+| `POST /sandboxes/ensure` | Return the person's running sandbox for a view, or start it (200 with its address and tokens; 202 `starting` when the caller does not wait). Admitted by the memory governor: a refusal is 409 `sandbox_ram` or `sandbox_hard` with the governor's figures |
+| `POST /sandboxes/{user_id}/leases`, `DELETE /sandboxes/{user_id}/leases/{lease_id}` | Take or renew a 90 s lease on an instance, or release it |
+| `POST /sandboxes/{user_id}/reconcile` | Stop every instance whose projects are no longer allowed (after an access loss) |
+| `POST /sandboxes/{user_id}/stop`, `POST /sandboxes/stop-project`, `POST /sandboxes/stop-all` | Stop a person's sandboxes, every sandbox mounting a project (before its deletion), or all of them (emergency stop) |
+| `GET /sandboxes/{user_id}` | That person's instances: state, stop time and reason, reverse-shell port and its state (`assigned`, `no_pool`, `pool_full`), never a token |
+| `GET /sandboxes` | Every live sandbox with its address, token and reverse-shell port, for the agent's session listings and prompts; the admin Operations view gets it from the webapp with tokens and addresses removed |
+
+The routes answer 503 until the manager has adopted the sandboxes already running
+(an orchestrator restart keeps them), and a `/sandboxes/...` path that names no
+route is a 404 with a contract code. `GET /system/stats` reports the sandboxes'
+memory in its `mem` block (`active_sandboxes`, `sandbox_committed`,
+`sandbox_envelope`, in bytes for the last two); `active_scans` counts scans only.
+
+The sandbox settings (`KALI_SANDBOX_IDLE_MINUTES`, `KALI_SANDBOX_MAX_CONCURRENT`,
+`KALI_SANDBOX_PORT_POOL`, `KALI_SANDBOX_PORT_HOLD_HOURS`) reach the orchestrator
+only through its compose `environment:` block, and so does `TERMINAL_MAX_SESSIONS`, which it copies into
+every sandbox. The four mounts the manager needs (`./agentic/agent-workspace` at
+`/app/agent-workspace`, `./mcp/output` at `/app/mcp-output`, `./mcp/servers` at
+`/app/mcp-servers` and `./graph_db` at `/app/graph_db`, both read-only;
+`COMPOSE_MOUNTS` in `recon_orchestrator/sandbox_manager.py`) are in
+`docker-compose.yml`; without any one of them every
+start fails (503 `sandbox_start_failed`) and the orchestrator's log names the
+missing mount (`./redamon.sh up` recreates the service with them). Besides each
+person's `users/<key>` folder, the output mount holds what the manager keeps for
+itself: the pool port holds (`.sandbox-port-holds.json` and its last good copy,
+which outlive a restart) and each view's copy of its person's custom nuclei
+templates (`templates/<key>`), both gitignored; a sandbox mounts only its own
+view's copy, read-only, and never the holds.
+
 ## Phase Detection
 
 A full scan's progress label comes from the pipeline's own group headers,
@@ -374,7 +422,8 @@ networks:
 ```
 
 > **Security note.** The orchestrator holds the Docker socket and is the privileged
-> component of the system. It is network-isolated from the worker (`kali-sandbox`):
+> component of the system. It is network-isolated from the Kali sandboxes it starts
+> (each on its own `redamon-sbx-<key>` network, which the orchestrator never joins):
 > it sits on `redamon-orchestrator-net` (shared only with the webapp and the Ollama
 > judge) rather than the shared `redamon` network, and its host port is bound to
 > `127.0.0.1`, so a compromised worker cannot reach the orchestration API. On top of

@@ -56,8 +56,9 @@ curl -v "https://gpigs.devergolabs.com/admin/"
 ## Metasploit (via RedAmon Kali Container)
 
 ```bash
-# Enter Kali container with Metasploit
-docker exec -it redamon-kali msfconsole
+# Enter your own Kali sandbox with Metasploit (or open the Kali terminal in the Red Zone);
+# list the sandboxes with: docker ps --filter label=redamon.sandbox=1
+docker exec -it redamon-kali-<key>-<instance> msfconsole
 
 # Search for CVE-2017-3167 module
 msf6 > search CVE-2017-3167

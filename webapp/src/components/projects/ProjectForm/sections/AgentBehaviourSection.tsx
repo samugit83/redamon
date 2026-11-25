@@ -46,6 +46,23 @@ const FORBIDDEN_TOOLS = field('roeForbiddenTools')?.values ?? []
  */
 export const FIRETEAM_TIMEOUT_SEC_DEFAULT = 7200
 
+// Payload Direction (FU-26). Each person's reverse shells land in their own Kali sandbox: with no
+// tunnel, only a port of the operator's pool reaches it from outside, and that port is the LPORT.
+export const OWN_TUNNEL_NEEDED =
+  'Needs your own tunnel turned on in Global Settings → Tunneling, with your own credentials, as well as this project setting.'
+export const NO_TUNNEL_HINT =
+  'No tunnel: a reverse shell reaches your Kali sandbox only through a port of the port pool your operator ' +
+  'configured (KALI_SANDBOX_PORT_POOL), and the agent then uses your sandbox\'s own port as LPORT. Without a ' +
+  'pool, use a tunnel or a bind payload.'
+export const LHOST_HINT =
+  'The address of the RedAmon host that the target can reach (its LAN or public IP). Never your Kali ' +
+  'sandbox\'s own 10.214.x address: no target reaches it. Leave empty for bind mode.'
+// The project's LPORT is never the agent's LPORT (D-F): without a pool nothing of a sandbox is
+// published, so the only use left is marking a bind-only project (a bind port, no LHOST or LPORT).
+export const LPORT_HINT =
+  'Not used as LPORT: with a port pool the agent uses your sandbox\'s own port; with a tunnel, the ' +
+  'tunnel\'s; with neither, only bind payloads work. Leave it empty.'
+
 interface AgentBehaviourSectionProps {
   data: FormData
   updateField: <K extends keyof FormData>(field: K, value: FormData[K]) => void
@@ -56,6 +73,9 @@ interface AgentBehaviourSectionProps {
 export function AgentBehaviourSection({ data, updateField, detectedHostIp }: AgentBehaviourSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
   const { userId } = useProject()
+  // A cleared number input holds '' in the form until blur clamps it, so typing "15" is not
+  // clamped at "1". The form state admits that draft; the Project column types do not.
+  const updateNumberDraft = updateField as <K extends keyof FormData>(field: K, value: FormData[K] | '') => void
 
   const toggleForbiddenTool = (tool: string) => {
     const tools = data.roeForbiddenTools || []
@@ -172,7 +192,7 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
           <div className={styles.subSection}>
             <h3 className={styles.subSectionTitle}>Payload Direction</h3>
             <p className={styles.sectionDescription}>
-              <strong>Reverse</strong>: target connects back to you (LHOST + LPORT). <strong>Bind</strong>: you connect to the target (leave LPORT empty).
+              <strong>Reverse</strong>: the target connects back to your own Kali sandbox (LHOST + LPORT). <strong>Bind</strong>: your sandbox connects to the target (leave LPORT empty).
             </p>
             <div className={styles.fieldGroup}>
               <label className={styles.fieldLabel}>Tunnel Provider</label>
@@ -185,14 +205,14 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                   updateField('agentChiselTunnelEnabled', val === 'chisel');
                 }}
               >
-                <option value="none">None (manual LHOST/LPORT)</option>
-                <option value="ngrok">ngrok (single port - free, no VPS needed)</option>
-                <option value="chisel">chisel (multi-port - requires VPS)</option>
+                <option value="none">None (port pool or bind)</option>
+                <option value="ngrok">ngrok (port 4444 - free, no VPS needed)</option>
+                <option value="chisel">chisel (port 4444 - requires a VPS)</option>
               </select>
               <span className={styles.fieldHint}>
-                {data.agentNgrokTunnelEnabled && 'Configure ngrok auth token in Global Settings → Tunneling. Tunnels port 4444 only (handler). Stageless payloads required. Web delivery / HTA not supported.'}
-                {data.agentChiselTunnelEnabled && 'Configure chisel server URL in Global Settings → Tunneling. Requires a chisel server running on your VPS. Tunnels ports 4444 (handler) + 8080 (web delivery). Stageless payloads required.'}
-                {!data.agentNgrokTunnelEnabled && !data.agentChiselTunnelEnabled && 'No tunnel - configure LHOST/LPORT manually below.'}
+                {data.agentNgrokTunnelEnabled && `${OWN_TUNNEL_NEEDED} Tunnels port 4444 of your sandbox only (the handler). Stageless payloads required. Web delivery / HTA not supported.`}
+                {data.agentChiselTunnelEnabled && `${OWN_TUNNEL_NEEDED} Requires a chisel server running on your VPS. Tunnels port 4444 of your sandbox only (the handler): no web delivery or HTA. Stageless payloads required.`}
+                {!data.agentNgrokTunnelEnabled && !data.agentChiselTunnelEnabled && NO_TUNNEL_HINT}
               </span>
             </div>
             {(data.agentNgrokTunnelEnabled || data.agentChiselTunnelEnabled) ? (
@@ -201,7 +221,7 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                 <span>
                   <strong>No manual configuration needed.</strong>{' '}
                   {data.agentNgrokTunnelEnabled && 'LHOST and LPORT are auto-detected from the ngrok tunnel.'}
-                  {data.agentChiselTunnelEnabled && 'LHOST is derived from the VPS hostname. Both handler (4444) and web delivery (8080) ports are tunneled.'}
+                  {data.agentChiselTunnelEnabled && 'LHOST is derived from the VPS hostname. Only the handler port (4444) is tunneled.'}
                 </span>
               </div>
             ) : (
@@ -215,7 +235,7 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                     onChange={(e) => updateField('agentLhost', e.target.value)}
                     placeholder="e.g. 192.168.1.50"
                   />
-                  <span className={styles.fieldHint}>Your host machine&apos;s LAN IP that the target can reach (not the container&apos;s 172.x address). Leave empty for bind mode.</span>
+                  <span className={styles.fieldHint}>{LHOST_HINT}</span>
                   {detectedHostIp && REGEX_IPV4.test(detectedHostIp) && detectedHostIp !== data.agentLhost && (
                     <span className={styles.suggestionRow}>
                       Detected (default route): {detectedHostIp}
@@ -240,7 +260,7 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                     max={65535}
                     placeholder="Empty = bind mode"
                   />
-                  <span className={styles.fieldHint}>Leave empty for bind mode</span>
+                  <span className={styles.fieldHint}>{LPORT_HINT}</span>
                 </div>
                 <div className={styles.fieldGroup}>
                   <label className={styles.fieldLabel}>Bind Port on Target</label>
@@ -271,13 +291,13 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
 
           {/* Fireteam (multi-agent) */}
           {(() => {
-            const fireteamEnabled = (data as any).fireteamEnabled ?? true
-            const maxConcurrent = (data as any).fireteamMaxConcurrent ?? 5
-            const maxMembers = (data as any).fireteamMaxMembers ?? 5
-            const memberMaxIter = (data as any).fireteamMemberMaxIterations ?? 10
-            const timeoutSec = (data as any).fireteamTimeoutSec ?? FIRETEAM_TIMEOUT_SEC_DEFAULT
-            const propensity = (data as any).fireteamPropensity ?? 3
-            const allowedPhasesRaw = (data as any).fireteamAllowedPhases ?? ['informational', 'exploitation', 'post_exploitation']
+            const fireteamEnabled = data.fireteamEnabled ?? true
+            const maxConcurrent = data.fireteamMaxConcurrent ?? 5
+            const maxMembers = data.fireteamMaxMembers ?? 5
+            const memberMaxIter = data.fireteamMemberMaxIterations ?? 10
+            const timeoutSec = data.fireteamTimeoutSec ?? FIRETEAM_TIMEOUT_SEC_DEFAULT
+            const propensity = data.fireteamPropensity ?? 3
+            const allowedPhasesRaw = data.fireteamAllowedPhases ?? ['informational', 'exploitation', 'post_exploitation']
             const allowedPhases: string[] = Array.isArray(allowedPhasesRaw)
               ? allowedPhasesRaw
               : String(allowedPhasesRaw || '').split(',').map(s => s.trim()).filter(Boolean)
@@ -286,7 +306,7 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                 ? allowedPhases.filter(p => p !== phase)
                 : [...allowedPhases, phase]
               if (next.length === 0) return // at least one phase required
-              updateField('fireteamAllowedPhases' as any, next as any)
+              updateField('fireteamAllowedPhases', next)
             }
             const crossError =
               fireteamEnabled && maxConcurrent > maxMembers
@@ -305,7 +325,7 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                   </div>
                   <Toggle
                     checked={fireteamEnabled}
-                    onChange={(v) => updateField('fireteamEnabled' as any, v as any)}
+                    onChange={(v) => updateField('fireteamEnabled', v)}
                     aria-label="Enable Fireteam"
                   />
                 </div>
@@ -326,12 +346,12 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                             // multi-digit numbers - e.g. typing `15` clamps `1` to `2`
                             // before the user can finish.
                             const raw = e.target.value
-                            updateField('fireteamMaxConcurrent' as any, (raw === '' ? '' : parseInt(raw)) as any)
+                            updateNumberDraft('fireteamMaxConcurrent', raw === '' ? '' : parseInt(raw))
                           }}
                           onBlur={(e) => {
                             const n = parseInt(e.target.value)
                             const v = Number.isFinite(n) ? Math.max(1, Math.min(8, n)) : 5
-                            updateField('fireteamMaxConcurrent' as any, v as any)
+                            updateField('fireteamMaxConcurrent', v)
                           }}
                         />
                         <span className={styles.fieldHint}>1-8. Upper limit on members in-flight at once.</span>
@@ -346,12 +366,12 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                           max={8}
                           onChange={(e) => {
                             const raw = e.target.value
-                            updateField('fireteamMaxMembers' as any, (raw === '' ? '' : parseInt(raw)) as any)
+                            updateNumberDraft('fireteamMaxMembers', raw === '' ? '' : parseInt(raw))
                           }}
                           onBlur={(e) => {
                             const n = parseInt(e.target.value)
                             const v = Number.isFinite(n) ? Math.max(2, Math.min(8, n)) : 5
-                            updateField('fireteamMaxMembers' as any, v as any)
+                            updateField('fireteamMaxMembers', v)
                           }}
                         />
                         <span className={styles.fieldHint}>2-8. Hard cap on fireteam size the LLM can request.</span>
@@ -368,15 +388,15 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                           max={50}
                           onChange={(e) => {
                             const raw = e.target.value
-                            updateField('fireteamMemberMaxIterations' as any, (raw === '' ? '' : parseInt(raw)) as any)
+                            updateNumberDraft('fireteamMemberMaxIterations', raw === '' ? '' : parseInt(raw))
                           }}
                           onBlur={(e) => {
                             const n = parseInt(e.target.value)
                             const v = Number.isFinite(n) ? Math.max(5, Math.min(50, n)) : 10
-                            updateField('fireteamMemberMaxIterations' as any, v as any)
+                            updateField('fireteamMemberMaxIterations', v)
                           }}
                         />
-                        <span className={styles.fieldHint}>5-50. Each member's ReAct budget before it exits.</span>
+                        <span className={styles.fieldHint}>5-50. Each member&apos;s ReAct budget before it exits.</span>
                       </div>
                       <div className={styles.fieldGroup}>
                         <label className={styles.fieldLabel}>Wave timeout (seconds)</label>
@@ -388,12 +408,12 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                           max={7200}
                           onChange={(e) => {
                             const raw = e.target.value
-                            updateField('fireteamTimeoutSec' as any, (raw === '' ? '' : parseInt(raw)) as any)
+                            updateNumberDraft('fireteamTimeoutSec', raw === '' ? '' : parseInt(raw))
                           }}
                           onBlur={(e) => {
                             const n = parseInt(e.target.value)
                             const v = Number.isFinite(n) ? Math.max(60, Math.min(7200, n)) : FIRETEAM_TIMEOUT_SEC_DEFAULT
-                            updateField('fireteamTimeoutSec' as any, v as any)
+                            updateField('fireteamTimeoutSec', v)
                           }}
                         />
                         <span className={styles.fieldHint}>60-7200. Hard wall-clock ceiling for the whole fireteam.</span>
@@ -430,7 +450,7 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                         value={propensity}
                         onChange={(e) => {
                           const v = Math.max(1, Math.min(5, parseInt(e.target.value) || 3))
-                          updateField('fireteamPropensity' as any, v as any)
+                          updateField('fireteamPropensity', v)
                         }}
                         style={{ width: '100%' }}
                       />
@@ -457,17 +477,17 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
 
           {/* Exploit-Path Search (LATS) */}
           {(() => {
-            const latsEnabled = (data as any).agentLatsEnabled ?? false
-            const shadowMode = (data as any).agentLatsShadowMode ?? false
-            const phaseExpl = (data as any).agentLatsPhaseExploitation ?? true
-            const phasePostExpl = (data as any).agentLatsPhasePostExpl ?? false
-            const maxRollouts = (data as any).agentLatsMaxRollouts ?? 50
-            const maxDepth = (data as any).agentLatsMaxDepth ?? 6
-            const branching = (data as any).agentLatsBranching ?? 6
-            const minHypotheses = (data as any).agentLatsMinHypotheses ?? 2
-            const maxTreeNodes = (data as any).agentLatsMaxTreeNodes ?? 120
-            const uctC = (data as any).agentLatsUctC ?? 1.4
-            const pruneFloor = (data as any).agentLatsPruneFloor ?? 0.15
+            const latsEnabled = data.agentLatsEnabled ?? false
+            const shadowMode = data.agentLatsShadowMode ?? false
+            const phaseExpl = data.agentLatsPhaseExploitation ?? true
+            const phasePostExpl = data.agentLatsPhasePostExpl ?? false
+            const maxRollouts = data.agentLatsMaxRollouts ?? 50
+            const maxDepth = data.agentLatsMaxDepth ?? 6
+            const branching = data.agentLatsBranching ?? 6
+            const minHypotheses = data.agentLatsMinHypotheses ?? 2
+            const maxTreeNodes = data.agentLatsMaxTreeNodes ?? 120
+            const uctC = data.agentLatsUctC ?? 1.4
+            const pruneFloor = data.agentLatsPruneFloor ?? 0.15
             const noPhase = latsEnabled && !phaseExpl && !phasePostExpl
             return (
               <div className={styles.subSection}>
@@ -486,7 +506,7 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                   </div>
                   <Toggle
                     checked={latsEnabled}
-                    onChange={(v) => updateField('agentLatsEnabled' as any, v as any)}
+                    onChange={(v) => updateField('agentLatsEnabled', v)}
                     aria-label="Enable Exploit-Path Search"
                   />
                 </div>
@@ -507,7 +527,7 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                       </div>
                       <Toggle
                         checked={shadowMode}
-                        onChange={(v) => updateField('agentLatsShadowMode' as any, v as any)}
+                        onChange={(v) => updateField('agentLatsShadowMode', v)}
                         aria-label="Shadow mode (observe only)"
                       />
                     </div>
@@ -519,7 +539,7 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                             type="checkbox"
                             className="checkbox"
                             checked={phaseExpl}
-                            onChange={(e) => updateField('agentLatsPhaseExploitation' as any, e.target.checked as any)}
+                            onChange={(e) => updateField('agentLatsPhaseExploitation', e.target.checked)}
                           />
                           exploitation
                         </label>
@@ -528,7 +548,7 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                             type="checkbox"
                             className="checkbox"
                             checked={phasePostExpl}
-                            onChange={(e) => updateField('agentLatsPhasePostExpl' as any, e.target.checked as any)}
+                            onChange={(e) => updateField('agentLatsPhasePostExpl', e.target.checked)}
                           />
                           <span>post-exploitation <em>(experimental)</em></span>
                         </label>
@@ -546,12 +566,12 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                           max={300}
                           onChange={(e) => {
                             const raw = e.target.value
-                            updateField('agentLatsMaxRollouts' as any, (raw === '' ? '' : parseInt(raw)) as any)
+                            updateNumberDraft('agentLatsMaxRollouts', raw === '' ? '' : parseInt(raw))
                           }}
                           onBlur={(e) => {
                             const n = parseInt(e.target.value)
                             const v = Number.isFinite(n) ? Math.max(4, Math.min(300, n)) : 50
-                            updateField('agentLatsMaxRollouts' as any, v as any)
+                            updateField('agentLatsMaxRollouts', v)
                           }}
                         />
                         <span className={styles.fieldHint}>
@@ -568,12 +588,12 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                           max={10}
                           onChange={(e) => {
                             const raw = e.target.value
-                            updateField('agentLatsMaxDepth' as any, (raw === '' ? '' : parseInt(raw)) as any)
+                            updateNumberDraft('agentLatsMaxDepth', raw === '' ? '' : parseInt(raw))
                           }}
                           onBlur={(e) => {
                             const n = parseInt(e.target.value)
                             const v = Number.isFinite(n) ? Math.max(2, Math.min(10, n)) : 6
-                            updateField('agentLatsMaxDepth' as any, v as any)
+                            updateField('agentLatsMaxDepth', v)
                           }}
                         />
                         <span className={styles.fieldHint}>2-10. Longest attack chain from the entry point (a ceiling, not the typical depth).</span>
@@ -590,12 +610,12 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                           max={10}
                           onChange={(e) => {
                             const raw = e.target.value
-                            updateField('agentLatsBranching' as any, (raw === '' ? '' : parseInt(raw)) as any)
+                            updateNumberDraft('agentLatsBranching', raw === '' ? '' : parseInt(raw))
                           }}
                           onBlur={(e) => {
                             const n = parseInt(e.target.value)
                             const v = Number.isFinite(n) ? Math.max(2, Math.min(10, n)) : 6
-                            updateField('agentLatsBranching' as any, v as any)
+                            updateField('agentLatsBranching', v)
                           }}
                         />
                         <span className={styles.fieldHint}>2-10. Candidate probes weighed at each node.</span>
@@ -610,12 +630,12 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                           max={4}
                           onChange={(e) => {
                             const raw = e.target.value
-                            updateField('agentLatsMinHypotheses' as any, (raw === '' ? '' : parseInt(raw)) as any)
+                            updateNumberDraft('agentLatsMinHypotheses', raw === '' ? '' : parseInt(raw))
                           }}
                           onBlur={(e) => {
                             const n = parseInt(e.target.value)
                             const v = Number.isFinite(n) ? Math.max(2, Math.min(4, n)) : 2
-                            updateField('agentLatsMinHypotheses' as any, v as any)
+                            updateField('agentLatsMinHypotheses', v)
                           }}
                         />
                         <span className={styles.fieldHint}>2-4. Competing hypotheses needed before the search turns on. Higher = more selective.</span>
@@ -632,7 +652,7 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                             max={2.5}
                             step={0.1}
                             value={uctC}
-                            onChange={(e) => updateField('agentLatsUctC' as any, parseFloat(e.target.value) as any)}
+                            onChange={(e) => updateField('agentLatsUctC', parseFloat(e.target.value))}
                             style={{ width: '100%' }}
                           />
                           <span className={styles.fieldHint}>Low = laser-focus the single best line. High = also develop secondary footholds.</span>
@@ -645,7 +665,7 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                             max={0.5}
                             step={0.05}
                             value={pruneFloor}
-                            onChange={(e) => updateField('agentLatsPruneFloor' as any, parseFloat(e.target.value) as any)}
+                            onChange={(e) => updateField('agentLatsPruneFloor', parseFloat(e.target.value))}
                             style={{ width: '100%' }}
                           />
                           <span className={styles.fieldHint}>Value below which a branch is abandoned. Higher = give up on weak branches sooner.</span>
@@ -661,12 +681,12 @@ export function AgentBehaviourSection({ data, updateField, detectedHostIp }: Age
                               max={1000}
                               onChange={(e) => {
                                 const raw = e.target.value
-                                updateField('agentLatsMaxTreeNodes' as any, (raw === '' ? '' : parseInt(raw)) as any)
+                                updateNumberDraft('agentLatsMaxTreeNodes', raw === '' ? '' : parseInt(raw))
                               }}
                               onBlur={(e) => {
                                 const n = parseInt(e.target.value)
                                 const v = Number.isFinite(n) ? Math.max(10, Math.min(1000, n)) : 120
-                                updateField('agentLatsMaxTreeNodes' as any, v as any)
+                                updateField('agentLatsMaxTreeNodes', v)
                               }}
                             />
                             <span className={styles.fieldHint}>10-1000. Hard tree-size cap.</span>

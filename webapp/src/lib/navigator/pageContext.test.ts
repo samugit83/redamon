@@ -14,6 +14,8 @@ describe('pageContextOf', () => {
     expect(pageContextOf({ path: '/graph' })).toEqual({ path: '/graph', wiki_hint: PAGE_WIKI.graph.page })
     expect(pageContextOf({ path: '/settings' })).toEqual({ path: '/settings', wiki_hint: PAGE_WIKI.settings.page })
     expect(pageContextOf({ path: '/' })).toEqual({ path: '/', wiki_hint: null })
+    // The IAM Console's screens are documented on the Identity & Access Management page.
+    expect(pageContextOf({ path: '/admin/instance' })).toEqual({ path: '/admin/instance', wiki_hint: 'Identity-and-Access-Management' })
   })
 
   test('the query string and the fragment are dropped', () => {

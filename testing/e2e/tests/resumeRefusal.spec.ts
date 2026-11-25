@@ -16,6 +16,8 @@ import { signIn } from './auth'
 
 const USER = process.env.REDAMON_USER || 'cmrzlj3xk0000ob3vo67o3igg'
 const REFUSAL = 'RoE time window: current time 18:05 UTC is outside allowed window (09:00-18:00)'
+// graph/page.tsx: readApiError adds the HTTP status to the orchestrator's reason.
+const TOAST = `Resume failed: ${REFUSAL} (HTTP 403). The scan stays paused.`
 
 test.beforeEach(async ({ context, baseURL }) => {
   await signIn(context, USER, baseURL!)
@@ -49,7 +51,7 @@ async function pausedGraph(page: Page) {
 test('a refused resume names the window and says the scan stays paused', async ({ page }) => {
   const resumes = await pausedGraph(page)
   await page.getByTitle('Resume Recon').click()
-  await expect(page.getByText(`Resume refused: ${REFUSAL}. The scan stays paused.`)).toBeVisible()
+  await expect(page.getByText(TOAST)).toBeVisible()
   expect(resumes).toEqual(['POST'])
   await expect(page.getByTitle('Resume Recon')).toBeVisible()
 })
@@ -58,7 +60,7 @@ test('narrow screen: the refusal is readable at 390 px', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   const resumes = await pausedGraph(page)
   await page.getByTitle('Resume Recon').first().click()
-  const toast = page.getByText(`Resume refused: ${REFUSAL}. The scan stays paused.`)
+  const toast = page.getByText(TOAST)
   await expect(toast).toBeVisible()
   expect(resumes).toEqual(['POST'])
   // The toast slides in from the right, so it is measured once it has settled.

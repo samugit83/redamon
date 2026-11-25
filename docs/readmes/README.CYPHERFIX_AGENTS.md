@@ -332,9 +332,19 @@ through the fixed queries in `cypherfix_triage/fact_queries.py`, and the review
 and prose calls bind nothing at all, so an injected instruction has nothing to
 reach for.
 
-The one outbound call triage can make is `cve_intel` on the kali-sandbox MCP
+The one outbound call triage can make is `cve_intel` on a Kali sandbox's MCP
 server, checked against a one-name allowlist. Only CVE ids leave the machine,
 regex-validated in code, and only numbers and booleans are kept from the reply.
+
+That call runs in the Kali sandbox of the run's person (who started the run, or,
+when an admin acting as a member started it, that member's `act_as` sandbox),
+under one `triage` lease for the refresh (`_sandbox` in
+`agentic/cypherfix_triage/intel.py`), never in the project owner's or anyone
+else's. When no sandbox can be had (not enough memory, the sandbox limit, or an
+account that holds none of `agent:chat`, `agent:kali_exec` and
+`platform:kali_terminal`, such as one with the built-in Automation set and
+`triage:run` alone), the refresh is skipped and the ranking uses the class
+priors without CVE intel: an accepted limit that fails closed.
 
 ### Score model v3
 

@@ -46,14 +46,14 @@ export function QuestionDialog({
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
-              code({ className, children, ...props }: any) {
+              code({ className, children, ...props }) {
                 const match = /language-(\w+)/.exec(className || '')
                 const language = match ? match[1] : ''
                 const isInline = !className
 
                 return !isInline && language ? (
                   <SyntaxHighlighter
-                    style={vscDarkPlus as any}
+                    style={vscDarkPlus}
                     language={language}
                     PreTag="div"
                   >

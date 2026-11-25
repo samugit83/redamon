@@ -5,7 +5,10 @@ import { invalidatePrincipal } from '@/lib/authz/principal'
 import { rbacFlags } from '@/lib/authz/flags'
 import { writeAudit } from '@/lib/audit'
 import { getClientMeta } from '@/lib/requestMeta'
-import { checkLockout, recordFailure, clearAttempts } from '@/lib/loginThrottle'
+import {
+  checkLockout, recordFailure, clearAttempts, checkDeviceLockout, recordDeviceFailure, clearDeviceAttempts,
+} from '@/lib/loginThrottle'
+import { knownLoginDevice, rememberLoginDevice } from '@/lib/loginDevice'
 import { setLoginCookie } from '@/lib/loginCookie'
 import { issueLoginToken } from '@/lib/authz/sessionLifetime'
 import { flagShortPasswordAtSignIn } from '@/lib/authz/mustChange'
@@ -31,11 +34,15 @@ export async function POST(request: NextRequest) {
     // would let one client lock out others and let an attacker rotate XFF to
     // evade. Per-account lockout still protects every account either way.
     const lockIp = meta.ipTrusted ? meta.ip : null
-    const lock = checkLockout(email, lockIp)
+    // D6: a browser that signed in to this e-mail before is counted on its own key, so the
+    // failures anyone else sends for the e-mail cannot keep it out (lib/loginDevice.ts).
+    const knownDevice = knownLoginDevice(request, email)
+    const deviceAudit = knownDevice ? { knownDevice: true } : {}
+    const lock = knownDevice ? checkDeviceLockout(knownDevice) : checkLockout(email, lockIp)
     if (lock.locked) {
       await writeAudit({
         action: 'auth.login.lockout', targetType: 'user',
-        after: { email, ip: meta.ip, ipTrusted: meta.ipTrusted, retryAfter: lock.retryAfterSeconds },
+        after: { email, ip: meta.ip, ipTrusted: meta.ipTrusted, retryAfter: lock.retryAfterSeconds, ...deviceAudit },
       })
       return NextResponse.json(
         { error: 'Too many failed attempts. Try again later.' },
@@ -58,11 +65,12 @@ export async function POST(request: NextRequest) {
     if (!user || !user.password || !valid || (identity && user.status !== 'active')) {
       // R5: log the failure. Record ONLY the attempted email + source IP; never
       // the password or hash. S11: increment the lockout counter.
-      recordFailure(email, lockIp)
+      if (knownDevice) recordDeviceFailure(knownDevice)
+      else recordFailure(email, lockIp)
       await writeAudit({
         action: disabled ? 'auth.login.disabled' : 'auth.login.failure', targetType: 'user',
         ...(user?.password || disabled ? { targetId: user!.id } : {}),
-        after: { email, ip: meta.ip, ipTrusted: meta.ipTrusted, userAgent: meta.userAgent },
+        after: { email, ip: meta.ip, ipTrusted: meta.ipTrusted, userAgent: meta.userAgent, ...deviceAudit },
       })
       return NextResponse.json(
         { error: 'Invalid email or password' },
@@ -70,11 +78,13 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // S11: successful login clears the failure counters for this email + IP.
-    clearAttempts(email, lockIp)
+    // S11: successful login clears the failure counters for this email + IP. A known device
+    // clears only its own: the e-mail's counter keeps counting what others send.
+    if (knownDevice) clearDeviceAttempts(knownDevice)
+    else clearAttempts(email, lockIp)
     await writeAudit({
       actorId: user.id, action: 'auth.login.success', targetType: 'user', targetId: user.id,
-      after: { ip: meta.ip, ipTrusted: meta.ipTrusted, userAgent: meta.userAgent },
+      after: { ip: meta.ip, ipTrusted: meta.ipTrusted, userAgent: meta.userAgent, ...deviceAudit },
     })
 
     // Identity switch on (step 2.10): a credentials reset is made visible to the person. The
@@ -121,6 +131,7 @@ export async function POST(request: NextRequest) {
       ...(notices.length ? { notices } : {}),
     })
     setLoginCookie(response, request, token, maxAge)
+    rememberLoginDevice(response, request, email)
 
     return response
   } catch (error) {

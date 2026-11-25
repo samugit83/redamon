@@ -804,7 +804,11 @@ class TriageOrchestrator:
         try:
             settings = state.get("settings", {}) or {}
             user_settings = settings.get("user_settings", {}) or {}
-            loader = CveIntel(pdcp_api_key=user_settings.get("pdcpApiKey", ""))
+            # The owner's key, in the sandbox of the person the run is for (never the tenant's).
+            loader = CveIntel(pdcp_api_key=user_settings.get("pdcpApiKey", ""),
+                              actor_user_id=self.actor_user_id,
+                              real_actor_user_id=self.real_actor_user_id,
+                              project_id=self.project_id)
             self.intel = await loader.load(cve_ids, self._graph_client())
             self.intel_date = loader.intel_date
             if loader.refreshed:

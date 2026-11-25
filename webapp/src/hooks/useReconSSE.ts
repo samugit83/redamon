@@ -78,117 +78,33 @@ export function useReconSSE({
   }, [])
 
   const connect = useCallback(() => {
-    if (!projectId || !enabled) return
+    // Named, so a retry reopens the stream with the props this callback was made with.
+    function open() {
+      if (!projectId || !enabled) return
 
-    // Clean up existing connection
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close()
-    }
-
-    const url = `/api/recon/${projectId}/logs`
-    const eventSource = new EventSource(url)
-    eventSourceRef.current = eventSource
-
-    eventSource.onopen = () => {
-      setIsConnected(true)
-      setError(null)
-      reconnectAttempts.current = 0
-    }
-
-    // Handle named 'log' events
-    eventSource.addEventListener('log', (event) => {
-      try {
-        const eventData = (event as MessageEvent).data
-        if (!eventData) return
-
-        const data = JSON.parse(eventData)
-
-        const logEvent: ReconLogEvent = {
-          log: data.log,
-          timestamp: data.timestamp,
-          phase: data.phase,
-          phaseNumber: data.phaseNumber,
-          isPhaseStart: data.isPhaseStart,
-          level: data.level || 'info',
-        }
-
-        setLogs(prev => [...prev, logEvent])
-        onLog?.(logEvent)
-
-        // Update phase tracking
-        if (logEvent.isPhaseStart && logEvent.phase && logEvent.phaseNumber) {
-          setCurrentPhase(logEvent.phase)
-          setCurrentPhaseNumber(logEvent.phaseNumber)
-          onPhaseChange?.(logEvent.phase, logEvent.phaseNumber)
-        }
-
-        // Domain batch: a new group resets the phase counter, so track it too.
-        if (data.isGroupStart && data.groupNumber) {
-          setCurrentGroup(data.currentGroup ?? null)
-          setGroupNumber(data.groupNumber)
-          setTotalGroups(data.totalGroups ?? null)
-        }
-      } catch (err) {
-        console.error('Error parsing SSE log event:', err)
+      // Clean up existing connection
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close()
       }
-    })
 
-    // Handle named 'error' events (from server, not connection errors)
-    eventSource.addEventListener('error', (event) => {
-      try {
-        const eventData = (event as MessageEvent).data
-        // Connection errors don't have data - ignore them (handled by onerror)
-        if (!eventData) return
+      const url = `/api/recon/${projectId}/logs`
+      const eventSource = new EventSource(url)
+      eventSourceRef.current = eventSource
 
-        const data = JSON.parse(eventData)
-        if (data.error) {
-          console.error('Recon log stream error event:', data.error)
-          setError(STREAM_EVENT_ERROR)
-          onError?.(STREAM_EVENT_ERROR)
-        }
-      } catch (err) {
-        console.error('Error parsing SSE error event:', err)
+      eventSource.onopen = () => {
+        setIsConnected(true)
+        setError(null)
+        reconnectAttempts.current = 0
       }
-    })
 
-    // Handle named 'complete' events
-    eventSource.addEventListener('complete', (event) => {
-      try {
-        const eventData = (event as MessageEvent).data
-        if (!eventData) return
+      // Handle named 'log' events
+      eventSource.addEventListener('log', (event) => {
+        try {
+          const eventData = (event as MessageEvent).data
+          if (!eventData) return
 
-        const data = JSON.parse(eventData)
-        onComplete?.(data.status, data.error)
-        // Close connection after completion
-        eventSource.close()
-        setIsConnected(false)
-      } catch (err) {
-        console.error('Error parsing SSE complete event:', err)
-      }
-    })
+          const data = JSON.parse(eventData)
 
-    // Handle generic messages (fallback)
-    eventSource.onmessage = (event) => {
-      try {
-        if (!event.data) return
-        const data = JSON.parse(event.data)
-
-        // Handle error events
-        if (data.error) {
-          console.error('Recon log stream error event:', data.error)
-          setError(STREAM_EVENT_ERROR)
-          onError?.(STREAM_EVENT_ERROR)
-          return
-        }
-
-        // Handle completion events
-        if (data.status) {
-          onComplete?.(data.status, data.error)
-          return
-        }
-
-        // Handle log events (fallback for unnamed events)
-        if (data.log) {
           const logEvent: ReconLogEvent = {
             log: data.log,
             timestamp: data.timestamp,
@@ -201,45 +117,133 @@ export function useReconSSE({
           setLogs(prev => [...prev, logEvent])
           onLog?.(logEvent)
 
+          // Update phase tracking
           if (logEvent.isPhaseStart && logEvent.phase && logEvent.phaseNumber) {
             setCurrentPhase(logEvent.phase)
             setCurrentPhaseNumber(logEvent.phaseNumber)
             onPhaseChange?.(logEvent.phase, logEvent.phaseNumber)
           }
+
+          // Domain batch: a new group resets the phase counter, so track it too.
+          if (data.isGroupStart && data.groupNumber) {
+            setCurrentGroup(data.currentGroup ?? null)
+            setGroupNumber(data.groupNumber)
+            setTotalGroups(data.totalGroups ?? null)
+          }
+        } catch (err) {
+          console.error('Error parsing SSE log event:', err)
         }
-      } catch (err) {
-        console.error('Error parsing SSE message:', err)
+      })
+
+      // Handle named 'error' events (from server, not connection errors)
+      eventSource.addEventListener('error', (event) => {
+        try {
+          const eventData = (event as MessageEvent).data
+          // Connection errors don't have data - ignore them (handled by onerror)
+          if (!eventData) return
+
+          const data = JSON.parse(eventData)
+          if (data.error) {
+            console.error('Recon log stream error event:', data.error)
+            setError(STREAM_EVENT_ERROR)
+            onError?.(STREAM_EVENT_ERROR)
+          }
+        } catch (err) {
+          console.error('Error parsing SSE error event:', err)
+        }
+      })
+
+      // Handle named 'complete' events
+      eventSource.addEventListener('complete', (event) => {
+        try {
+          const eventData = (event as MessageEvent).data
+          if (!eventData) return
+
+          const data = JSON.parse(eventData)
+          onComplete?.(data.status, data.error)
+          // Close connection after completion
+          eventSource.close()
+          setIsConnected(false)
+        } catch (err) {
+          console.error('Error parsing SSE complete event:', err)
+        }
+      })
+
+      // Handle generic messages (fallback)
+      eventSource.onmessage = (event) => {
+        try {
+          if (!event.data) return
+          const data = JSON.parse(event.data)
+
+          // Handle error events
+          if (data.error) {
+            console.error('Recon log stream error event:', data.error)
+            setError(STREAM_EVENT_ERROR)
+            onError?.(STREAM_EVENT_ERROR)
+            return
+          }
+
+          // Handle completion events
+          if (data.status) {
+            onComplete?.(data.status, data.error)
+            return
+          }
+
+          // Handle log events (fallback for unnamed events)
+          if (data.log) {
+            const logEvent: ReconLogEvent = {
+              log: data.log,
+              timestamp: data.timestamp,
+              phase: data.phase,
+              phaseNumber: data.phaseNumber,
+              isPhaseStart: data.isPhaseStart,
+              level: data.level || 'info',
+            }
+
+            setLogs(prev => [...prev, logEvent])
+            onLog?.(logEvent)
+
+            if (logEvent.isPhaseStart && logEvent.phase && logEvent.phaseNumber) {
+              setCurrentPhase(logEvent.phase)
+              setCurrentPhaseNumber(logEvent.phaseNumber)
+              onPhaseChange?.(logEvent.phase, logEvent.phaseNumber)
+            }
+          }
+        } catch (err) {
+          console.error('Error parsing SSE message:', err)
+        }
+      }
+
+      eventSource.onerror = () => {
+        setIsConnected(false)
+        eventSource.close()
+
+        // Attempt reconnection with exponential backoff
+        if (reconnectAttempts.current < maxReconnectAttempts) {
+          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 10000)
+          reconnectAttempts.current++
+          setError(reconnectingText(reconnectAttempts.current, maxReconnectAttempts))
+
+          reconnectTimeoutRef.current = setTimeout(() => {
+            open()
+          }, delay)
+        } else {
+          setError(LOG_STREAM_LOST)
+          void describeStreamFailure(url).then(message => {
+            // A newer connection (or an unmount) replaced this one meanwhile.
+            if (eventSourceRef.current !== eventSource) return
+            setError(message)
+            onError?.(message)
+          })
+        }
       }
     }
-
-    eventSource.onerror = () => {
-      setIsConnected(false)
-      eventSource.close()
-
-      // Attempt reconnection with exponential backoff
-      if (reconnectAttempts.current < maxReconnectAttempts) {
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 10000)
-        reconnectAttempts.current++
-        setError(reconnectingText(reconnectAttempts.current, maxReconnectAttempts))
-
-        reconnectTimeoutRef.current = setTimeout(() => {
-          connect()
-        }, delay)
-      } else {
-        setError(LOG_STREAM_LOST)
-        void describeStreamFailure(url).then(message => {
-          // A newer connection (or an unmount) replaced this one meanwhile.
-          if (eventSourceRef.current !== eventSource) return
-          setError(message)
-          onError?.(message)
-        })
-      }
-    }
-
+    open()
   }, [projectId, enabled, onLog, onPhaseChange, onComplete, onError])
 
   // Clear logs only when switching to a different project
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- SSE subscription: the reset runs in the commit that reconnects, so a late event from the old stream is cleared too
     setLogs([])
     setCurrentPhase(null)
     setCurrentPhaseNumber(null)

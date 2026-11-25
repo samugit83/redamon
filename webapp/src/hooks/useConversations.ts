@@ -30,7 +30,8 @@ export interface ConversationWithMessages extends Conversation {
     id: string
     sequenceNum: number
     type: string
-    data: any
+    /** The event's payload as the agent streamed it, stored as JSON: its shape depends on `type`. */
+    data: unknown
     createdAt: string
   }>
 }
@@ -106,8 +107,9 @@ export function useConversations(projectId: string, userId: string, options: Use
       setConversations(data)
       setError(null)
       return data as Conversation[]
-    } catch (err: any) {
-      if (err?.name !== 'AbortError') {
+    } catch (err) {
+      const aborted = typeof err === 'object' && err !== null && 'name' in err && err.name === 'AbortError'
+      if (!aborted) {
         return fail('list', err)
       }
     } finally {
@@ -132,7 +134,7 @@ export function useConversations(projectId: string, userId: string, options: Use
       // Prepend to list
       setConversations(prev => [{ ...conversation, _count: { messages: 0 } }, ...prev])
       return conversation
-    } catch (err: any) {
+    } catch (err) {
       fail('create', err)
       return null
     }
@@ -149,7 +151,7 @@ export function useConversations(projectId: string, userId: string, options: Use
         optionsRef.current.onDeleteWarnings?.(body.warnings as ConversationDeleteWarning[])
       }
       return true
-    } catch (err: any) {
+    } catch (err) {
       fail('delete', err)
       return false
     }
@@ -160,7 +162,7 @@ export function useConversations(projectId: string, userId: string, options: Use
       const res = await fetch(`/api/conversations/${id}`)
       if (!res.ok) throw await readApiError(res, FAILED.load)
       return await res.json()
-    } catch (err: any) {
+    } catch (err) {
       fail('load', err)
       return null
     }
@@ -176,7 +178,7 @@ export function useConversations(projectId: string, userId: string, options: Use
       if (!res.ok) throw await readApiError(res, FAILED.update)
       const updated = await res.json()
       setConversations(prev => prev.map(c => c.id === id ? { ...c, ...updated } : c))
-    } catch (err: any) {
+    } catch (err) {
       fail('update', err)
     }
   }, [fail])
@@ -192,7 +194,7 @@ export function useConversations(projectId: string, userId: string, options: Use
       if (!res.ok) throw await readApiError(res, FAILED.share)
       setConversations(prev => prev.map(c => (c.id === id && c.access ? { ...c, access: { ...c.access, shared } } : c)))
       return true
-    } catch (err: any) {
+    } catch (err) {
       fail('share', err)
       return false
     }

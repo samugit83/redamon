@@ -23,6 +23,7 @@ vi.mock('@/lib/access', () => ({
 vi.mock('@/lib/prisma', () => ({
   default: {
     userSettings: { findUnique: vi.fn(async () => ({ githubAccessToken: '' })) },
+    $transaction: async (fn: (tx: unknown) => unknown) => fn({}),
     // The session and job routes read the account (HD-01): u1 holds every session.
     user: {
       findUnique: vi.fn(async () => ({
@@ -36,7 +37,7 @@ vi.mock('@/lib/prisma', () => ({
     },
   },
 }))
-vi.mock('@/lib/audit', () => ({ writeAudit: vi.fn(async () => {}) }))
+vi.mock('@/lib/audit', () => ({ writeAudit: vi.fn(async () => {}), writeAuditTx: vi.fn(async () => {}) }))
 vi.mock('@/lib/session', () => ({
   getSession: vi.fn(async () => ({ userId: 'u1', role: 'user' })),
   getEffectiveUser: vi.fn(async () => ({ userId: 'u1' })),
@@ -148,9 +149,9 @@ const CASES: Case[] = [
   { name: 'workspace import-url resync', agentPath: '/workspace/properties',
     call: () => wsImportResync.POST(json('/x', { projectId: 'p1', path: 'uploads/r' })) },
   { name: 'sessions list', agentPath: '/sessions', call: () => sessions.GET(new NextRequest('http://x/api/agent/sessions')) },
-  { name: 'session interact', agentPath: '/sessions/1/interact', call: () => sessionInteract.POST(json('/x', { command: 'id' }), idParams('1')) },
-  { name: 'session kill', agentPath: '/sessions/1/kill', call: () => sessionKill.POST(new NextRequest(`${BASE}/x`, { method: 'POST' }), idParams('1')) },
-  { name: 'msf job kill', agentPath: '/jobs/1/kill', call: () => jobKill.POST(new NextRequest(`${BASE}/x`, { method: 'POST' }), idParams('1')) },
+  { name: 'session interact', agentPath: '/sessions/1/interact', call: () => sessionInteract.POST(json('/x?sandbox=aaaaa1', { command: 'id' }), idParams('1')) },
+  { name: 'session kill', agentPath: '/sessions/1/kill', call: () => sessionKill.POST(new NextRequest(`${BASE}/x?sandbox=aaaaa1`, { method: 'POST' }), idParams('1')) },
+  { name: 'msf job kill', agentPath: '/jobs/1/kill', call: () => jobKill.POST(new NextRequest(`${BASE}/x?sandbox=aaaaa1`, { method: 'POST' }), idParams('1')) },
   {
     name: 'conversation delete (agent-session/stop)',
     agentPath: '/agent-session/stop',
@@ -167,7 +168,7 @@ beforeEach(() => {
     calls.push({ url: String(url), init })
     // Interact and kill look their target up in the session list first (HD-01).
     const body = String(url).endsWith('/sessions')
-      ? { sessions: [{ id: 1, chat_session_id: 's1' }], jobs: [{ id: 1 }], non_msf_sessions: [] }
+      ? { sessions: [{ id: 1, chat_session_id: 's1', sandbox: 'aaaaa1' }], jobs: [{ id: 1, sandbox: 'aaaaa1' }], non_msf_sessions: [] }
       : { ok: true }
     return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
   }))

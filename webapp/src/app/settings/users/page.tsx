@@ -91,6 +91,7 @@ export default function UsersPage() {
   // Handle ?changePassword=true from UserSelector for standard users
   useEffect(() => {
     if (wantsPasswordChange && authUser) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- the ?changePassword=true link opens the dialog once, and the same effect strips it from the URL
       setModal({ type: 'changeOwn' })
       router.replace('/settings/users', { scroll: false })
     }

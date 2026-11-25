@@ -61,7 +61,8 @@ W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 for fn in cmd_init cmd_update; do
     # Render each heredoc that seeds the switch as deploy.sh renders it (local variables
     # expanded), then parse it.
-    heredoc="$(awk '/^  remote <<EOF$/{on=1; buf=""; next}
+    # A heredoc may end its opening line with `|| die ...`, as the update's does.
+    heredoc="$(awk '/^  remote <<EOF( \|\| .*)?$/{on=1; buf=""; next}
                    on&&/^EOF$/{if (buf ~ /seed WORKSPACE_URL_IMPORT_ENABLED/) {printf "%s", buf; exit} on=0; next}
                    on{buf=buf $0 "\n"}' <<<"$(body_of "$fn")")"
     rendered="$( PREAMBLE='set -euo pipefail'; REMOTE_TMP=/tmp/x; APP_DIR=redamon; NPROC=4

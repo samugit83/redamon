@@ -58,6 +58,14 @@ new attack *skill* (not a tool), use `builtin-agent-skill`.
   [agentic/tools.py](../../agentic/tools.py); `_apply_project_settings()` writes no
   credential. [test_run_credentials_isolation.py](../../agentic/tests/test_run_credentials_isolation.py)
   fails a manager that takes or holds a key.
+- **NEVER reach a Kali tool except through the person's sandbox.** Each person has their
+  own Kali sandbox, and `PhaseAwareToolExecutor.execute()` routes a tool to it only when
+  its name is in `SYSTEM_MCP_TOOL_NAMES` ([agentic/tools.py](../../agentic/tools.py)): the
+  person is the run's actor (`sandbox_router.sandbox_user()`), never the project's owner,
+  and the call goes to that person's instance through
+  [agentic/sandbox_router.py](../../agentic/sandbox_router.py). A system tool missing from
+  the set falls to the shared tool table, which holds user MCP servers only, and is "not
+  found". Never dial a fixed `kali-sandbox` address: none exists.
 - **NEVER edit `execute_tool_node.py` without mirroring it in `execute_plan_node.py`.**
   [execute_tool_node.py](../../agentic/orchestrator_helpers/nodes/execute_tool_node.py)
   (single tool) and [execute_plan_node.py](../../agentic/orchestrator_helpers/nodes/execute_plan_node.py)
@@ -92,7 +100,7 @@ new attack *skill* (not a tool), use `builtin-agent-skill`.
 | --- | --- | --- |
 | **A** kali_shell | tool is in Kali, 300s timeout OK, no parsing | Dockerfile + `kali_shell` description only (no registry entry) |
 | **B** MCP tool on existing server | CLI tool, custom timeout/parsing, fire-and-forget | `@mcp.tool()` in an existing `mcp/servers/*.py` (auto-discovered) + its name in `SYSTEM_MCP_TOOL_NAMES` in `tools.py` |
-| **C** new MCP server | stateful/interactive, own port | new `mcp/servers/*_server.py` + `SERVERS` in [run_servers.py](../../mcp/servers/run_servers.py) + an `MCPServer` entry in `_build_system_mcp_servers()` in [tools.py](../../agentic/tools.py) |
+| **C** new MCP server | stateful/interactive, own port | new `mcp/servers/*_server.py` + `SERVERS` in [run_servers.py](../../mcp/servers/run_servers.py) + a `_SYSTEM_SERVERS` row (id, name, description, read timeout) in [tools.py](../../agentic/tools.py), which `_build_system_mcp_servers(host, token)` turns into that person's server on each sandbox instance + its `id` and port in `PORTS` (the port also in `CONTAINER_ENV_FIXED` and, to gate readiness, `HEALTH_PROBE_PORTS` and that tuple's pin in `tests/test_sandbox_contract.py`) in the two Python contract copies ([agentic/sandbox_contract.py](../../agentic/sandbox_contract.py) and its byte-identical twin in `recon_orchestrator/`), plus the `id` in `SandboxPorts` in [contract.ts](../../webapp/src/lib/sandbox/contract.ts), which no test compares: the URL is `http://<instance host>:<PORTS[id]>/sse`. A variable added to `CONTAINER_ENV_FIXED` drains running sandboxes at the next orchestrator start; changing or renaming one removes them, ending live sessions |
 | **D** API/HTTP tool | external API, key-gated | keyless `ToolManager` class built in `_setup_tools()` ([orchestrator.py](../../agentic/orchestrator.py)) + `_SEARCH_KEY_FIELDS` entry + `elif` dispatch in `tools.py`; the key is read per call |
 
 Naming is uniform across every layer: MCP fn / registry key / phase-map key =

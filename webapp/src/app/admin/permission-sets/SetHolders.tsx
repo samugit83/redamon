@@ -56,6 +56,7 @@ export function SetHolders({ kind, set, refusal, onClose }: SetHoldersProps) {
     }
   }, [set.id, words.one])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: load() also serves Retry and another set, so it starts from the loading state
   useEffect(() => { void load() }, [load])
 
   return (

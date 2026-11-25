@@ -4,8 +4,9 @@ import { createContext, useContext, useState, useEffect, useCallback, useMemo, u
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import { useAuth } from './AuthProvider'
 import { useCan, useRbacFlags } from '@/hooks/useCan'
-import { type ProjectSummary, toProjectSummary } from '@/lib/projectSummary'
+import { type ProjectRead, type ProjectSummary, toProjectSummary } from '@/lib/projectSummary'
 import { type ApiError, readApiError, toApiError } from '@/lib/apiError'
+import { readRetryingNoAnswer, isNoAnswer } from '@/lib/noAnswerRetry'
 import { ActAsDialog, type ActAsDialogTarget } from '@/components/auth/ActAsDialog'
 import { ACT_AS_PICK_KEY, forgetActAsPick, recallActAsPick, rememberActAsPick } from '@/lib/actAsPick'
 import type { MyAccess } from '@/lib/authz/projectAccess'
@@ -30,6 +31,11 @@ interface ProjectContextValue {
    */
   setUserId: (id: string | null, opts?: SetUserIdOptions) => Promise<ApiError | null>
   isLoading: boolean
+  /**
+   * The saved (or linked) project's read got no answer, even after its retries: the header then
+   * offers a reload. Null after any answer, a refusal or an outage included.
+   */
+  projectLoadError: ApiError | null
   /**
    * Why the last user switch was refused (the effective user stayed the admin's
    * own). This provider sits above the toast layer, so a component under it
@@ -112,10 +118,22 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const [currentProject, setCurrentProjectState] = useState<ProjectSummary | null>(null)
   const [userId, setUserIdState] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [projectLoadError, setProjectLoadError] = useState<ApiError | null>(null)
   const [userSwitchError, setUserSwitchError] = useState<ApiError | null>(null)
   const [accessNotice, setAccessNotice] = useState<AccessNotice | null>(null)
   const currentProjectRef = useRef<ProjectSummary | null>(null)
   const checkAccessRef = useRef<(() => Promise<void>) | null>(null)
+  // The saved-project read belongs to the view that started it. A pick (the URL may not change), a
+  // clear, a switch of whom the person acts as, or a new run of the load supersedes it: an answer of
+  // an older generation, in flight or late after a retry, changes nothing, and it stops retrying.
+  const projectLoadGen = useRef(0)
+  const userIdRef = useRef<string | null>(null)
+  useEffect(() => { userIdRef.current = userId }, [userId])
+  const supersedeProjectLoad = useCallback(() => {
+    projectLoadGen.current += 1
+    setProjectLoadError(null)
+    setIsLoading(false)
+  }, [])
   // Gates data loads until the server-side act-as cookie has been reconciled with
   // the restored (localStorage) impersonation selection, so an admin's first load
   // after a refresh never fetches with a stale/absent cookie (which would 404
@@ -149,6 +167,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     if (serverOwned) {
       // No silent restore (IM-02): a selection a previous version remembered is dropped.
       forgetActAsPick()
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncs the user id with the auth session and the server act-as cookie, an external system
       setUserIdState(actingAsId ?? authUserId)
       setImpersonationSynced(true)
     } else if (canSwitchUser) {
@@ -207,24 +226,38 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
     // Load project
     if (projectIdToLoad) {
-      fetch(`/api/projects/${projectIdToLoad}`)
-        .then(async res => {
-          if (res.ok) return res.json()
-          // Only a 404 says the project is gone. An outage (500, 503) must not
-          // wipe the saved selection, or every restart forgets the project.
-          if (res.status === 404) localStorage.removeItem(STORAGE_KEY_PROJECT)
-          else console.error((await readApiError(res, 'Could not load the saved project')).message)
-          return null
-        })
-        .then(project => {
-          if (project) {
-            setCurrentProjectState(toProjectSummary(project))
-            localStorage.setItem(STORAGE_KEY_PROJECT, project.id)
-          }
-        })
+      const gen = ++projectLoadGen.current
+      const current = () => projectLoadGen.current === gen
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: the saved project is read once impersonation is reconciled, clearing the last error first
+      setProjectLoadError(null)
+      readRetryingNoAnswer<ProjectRead>(`/api/projects/${projectIdToLoad}`, undefined, { keepTrying: current })
+        .then(
+          async ({ res, body }) => {
+            if (!current()) return
+            if (res.ok) {
+              if (body) {
+                setCurrentProjectState(toProjectSummary(body))
+                localStorage.setItem(STORAGE_KEY_PROJECT, body.id)
+              }
+              return
+            }
+            // Only a 404 says the project is gone. An outage (500, 503) must not
+            // wipe the saved selection, or every restart forgets the project.
+            if (res.status === 404) localStorage.removeItem(STORAGE_KEY_PROJECT)
+            else console.error((await readApiError(res, 'Could not load the saved project')).message)
+          },
+          err => {
+            console.error(err)
+            const failure = toApiError(err, 'Could not load the saved project')
+            if (current() && isNoAnswer(failure)) setProjectLoadError(failure)
+          },
+        )
+        // Applying an answer that throws is a client bug, never "could not reach the server".
         .catch(console.error)
-        .finally(() => setIsLoading(false))
+        .finally(() => { if (current()) setIsLoading(false) })
+      return () => { projectLoadGen.current += 1 }
     } else {
+      setProjectLoadError(null)
       setIsLoading(false)
     }
   }, [searchParams, authLoading, impersonationSynced])
@@ -232,6 +265,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   useEffect(() => { currentProjectRef.current = currentProject }, [currentProject])
 
   const setCurrentProject = useCallback((project: ProjectSummary | null) => {
+    supersedeProjectLoad()
     // A summary built from a read that carries no access (a save's answer) keeps the access known.
     setCurrentProjectState(prev => (
       project && !project.myAccess && prev?.id === project.id && prev.myAccess
@@ -254,7 +288,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       const newUrl = params.toString() ? `${pathname}?${params.toString()}` : pathname
       router.replace(newUrl, { scroll: false })
     }
-  }, [searchParams, router, pathname])
+  }, [searchParams, router, pathname, supersedeProjectLoad])
 
   // The stale-access poll (step 4.11, SH-11): only while the open project's read carried `myAccess`,
   // which it does only with RBAC_SHARING_ENABLED on (DV-30: with it off nothing is asked).
@@ -364,12 +398,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setUserSwitchError(null)
     setUserIdState(other ?? authUser.id)
     // The previous account's project is not the new one's.
+    supersedeProjectLoad()
     setCurrentProjectState(null)
     localStorage.removeItem(STORAGE_KEY_PROJECT)
     // The banner, the switcher and what may be used follow the cookie (/api/auth/me answers it).
     await refreshSession?.()
     return null
-  }, [authUser, refreshSession])
+  }, [authUser, refreshSession, supersedeProjectLoad])
 
   const setUserId = useCallback(async (id: string | null, opts?: SetUserIdOptions): Promise<ApiError | null> => {
     // Only an account that may act as others switches users.
@@ -391,6 +426,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       }
       rememberActAsPick(id, authUser?.id, identityOn)
       setUserSwitchError(null)
+      if (id !== userIdRef.current) supersedeProjectLoad()
       setUserIdState(id)
       // What may be used follows the act-as cookie (/api/auth/me answers it).
       void refreshSession?.()
@@ -443,12 +479,14 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
           setUserSwitchError(refusal)
         }
       }
-      setUserIdState(impersonated ? id : (authUser?.id ?? null))
+      const effective = impersonated ? id : (authUser?.id ?? null)
+      if (effective !== userIdRef.current) supersedeProjectLoad()
+      setUserIdState(effective)
       // What may be used follows the act-as cookie just set or cleared (/api/auth/me answers it).
       void refreshSession?.()
     }
     return refusal
-  }, [canSwitchUser, authUser, refreshSession, serverOwned, identityOn, switchOnServer])
+  }, [canSwitchUser, authUser, refreshSession, serverOwned, identityOn, switchOnServer, supersedeProjectLoad])
 
   const closeActAs = useCallback(() => {
     actAsRequest?.settle(null)
@@ -463,6 +501,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       userId,
       setUserId,
       isLoading,
+      projectLoadError,
       userSwitchError,
       accessNotice,
       dismissAccessNotice,

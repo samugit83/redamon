@@ -1,12 +1,12 @@
 'use client'
 
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 import { useToast } from '@/components/ui'
 import { StepUpModal } from '@/components/auth/StepUpModal'
 import type { SharingPolicy } from '@/lib/authz/sharingPolicy'
 import type { InstanceSettingsView } from './instanceView'
 import { putInstanceSettings } from './instanceSettingsClient'
-import { CheckField, FieldRow, Panel, RootOnlyNote } from './Panel'
+import { CheckField, FieldRow, Panel, RootOnlyNote, Rows } from './Panel'
 import styles from './instance.module.css'
 
 /**
@@ -83,7 +83,12 @@ export function SharingPolicyPanel({ settings, unconfirmedRoot, onSaved }: {
   const saved = useMemo(() => (policy ? draftOf(policy) : null), [policy])
   const [draft, setDraft] = useState<Draft | null>(saved)
   const [confirming, setConfirming] = useState(false)
-  useEffect(() => setDraft(saved), [saved])
+  // New settings (a save, a reload) start the draft again from what is in force.
+  const [draftBase, setDraftBase] = useState(saved)
+  if (draftBase !== saved) {
+    setDraftBase(saved)
+    setDraft(saved)
+  }
   if (!policy || !draft || !saved) return null
 
   const lead = 'Whether accounts share projects with each other, up to which level, and what administrators see.'
@@ -112,18 +117,18 @@ export function SharingPolicyPanel({ settings, unconfirmedRoot, onSaved }: {
 
   return (
     <Panel id="sharing" title="Sharing policy" lead={lead}>
-      <form onSubmit={submit} noValidate className={styles.page} style={{ gap: 'var(--space-3)' }}>
-        {BOOLEANS.map((k) => (
-          <CheckField
-            key={k}
-            id={`sharing-${k}`}
-            label={LABELS[k].label}
-            hint={LABELS[k].hint}
-            checked={draft[k]}
-            onChange={(checked) => setDraft((d) => (d ? { ...d, [k]: checked } : d))}
-          />
-        ))}
-        <div className={styles.fields}>
+      <form onSubmit={submit} noValidate className={styles.page}>
+        <Rows>
+          {BOOLEANS.map((k) => (
+            <CheckField
+              key={k}
+              id={`sharing-${k}`}
+              label={LABELS[k].label}
+              hint={LABELS[k].hint}
+              checked={draft[k]}
+              onChange={(checked) => setDraft((d) => (d ? { ...d, [k]: checked } : d))}
+            />
+          ))}
           <FieldRow id="sharing-maxLevel" label="Highest level a share may have" hint="The highest level a member may grant.">
             <select
               id="sharing-maxLevel"
@@ -153,7 +158,7 @@ export function SharingPolicyPanel({ settings, unconfirmedRoot, onSaved }: {
               onChange={(e) => setDraft((d) => (d ? { ...d, defaultExpiryDays: e.target.value } : d))}
             />
           </FieldRow>
-        </div>
+        </Rows>
         <div className={styles.actions}>
           <button type="submit" className="primaryButton" disabled={!dirty || !!problem}>Save the sharing policy</button>
           {dirty && <button type="button" className="secondaryButton" onClick={() => setDraft(saved)}>Revert</button>}

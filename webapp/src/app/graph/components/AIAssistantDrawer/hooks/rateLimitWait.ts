@@ -68,8 +68,11 @@ export function rateLimitWaitText(wait: RateLimitWait | null, now: number): stri
  */
 export function useRateLimitWait(isLoading: boolean, sessionId: unknown) {
   const [wait, setRateLimitWait] = useState<RateLimitWait | null>(null)
-  useEffect(() => { if (!isLoading) setRateLimitWait(null) }, [isLoading])
-  useEffect(() => { setRateLimitWait(null) }, [sessionId])
+  const [seen, setSeen] = useState({ isLoading, sessionId })
+  if (seen.isLoading !== isLoading || seen.sessionId !== sessionId) {
+    setSeen({ isLoading, sessionId })
+    if (!isLoading || seen.sessionId !== sessionId) setRateLimitWait(null)
+  }
   return { setRateLimitWait, rateLimitWord: useRateLimitWaitText(wait) }
 }
 

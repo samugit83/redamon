@@ -1,13 +1,17 @@
+import type { ReactNode } from 'react'
 import { Shield, Target, Zap } from 'lucide-react'
 import { LOOP_MODEL_LABEL, isLoopModel } from '@/lib/agentInTheLoop'
 
 /** Recursively extract plain text from React children (for copy-to-clipboard). */
-export function extractTextFromChildren(children: any): string {
+export function extractTextFromChildren(children: ReactNode): string {
   if (children == null) return ''
   if (typeof children === 'string') return children
   if (typeof children === 'number') return String(children)
   if (Array.isArray(children)) return children.map(extractTextFromChildren).join('')
-  if (children?.props?.children) return extractTextFromChildren(children.props.children)
+  const nested = typeof children === 'object' && 'props' in children
+    ? (children.props as { children?: ReactNode } | null)?.children
+    : undefined
+  if (nested) return extractTextFromChildren(nested)
   return ''
 }
 

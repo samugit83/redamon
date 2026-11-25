@@ -559,7 +559,7 @@ describe('the startup lists', () => {
     const push = entry.indexOf('db push')
     const nuclei = entry.indexOf('backfill-nuclei-template-owners.mjs')
     const ours = entry.indexOf('backfill-rbac-instance-settings.mjs')
-    const server = entry.indexOf('exec node server.js')
+    const server = entry.indexOf('exec node scripts/serve.cjs')
     expect(push).toBeGreaterThan(0)
     expect(nuclei).toBeGreaterThan(push)
     expect(ours).toBeGreaterThan(nuclei)

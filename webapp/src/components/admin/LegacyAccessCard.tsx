@@ -52,6 +52,7 @@ export function LegacyAccessCard() {
     }
   }, [])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: load() sets the view only once the read answers
   useEffect(() => { void load() }, [load])
 
   const send = (decision: Decision, stepUpPassword?: string) => fetchJson<LegacyDecisionAnswer>(ENDPOINT, {

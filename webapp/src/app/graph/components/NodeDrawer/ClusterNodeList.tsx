@@ -51,8 +51,13 @@ export function ClusterNodeList({ cluster, onSelectChild }: ClusterNodeListProps
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(400)
 
-  useEffect(() => {
+  // A new cluster or query starts the list from the top.
+  const [listFor, setListFor] = useState({ clusterId: cluster.id, query })
+  if (listFor.clusterId !== cluster.id || listFor.query !== query) {
+    setListFor({ clusterId: cluster.id, query })
     setScrollTop(0)
+  }
+  useEffect(() => {
     scrollRef.current?.scrollTo({ top: 0 })
   }, [cluster.id, query])
 

@@ -37,8 +37,8 @@ export async function PATCH(
       data: updates,
     })
     return NextResponse.json({ id: fireteam.id, status: fireteam.status })
-  } catch (error: any) {
-    if (error?.code === 'P2025') {
+  } catch (error) {
+    if (!!error && typeof error === 'object' && 'code' in error && error.code === 'P2025') {
       return NextResponse.json({ error: 'Fireteam not found' }, { status: 404 })
     }
     return internalError(error, 'Failed to patch fireteam')

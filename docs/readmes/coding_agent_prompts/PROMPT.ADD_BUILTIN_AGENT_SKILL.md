@@ -182,6 +182,8 @@ Create [agentic/prompts/<skill_id>_prompts.py](../../../agentic/prompts/). Study
 - Rich multi-section skill with format-string injection: [agentic/prompts/sql_injection_prompts.py](../../../agentic/prompts/sql_injection_prompts.py) (`SQLI_TOOLS` is a `.format()` template with `{sqli_level}`, `{sqli_risk}`, `{sqli_tamper_scripts}`)
 - Conditional sub-sections: [agentic/prompts/xss_prompts.py](../../../agentic/prompts/xss_prompts.py) (`XSS_BLIND_WORKFLOW` only injected when the blind-callback setting is on)
 
+One reachable port: a person's Kali sandbox takes inbound connections from a target on one port only (their pool port, or 4444 through their own tunnel), and the agent's payload settings block names it. Never write a literal LPORT, an `http.server` on a sandbox port, a second inbound port (a JNDI referral server on 1389/1099, a relay or `nc`/`socat` listener on a fixed port) or an `ngrok`/`chisel` of the skill's own: `agentic/tests/test_prompts_reverse_ports.py` scans every prompt file for them.
+
 Required exports from the file (suffix conventions come from the existing skills, follow them):
 
 ```python

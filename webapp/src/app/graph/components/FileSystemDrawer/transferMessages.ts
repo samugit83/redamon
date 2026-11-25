@@ -16,6 +16,8 @@ const JOB_FAILURES: Record<string, string> = {
   chunk_too_large: 'The chunk is larger than the server accepts',
   session_incomplete: 'The upload is not complete yet',
   too_many_jobs: 'Too many uploads and imports are running on the server. Retry shortly',
+  jobs_folder_refused: "The project's jobs folder is not a plain folder (a link, say), so no upload or import can start. Remove it from the workspace",
+  job_store_error: "The job's log could not be created on the server, so it did not start. Check the agent log",
   project_exists: 'The project still exists; its workspace was not purged',
   too_many_imports: 'This project already has 2 imports running',
   not_imported: 'This folder has no valid import record, so it cannot be re-synced',

@@ -2,11 +2,15 @@
 # =============================================================================
 # Verifies the host-port publish policy after the STRIDE S10/S13 hardening.
 #
-# Debug-only ports (MCP 8000-8005, progress 8013/8014, tunnel 8015, ngrok 4040,
-# DB 5432/7474/7687) MUST be published on 127.0.0.1 only. Genuinely external
-# ports (webapp 3000, agent 8090, reverse-shell 4444) MUST stay routable. The
-# Kali terminal (8016) hands out a root shell and MUST NOT be published at all:
-# only the agent's proxy reaches it, over the bridge (GHSA-3cjg-8cp8-j269).
+# Debug-only DB ports (5432/7474/7687) MUST be published on 127.0.0.1 only.
+# Genuinely external ports (webapp 3000, agent 8090) MUST stay routable. No Kali
+# sandbox port is published by compose at all: the sandboxes are per person,
+# started by the recon orchestrator on their own networks, and only the agent and
+# the capture proxy reach their ports (MCP 8000-8005, progress 8013/8014, tunnel
+# 8015, the terminal 8016, which hands out a root shell (GHSA-3cjg-8cp8-j269), and
+# ngrok 4040). The reverse-shell listener 4444 is not published either: a sandbox
+# publishes only its optional pool port (KALI_SANDBOX_PORT_POOL), at runtime.
+# The build-only `kali-sandbox` service (profile `tools`) is checked too.
 #
 # Runs against `docker compose config` (the fully-resolved model) so it needs no
 # running stack and works in CI. Run:  bash tests/test_port_bindings.sh
@@ -30,6 +34,8 @@ if [[ -z "$CONFIG" ]]; then
     echo "docker compose config produced no output — skipping."
     exit 0
 fi
+# The build-only services as well, so `--profile tools up` could publish nothing either.
+TOOLS_CONFIG="$(docker compose --profile tools config 2>/dev/null)"
 
 # published_host_ip <container_port> -> prints the host IP the port is published
 # on (empty = all interfaces / 0.0.0.0). Parses the normalized long-form ports,
@@ -69,6 +75,25 @@ check_loopback() {
     esac
 }
 
+# is_published <config> <container_port>: whether any service publishes that container port, on
+# any host IP. The long form names it as a ports entry's `target:` (published_host_ip cannot
+# tell an all-interfaces publish, which has no host_ip, from none); the short form is a list item.
+is_published() {
+    echo "$1" | awk -v tgt="$2" '$1 == "target:" && $2 == tgt { found = 1 } END { exit !found }' && return 0
+    echo "$1" | grep -qE "^[[:space:]]*- \"?([0-9.]+:)?[0-9]+:${2}(/[a-z]+)?\"?[[:space:]]*$"
+}
+
+check_unpublished() {
+    local label="$1" port="$2"
+    if is_published "$CONFIG" "$port"; then
+        fail "$label ($port) is published on the host"
+    elif [[ -n "$TOOLS_CONFIG" ]] && is_published "$TOOLS_CONFIG" "$port"; then
+        fail "$label ($port) is published by a service of the tools profile"
+    else
+        pass "$label ($port) not published on the host"
+    fi
+}
+
 check_routable() {
     local label="$1" port="$2"
     local ip; ip="$(published_host_ip "$port")"
@@ -80,20 +105,23 @@ check_routable() {
 }
 
 echo "== Debug-only ports must be loopback-only =="
-for p in 8000 8002 8003 8004 8005 8013 8014 8015 4040 5432 7474 7687; do
-    check_loopback "kali/db" "$p"
+for p in 5432 7474 7687; do
+    check_loopback "db" "$p"
 done
 
 echo "== Ports that must not be published at all =="
-case "$(is_loopback_only 8016; echo $?)" in
-    *2) pass "kali terminal (8016) not published on the host" ;;
-    *)  fail "kali terminal (8016) is published on the host (a root shell)" ;;
-esac
+if [[ -z "$TOOLS_CONFIG" ]]; then
+    fail "docker compose --profile tools config produced no output (the Kali sandbox image's service is unchecked)"
+fi
+for p in 8000 8002 8003 8004 8005 8013 8014 8015 4040; do
+    check_unpublished "kali sandbox" "$p"
+done
+check_unpublished "kali terminal, a root shell" 8016
+check_unpublished "reverse-shell listener" 4444
 
 echo "== Genuinely external ports must stay routable =="
 check_routable "webapp" 3000
 check_routable "agent"  8090
-check_routable "reverse-shell (4444)" 4444
 
 echo
 echo "-----------------------------------------"

@@ -10,7 +10,7 @@ echo "[*] Starting RedAmon MCP container..."
 cd /tmp
 
 # Tunnel manager API first (instant, runs in background).
-# Allows the webapp to push tunnel config at any time during boot.
+# Allows the agent to push this person's tunnel config at any time during boot.
 python3 /opt/mcp_servers/tunnel_manager.py &
 
 # Wait for tunnel manager to bind to port 8015
@@ -26,8 +26,9 @@ echo "[*] Tunnel manager ready on port 8015"
 echo "[*] Initializing Metasploit database..."
 msfdb init 2>/dev/null || true
 
-# Slow updates and tunnel config fetch run in the background so the MCP
-# servers can bind their ports immediately and the docker healthcheck passes.
+# Slow updates run in the background so the MCP servers can bind their ports
+# immediately and the docker healthcheck passes. A sandbox never fetches a tunnel
+# config: the agent pushes each person's own to the tunnel manager on 8015.
 deferred_init() {
     if [ "${MSF_AUTO_UPDATE:-true}" = "true" ]; then
         echo "[*] [deferred] Updating Metasploit modules..."
@@ -49,29 +50,6 @@ deferred_init() {
     if [ "${NUCLEI_AUTO_UPDATE:-true}" = "true" ]; then
         echo "[*] [deferred] Updating nuclei templates..."
         nuclei -update-templates 2>/dev/null || echo "[!] Nuclei template update failed"
-    fi
-
-    WEBAPP_URL="${WEBAPP_API_URL:-http://webapp:3000}"
-    # The worker holds no secrets. Instead of PULLING credentials (which would
-    # require the internal key to live in this least-trusted container), we ask
-    # the webapp to PUSH the saved tunnel config to our tunnel-manager on port
-    # 8015. Best-effort: if the webapp is not up yet, tunnels can still be
-    # (re)applied at any time from Global Settings > Tunneling.
-    # The webapp takes the call only with the inbound tunnel token this sandbox already
-    # holds (F-23). printf is a shell builtin and curl reads the header from stdin
-    # (-H @-), so the token is on no command line another process here can read.
-    if [ -z "${TUNNEL_AUTH_TOKEN:-}" ]; then
-        echo "[*] [deferred] TUNNEL_AUTH_TOKEN not set: no tunnel sync (the tunnel manager refuses every push, so no tunnel can be up)"
-    else
-        echo "[*] [deferred] Requesting tunnel config sync from webapp..."
-        for i in $(seq 1 30); do
-            if printf 'Authorization: Bearer %s\n' "$TUNNEL_AUTH_TOKEN" | curl -sf -X POST -H @- "${WEBAPP_URL}/api/global/tunnel-config/sync" > /dev/null 2>&1; then
-                echo "[*] [deferred] Tunnel config sync requested"
-                break
-            fi
-            [ "$i" -eq 30 ] && echo "[*] [deferred] Webapp not reachable for tunnel sync; configure tunnels in Global Settings > Tunneling"
-            sleep 2
-        done
     fi
 
     echo "[*] [deferred] Initialization complete"

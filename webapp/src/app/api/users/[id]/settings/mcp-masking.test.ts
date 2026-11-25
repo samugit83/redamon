@@ -11,6 +11,8 @@
  */
 import { describe, test, expect, beforeEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
+// No Kali sandbox runs in these tests: a tunnel save finds none to push to (group 1).
+vi.mock('@/lib/sandbox/gateway', () => ({ sandboxStatus: async () => ({ instances: [] }) }))
 
 vi.stubEnv('AUTH_SECRET', 'm'.repeat(64))
 vi.stubEnv('INTERNAL_API_KEY', 'internal-key-for-tests-0000000000000')

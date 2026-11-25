@@ -183,3 +183,27 @@
   color: var(--text-tertiary);
   font-family: var(--font-mono);
 }
+
+.sandboxTag {
+  margin-right: auto;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+}
+
+.staleTag {
+  padding: 1px 6px;
+  font-size: 10px;
+  color: var(--status-warning, #f59e0b);
+  border: 1px dashed var(--status-warning, #f59e0b);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+/* Whose sandbox a row is, for a holder of every session. */
+.ownerRow {
+  color: var(--text-secondary, #8b949e);
+}

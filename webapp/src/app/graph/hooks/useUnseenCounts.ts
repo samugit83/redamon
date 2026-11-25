@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useUserPreferences } from '@/hooks/useUserPreferences'
 import { BADGED_TABS, type UnseenResponse } from '../unseen/registry'
 
@@ -62,9 +62,9 @@ export function useUnseenCounts(projectId: string | null, activeTab: string | nu
   // them. Same reason `activeTab` is a ref: switching tabs must not restart the
   // interval or the badges would refetch on every click.
   const marksRef = useRef(marks)
-  marksRef.current = marks
+  useLayoutEffect(() => { marksRef.current = marks }, [marks])
   const activeTabRef = useRef(activeTab)
-  activeTabRef.current = activeTab
+  useLayoutEffect(() => { activeTabRef.current = activeTab }, [activeTab])
 
   /** serverNow - clientNow, from the last response. */
   const skewRef = useRef(0)
@@ -108,9 +108,13 @@ export function useUnseenCounts(projectId: string | null, activeTab: string | nu
 
   // Switching project must not leave the previous project's numbers on screen
   // until the next poll answers - they would be read as this project's.
-  useEffect(() => {
+  const [countsFor, setCountsFor] = useState(projectId)
+  if (countsFor !== projectId) {
+    setCountsFor(projectId)
     setCounts({})
     setTotal(0)
+  }
+  useEffect(() => {
     syncedRef.current = false
   }, [projectId])
 

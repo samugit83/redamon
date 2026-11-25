@@ -18,7 +18,7 @@ flowchart TB
         ReconOrch[Recon Orchestrator<br/>FastAPI + Docker SDK<br/>:8010]
     end
 
-    subgraph Tools["🔧 MCP Tools Layer"]
+    subgraph Tools["🔧 MCP Tools Layer (in each person's Kali sandbox)"]
         NetworkRecon[Network Recon Server<br/>Curl + Naabu + Masscan<br/>:8000]
         Nuclei[Nuclei Server<br/>:8002]
         Metasploit[Metasploit Server<br/>:8003]
@@ -172,12 +172,13 @@ flowchart TB
                 Knockpy[Knockpy]
             end
 
-            subgraph MCPContainer["kali-mcp-sandbox"]
+            subgraph MCPContainer["Kali sandbox, one per person, started on demand"]
                 MCPServers[MCP Servers]
                 NetworkReconTool[Network Recon :8000<br/>Curl + Naabu]
                 NucleiTool[Nuclei :8002]
                 MSFTool[Metasploit :8003]
                 NmapTool[Nmap :8004]
+                PlaywrightTool[Playwright :8005]
             end
 
             subgraph AgenticContainer["agentic-container"]
@@ -235,6 +236,8 @@ flowchart TB
         ReconOrchContainer -->|Manages| GVMScanContainer
         ReconOrchContainer -->|Manages| GHHuntContainer
         ReconOrchContainer -->|Manages| TrufflehogContainer
+        ReconOrchContainer -->|"Starts and stops, per person"| MCPContainer
+        AgenticContainer -->|"MCP over the person's sandbox network"| MCPContainer
         GVMScanContainer -->|Unix Socket| GVMd
         GVMd --> OSPD
         GVMd --> PgGVM
@@ -251,12 +254,16 @@ flowchart TB
 
 ## Exposed Services & Ports
 
-> **Host-exposure policy (since 5.3.1).** Only the webapp (`3000`), the agent
-> API (`8090`) and the reverse-shell listener (`4444`) are published on all
-> interfaces. Everything else in this table is bound to **`127.0.0.1` only** —
-> reachable from the host for debugging, not from the LAN. The MCP servers
-> (`8000-8005`) additionally require `Authorization: Bearer $MCP_AUTH_TOKEN`;
-> the agent supplies it automatically over the internal Docker bridge. See
+> **Host-exposure policy.** Only the webapp (`3000`) and the agent API (`8090`)
+> are published on all interfaces. Everything else in this table is bound to
+> **`127.0.0.1` only** — reachable from the host for debugging, not from the LAN.
+> The Kali sandboxes publish nothing: each person's sandbox sits on a network of
+> its own with the agent and the capture proxy, and its MCP servers
+> (`8000-8005`), progress streams (`8013`/`8014`), tunnel manager (`8015`) and
+> terminal (`8016`) are reached by the agent alone, with that sandbox's own token.
+> A reverse shell reaches a sandbox through that person's tunnel or, when the
+> operator sets `KALI_SANDBOX_PORT_POOL`, through the sandbox's pool port. See
+> [README.KALI_SANDBOX.md](README.KALI_SANDBOX.md),
 > [README.MCP.md](README.MCP.md#security-notice) and STRIDE S10/E1/I9/S13.
 
 | Service | URL | Exposure | Description |
@@ -265,16 +272,11 @@ flowchart TB
 | PostgreSQL | 127.0.0.1:5432 | Loopback | Primary database (Prisma) |
 | Neo4j Browser | http://127.0.0.1:7474 | Loopback | Graph database UI for attack surface visualization |
 | Neo4j Bolt | 127.0.0.1:7687 | Loopback | Neo4j driver protocol (used by agent) |
-| Recon Orchestrator | http://127.0.0.1:8010 | Loopback | Manages recon pipeline containers. **Network-isolated:** on its own `redamon-orchestrator-net` (not `redamon`) — reachable from the host and the webapp, but not from the worker. |
+| Recon Orchestrator | http://127.0.0.1:8010 | Loopback | Manages recon pipeline containers. **Network-isolated:** on its own `redamon-orchestrator-net` (not `redamon`) — reachable from the host and the webapp, but not from a Kali sandbox. |
 | Agent API | http://localhost:8090 | LAN | AI agent WebSocket + REST API |
-| MCP Network Recon | http://127.0.0.1:8000/sse | Loopback + token | curl + naabu (HTTP probing, port scanning) |
-| MCP Nuclei | http://127.0.0.1:8002/sse | Loopback + token | Nuclei vulnerability scanner |
-| MCP Metasploit | http://127.0.0.1:8003/sse | Loopback + token | Metasploit Framework RPC |
-| MCP Nmap | http://127.0.0.1:8004/sse | Loopback + token | Nmap network scanner |
-| Metasploit Progress | http://127.0.0.1:8013 | Loopback | Live progress streaming for long-running exploits |
-| Tunnel Manager | http://127.0.0.1:8015 | Loopback | ngrok/chisel tunnel configuration API |
-| RedAmon Terminal | ws://kali-sandbox:8016 | Docker network + token (not published on the host) | Kali sandbox PTY shell access (xterm.js; browser reaches it via the agent proxy, the only caller holding the token) |
-| Metasploit Listener | 0.0.0.0:4444 | LAN (by design) | Reverse shell listener — a target connects back here in direct/no-tunnel mode |
+| Kali sandbox MCP servers, progress, tunnel manager | `http://redamon-kali-<key>-<instance>:8000-8015` | the person's sandbox network + that sandbox's token (not published) | network recon, nuclei, Metasploit, nmap, Playwright, progress streams, tunnel configuration; the agent is the only caller |
+| RedAmon Terminal | `ws://redamon-kali-<key>-<instance>:8016` | the person's sandbox network + token (not published) | PTY shell in the person's own sandbox (xterm.js; the browser reaches it through the agent's `/ws/kali-terminal` proxy) |
+| Reverse-shell pool (optional) | `KALI_SANDBOX_PORT_POOL` (`[bind-ip:]first-last`) | `127.0.0.1` unless the variable names an address | one host port per sandbox, published at the same number inside (`MSF_REVERSE_PORT`) and used as that person's LPORT for direct reverse shells; held for that person for `KALI_SANDBOX_PORT_HOLD_HOURS` (24 by default) after the sandbox stops; unset, nothing is published and reverse shells go through the person's tunnel, which delivers to 4444 inside the sandbox |
 
 The plugin services (`plugin-runner`, `plugin-gateway`) publish no host port; see
 [Plugin Platform](#plugin-platform).
@@ -431,6 +433,12 @@ sequenceDiagram
     Agent->>Agent: Analyze Results
     Agent-->>User: "Found ports 22, 80, 443..."
 ```
+
+The tool servers run in the Kali sandbox of the person doing the work: the recon
+orchestrator starts one container per person on first need, mounting only the project
+folders that person may run the agent on, on a network of its own shared only with the
+agent and the capture proxy, and stops it when unused. The agent keeps one MCP client per
+sandbox, with that sandbox's own token. See [README.KALI_SANDBOX.md](README.KALI_SANDBOX.md).
 
 ## Tradecraft Library
 

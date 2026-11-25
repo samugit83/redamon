@@ -1113,8 +1113,9 @@ fields:
     validator: free_text
     group: agent
     meaning: >-
-      Your host machine&apos;s LAN IP that the target can reach (not the
-      container&apos;s 172.x address). Leave empty for bind mode.
+      The address of the RedAmon host that the target can reach (its LAN or
+      public IP), never the Kali sandbox's own 10.214.x address. With a tunnel
+      the tunnel's address is used instead. Leave empty for bind mode.
   agentLlmParseMaxRetries:
     tool: agent
     runtime_key: null
@@ -1166,7 +1167,9 @@ fields:
     bounds: { min: 1, max: 65535 }
     group: agent
     meaning: >-
-      Leave empty for bind mode
+      Not used as LPORT: with a port pool the agent uses the person's own sandbox
+      port; with a tunnel, the tunnel's; with neither, only bind payloads work.
+      Leave it empty.
   agentMaxIterations:
     tool: agent
     runtime_key: null

@@ -307,7 +307,7 @@ describe('the startup lists', () => {
     const push = entry.indexOf('db push')
     const jev = entry.indexOf('backfill-jev-provider-selection.mjs')
     const ours = entry.indexOf('backfill-rbac-legacy-grants.mjs')
-    const server = entry.indexOf('exec node server.js')
+    const server = entry.indexOf('exec node scripts/serve.cjs')
     expect(push).toBeGreaterThan(0)
     expect(ours).toBeGreaterThan(jev)
     expect(jev).toBeGreaterThan(push)

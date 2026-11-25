@@ -13,11 +13,16 @@
  *   narrowing that keeps Run scans cancels nothing), and a live triage run they started is stopped;
  * - on the account: a disable keeps what step 2.3 did (runs stopped, every socket closed with scope
  *   `account`, the account's own impersonations ended; its deferred work is skipped while it is
- *   disabled and resumes after an enable); a session-version bump closes every socket (`account`)
- *   and ends the impersonations; a capability removal does the project plan on every project of the
+ *   disabled and resumes after an enable); a session-version bump (a sign-out everywhere, a
+ *   promotion) closes every socket (`account`) and ends the impersonations; a capability removal
+ *   (a demotion too) does the project plan on every project of the
  *   person, sockets with scope `account` because its callers raise the session version too; a
  *   deletion does that too; a device session's revoke and a lost legacy terminal grant close sockets
  *   with the default scope (the terminal ones only for the grant).
+ * The person's Kali sandboxes follow last (group 1, lib/sandbox/lifecycle.ts), once the agent has
+ * ended the work running in them: a project reason stops their instances that mount a project they
+ * may no longer use (both views, own and act-as); a disable, a deletion, a capability removal, a
+ * sign-out everywhere or a credentials reset (and the sign-in of its link) stops both views.
  * Scans already running finish (OQ-13). The person's MCP tokens fail on their next call (every MCP
  * tool asks projectAccess() and can() per call); an Agent in the Loop driver's step leases end with
  * the run they belong to; open pages follow the stale-access poll.
@@ -45,6 +50,8 @@ import { rbacFlags } from './flags'
 import { queuedJobPermissions } from './queuedJobPermissions'
 import { actorScanRefusal, actorScanRefusalReason, noticeSchedulePaused, type ActorScanRefusal } from './scanActor'
 import { cancelUserTradecraftJobs } from '@/lib/tradecraft/deleteCleanup'
+import { sandboxAccessChanged, sandboxAccountEnded, type AccountEndReason, type SandboxHookOutcome } from '@/lib/sandbox/lifecycle'
+import type { SandboxActor } from '@/lib/sandbox/gateway'
 
 /** What ended the person's access to one project. */
 export type ProjectReduction =
@@ -54,14 +61,14 @@ export type ProjectReduction =
 /** What ended or narrowed the account's access everywhere. */
 export type AccountReduction =
   | 'account_disabled' | 'account_deleted' | 'capability_removed'
-  | 'sessions_revoked' | 'credentials_reset' | 'reset_link_used' | 'root_transferred'
+  | 'sessions_revoked' | 'role_promoted' | 'credentials_reset' | 'reset_link_used' | 'root_transferred'
   | 'device_session_revoked' | 'terminal_grant_removed'
 
 export type AccessReducedReason = ProjectReduction | AccountReduction
 
 export type RevocationStep =
   | 'stop_runs' | 'close_sockets' | 'cancel_queued_scans' | 'pause_schedules' | 'stop_triage_run' | 'stop_navigator_runs'
-  | 'cancel_tradecraft_jobs'
+  | 'cancel_tradecraft_jobs' | 'sandbox'
 
 export type Counted<K extends string> = { [P in K]: number } | { error: string }
 
@@ -77,6 +84,8 @@ export interface LiveWorkStopped {
   navigator?: Counted<'stopped'>
   /** The account's Tradecraft ingestion jobs flagged as cancelled; absent when the plan keeps them. */
   tradecraft?: Counted<'cancelled'>
+  /** The person's Kali sandbox instances stopped; absent when the plan leaves them. */
+  sandbox?: Counted<'stopped'>
   /** The steps that failed, each logged. */
   failed: RevocationStep[]
 }
@@ -100,10 +109,16 @@ interface Plan {
    * account that can no longer act (disabled, deleted) loses them; a share's loss touches none.
    */
   tradecraftJobs: boolean
+  /**
+   * The person's Kali sandboxes (group 1): `reconcile` stops the instances that mount a project the
+   * person may no longer use, `stop` ends both views (an account that can no longer have one), `none`
+   * leaves them (no project or account access was lost).
+   */
+  sandbox: 'reconcile' | 'stop' | 'none'
 }
 
-const PROJECT: Plan = { stopRuns: true, closeScope: 'access', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: false, tradecraftJobs: false }
-const SESSIONS: Plan = { stopRuns: false, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: false, triage: false, endImpersonations: true, tradecraftJobs: false }
+const PROJECT: Plan = { stopRuns: true, closeScope: 'access', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: false, tradecraftJobs: false, sandbox: 'reconcile' }
+const SESSIONS: Plan = { stopRuns: false, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: false, triage: false, endImpersonations: true, tradecraftJobs: false, sandbox: 'none' }
 
 export const PLANS: Readonly<Record<AccessReducedReason, Readonly<Plan>>> = Object.freeze({
   share_revoked: PROJECT,
@@ -114,17 +129,23 @@ export const PLANS: Readonly<Record<AccessReducedReason, Readonly<Plan>>> = Obje
   consent_withdrawn: PROJECT,
   // The owner turned "AI Navigator for collaborators" off: only the Navigator step, no agent run,
   // socket or scan of the collaborator is touched.
-  navigator_disallowed: { stopRuns: false, closeScope: 'access', kinds: [], deferredScans: false, triage: false, endImpersonations: false, tradecraftJobs: false },
-  account_disabled: { ...SESSIONS, stopRuns: true, tradecraftJobs: true },
+  navigator_disallowed: { stopRuns: false, closeScope: 'access', kinds: [], deferredScans: false, triage: false, endImpersonations: false, tradecraftJobs: false, sandbox: 'none' },
+  account_disabled: { ...SESSIONS, stopRuns: true, tradecraftJobs: true, sandbox: 'stop' },
   // The user DELETE ends a deleted admin's impersonations itself, closing what they opened.
-  account_deleted: { stopRuns: true, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: false, tradecraftJobs: true },
-  capability_removed: { stopRuns: true, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: true, tradecraftJobs: false },
-  sessions_revoked: SESSIONS,
-  credentials_reset: SESSIONS,
-  reset_link_used: SESSIONS,
-  root_transferred: SESSIONS,
-  device_session_revoked: { ...SESSIONS, closeScope: 'access', endImpersonations: false },
-  terminal_grant_removed: { ...SESSIONS, closeScope: 'access', kinds: ['kali-terminal'], endImpersonations: false },
+  account_deleted: { stopRuns: true, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: false, tradecraftJobs: true, sandbox: 'stop' },
+  capability_removed: { stopRuns: true, closeScope: 'account', kinds: WS_SOCKETS, deferredScans: true, triage: true, endImpersonations: true, tradecraftJobs: false, sandbox: 'stop' },
+  // A sign-out everywhere also revokes every MCP token: a stolen `kali:exec` token's handler or
+  // process must not live on in the sandbox under its hold, so both views stop, as for a reset.
+  sessions_revoked: { ...SESSIONS, sandbox: 'stop' },
+  // A promotion only raises the session version: nothing was lost, so the sandbox is left alone.
+  role_promoted: { ...SESSIONS, sandbox: 'none' },
+  // A reset is the account's recovery: whatever runs in its Kali sandbox may be someone else's, so
+  // both views stop and the next use starts clean.
+  credentials_reset: { ...SESSIONS, sandbox: 'stop' },
+  reset_link_used: { ...SESSIONS, sandbox: 'stop' },
+  root_transferred: { ...SESSIONS, sandbox: 'none' },
+  device_session_revoked: { ...SESSIONS, closeScope: 'access', endImpersonations: false, sandbox: 'none' },
+  terminal_grant_removed: { ...SESSIONS, closeScope: 'access', kinds: ['kali-terminal'], endImpersonations: false, sandbox: 'none' },
 })
 
 const AGENT_TIMEOUT_MS = 10_000
@@ -290,12 +311,14 @@ async function stopTriageRuns(userId: string, projectId: string | null, ownerId:
 /**
  * Stops what `userId` still runs on access that `reason` ended: on `projectId`, or on the whole
  * account for an account reason (`projectId` null). `ownerId` spares a read when the caller knows
- * the project's owner. Never throws.
+ * the project's owner. `actor` is who caused the change, named on the sandbox stop's audit row (null:
+ * the system); omitted, the person signed in to the request. Never throws.
  */
-export async function onAccessReduced(projectId: string, userId: string, reason: ProjectReduction, opts?: { ownerId?: string }): Promise<LiveWorkStopped>
-export async function onAccessReduced(projectId: null, userId: string, reason: AccountReduction, opts?: { ownerId?: string; sid?: string }): Promise<LiveWorkStopped>
+export async function onAccessReduced(projectId: string, userId: string, reason: ProjectReduction, opts?: { ownerId?: string; actor?: SandboxActor }): Promise<LiveWorkStopped>
+export async function onAccessReduced(projectId: null, userId: string, reason: AccountReduction, opts?: { ownerId?: string; sid?: string; actor?: SandboxActor }): Promise<LiveWorkStopped>
 export async function onAccessReduced(
-  projectId: string | null, userId: string, reason: AccessReducedReason, { ownerId, sid }: { ownerId?: string; sid?: string } = {},
+  projectId: string | null, userId: string, reason: AccessReducedReason,
+  { ownerId, sid, actor }: { ownerId?: string; sid?: string; actor?: SandboxActor } = {},
 ): Promise<LiveWorkStopped> {
   const plan = PLANS[reason]
   const out: LiveWorkStopped = { sockets: { closed: 0 }, failed: [] }
@@ -338,17 +361,45 @@ export async function onAccessReduced(
     const { flagged } = await cancelUserTradecraftJobs(userId)
     out.tradecraft = typeof flagged === 'number' ? { cancelled: flagged } : fail('cancel_tradecraft_jobs', flagged.error)
   }
+  if (plan.sandbox !== 'none') {
+    const outcome = await sandboxStep(plan.sandbox, reason, userId, actor)
+    out.sandbox = 'error' in outcome ? fail('sandbox', outcome.error) : { stopped: outcome.stopped }
+  }
 
   const n = (c: Counted<string> | undefined) => (c && !('error' in c) ? Object.values(c)[0] : 0)
   const total = n(out.runs) + n(out.sockets) + n(out.scans) + n(out.schedules) + n(out.triage) + n(out.navigator) + n(out.tradecraft)
+    + n(out.sandbox)
   if (total > 0) {
     console.info(
       `[rbac] revocation ${where} runs=${n(out.runs)} sockets=${n(out.sockets)} scans=${n(out.scans)} `
       + `schedules=${n(out.schedules)} triage=${n(out.triage)} navigator=${n(out.navigator)} tradecraft=${n(out.tradecraft)}`
+      + ` sandbox=${n(out.sandbox)}`
       + `${out.failed.length ? ` failed=${out.failed.join(',')}` : ''}`,
     )
   }
   return out
+}
+
+/** The stop reason the orchestrator records for an account plan that ends the person's sandboxes. */
+const ACCOUNT_END: Partial<Record<AccessReducedReason, AccountEndReason>> = {
+  account_disabled: 'account_disabled',
+  account_deleted: 'account_deleted',
+  capability_removed: 'access_lost',
+  sessions_revoked: 'access_lost',
+  credentials_reset: 'access_lost',
+  reset_link_used: 'access_lost',
+}
+
+async function sandboxStep(
+  step: 'reconcile' | 'stop', reason: AccessReducedReason, userId: string, actor: SandboxActor | undefined,
+): Promise<SandboxHookOutcome> {
+  try {
+    return step === 'reconcile'
+      ? await sandboxAccessChanged([userId], actor)
+      : await sandboxAccountEnded(userId, ACCOUNT_END[reason] ?? 'access_lost', actor)
+  } catch (err) {
+    return { error: safeErrorCode(err), stopped: 0 }
+  }
 }
 
 /**

@@ -161,6 +161,9 @@ class MessageType(str, Enum):
     # A model call is waiting for the provider's rate limit to clear before its
     # next try. Sent, never persisted: a pause, not part of the conversation.
     RATE_LIMIT_WAIT = "rate_limit_wait"
+    # The run's Kali sandbox is starting, ready or unavailable
+    # (sandbox_contract.SANDBOX_STATUS). Sent, never persisted.
+    SANDBOX_STATUS = "sandbox_status"
 
 
 # =============================================================================
@@ -645,11 +648,14 @@ class WebSocketManager:
         """
         return await self._emergency_stop(list(self._active_tasks), EMERGENCY_STOP_ALL_MESSAGE)
 
-    async def stop_for_user(self, user_id: str, project_ids: Optional[Iterable[str]] = None) -> int:
+    async def stop_for_user(self, user_id: str, project_ids: Optional[Iterable[str]] = None, *,
+                            include_acting: bool = False) -> int:
         """Emergency stop for one user: stop the runs registered under `user_id`.
 
         A run's key names the ticket's subject, the effective user, so a run an
         admin started acting as the member is the member's and stops here too.
+        `include_acting` also stops the runs `user_id` started while acting as
+        someone else (their key names that person; `run_actor` names `user_id`).
         `project_ids`, when given, limits it to those projects. Returns the number
         of runs that were cancelled; an unknown user stops nothing.
         """
@@ -661,7 +667,8 @@ class WebSocketManager:
         for key in list(self._active_tasks):
             key_user, _, rest = key.partition(":")
             key_project, _, _session = rest.partition(":")
-            if key_user == user_id and (projects is None or key_project in projects):
+            mine = key_user == user_id or (include_acting and self.run_actor(key) == user_id)
+            if mine and (projects is None or key_project in projects):
                 keys.append(key)
         return await self._emergency_stop(keys, EMERGENCY_STOP_OWN_MESSAGE)
 
@@ -743,6 +750,119 @@ class WebSocketManager:
             except Exception:
                 pass
         return cancelled
+
+
+# =============================================================================
+# THE RUN'S KALI SANDBOX IN THE DRAWER (group 1, B.13)
+# =============================================================================
+
+#: Every manager whose sockets hear sandbox_status (one in the agent; weak, so a test's goes).
+_sandbox_status_managers: "weakref.WeakSet[WebSocketManager]" = weakref.WeakSet()
+
+
+def sandbox_status_payload(event: Any) -> Optional[dict]:
+    """B.13's payload of one router event, or None when it is nothing a drawer shows (a
+    `no_user` refusal, an unknown state or reason). Only the contract's keys: never an id,
+    the lease kind or the view, and `limit` only as the governor's payload of a memory or
+    count refusal."""
+    import sandbox_contract as contract
+
+    state = event.get("state")
+    if state not in contract.SANDBOX_STATUS_STATES:
+        return None
+    payload: Dict[str, Any] = {"state": state}
+    if state != "unavailable":
+        return payload
+    reason = event.get("reason")
+    if reason not in contract.SANDBOX_STATUS_REASONS:
+        return None
+    payload["reason"] = reason
+    detail = event.get("detail")
+    if isinstance(detail, str) and detail:
+        payload["detail"] = detail
+    limit = event.get("limit")
+    if reason in contract.LIMIT_TYPES and isinstance(limit, dict):
+        kept = {k: limit[k] for k in contract.LIMIT_PAYLOAD_KEYS if k in limit}
+        if kept:
+            payload["limit"] = kept
+    return payload
+
+
+def _sandbox_view_of(connection: WebSocketConnection) -> str:
+    """The view of the runs this socket starts: an admin acting as the person works in the
+    person's `act_as` view (TD-26), as sandbox_router.sandbox_view() reads the run actor."""
+    import sandbox_contract as contract
+
+    return contract.VIEW_ACT_AS if connection.actor_id else contract.VIEW_OWN
+
+
+async def deliver_sandbox_status(manager: WebSocketManager, event: Any) -> int:
+    """Send one router event to the socket of the run that asked; how many sockets got it.
+
+    Only a `run` lease's event (a job, a Tradecraft fetch or a triage refresh acquired inside
+    the run carries the run's session id too, and a job reports through job_update); an
+    event with no kind is dropped. The socket must be the same person (its user, the member
+    under act-as), the same session, the same project when the event names one, and the same
+    view when the event names one: a memory refusal carries the instance's figures."""
+    import sandbox_contract as contract
+
+    if not isinstance(event, dict) or event.get("kind") != "run":
+        return 0
+    person, session = event.get("user_id"), event.get("session_id")
+    if not (isinstance(person, str) and person and isinstance(session, str) and session):
+        return 0
+    project, view = event.get("project_id"), event.get("view")
+    if project is not None and not isinstance(project, str):
+        return 0
+    if view is not None and view not in contract.VIEWS:
+        return 0
+    payload = sandbox_status_payload(event)
+    if payload is None:
+        return 0
+    sent = 0
+    for conn in list(manager.active_connections.values()):
+        if not conn.authenticated or conn.user_id != person or conn.session_id != session:
+            continue
+        if project is not None and conn.project_id != project:
+            continue
+        if view is not None and _sandbox_view_of(conn) != view:
+            continue
+        await conn.send_message(MessageType.SANDBOX_STATUS, payload)
+        sent += 1
+    return sent
+
+
+async def _on_sandbox_status(event: Any) -> None:
+    """The one sandbox_router status listener. Never raises: a failure here must not break
+    the Kali work that emitted the event."""
+    for manager in list(_sandbox_status_managers):
+        try:
+            await deliver_sandbox_status(manager, event)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[sandbox] status frame not delivered: {type(exc).__name__}")
+
+
+def subscribe_sandbox_status(manager: WebSocketManager) -> None:
+    """Called once at start-up with the agent's manager: the drawer hears its run's sandbox
+    starting, ready or unavailable. Idempotent; never raises into the start-up."""
+    try:
+        import sandbox_router
+
+        _sandbox_status_managers.add(manager)
+        sandbox_router.add_status_listener(_on_sandbox_status)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[sandbox] status listener not subscribed: {type(exc).__name__}")
+
+
+def unsubscribe_sandbox_status() -> None:
+    """At shutdown: no manager hears sandbox events any more. Never raises."""
+    _sandbox_status_managers.clear()
+    try:
+        import sandbox_router
+
+        sandbox_router.remove_status_listener(_on_sandbox_status)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[sandbox] status listener not removed: {type(exc).__name__}")
 
 
 # =============================================================================

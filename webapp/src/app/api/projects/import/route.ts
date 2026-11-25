@@ -16,6 +16,7 @@ import { envelopeForKind } from '@/lib/jobQueue'
 import { allErrors, validateNodeFilters } from '@/lib/nodeFilters/validate'
 import { coerceDoc } from '@/lib/nodeFilters/model'
 import { muteRulesFingerprint, parseLoadedPresetInput, parsePresetText } from '@/lib/nodeFilters/presets'
+import { canonicalJson } from '@/lib/fingerprint'
 import {
   PRESET_DESCRIPTION_MAX,
   PRESET_NAME_MAX,
@@ -512,7 +513,7 @@ export async function POST(request: NextRequest) {
         const CHUNK_SIZE = 500
         const remediationBatch = remediations.map(rem => {
           const { id: _id, projectId: _pid, createdAt: _ca, updatedAt: _ua, ...fields } = rem
-          return { ...fields, projectId: newProject.id } as any
+          return { ...fields, projectId: newProject.id } as Prisma.RemediationCreateManyInput
         })
 
         for (let i = 0; i < remediationBatch.length; i += CHUNK_SIZE) {
@@ -624,12 +625,23 @@ export async function POST(request: NextRequest) {
     // already exists by now, so one bad row must be skipped and reported rather
     // than turn the whole import into a 500. Only preset fields are stored, and
     // the bundle's own provenance is ignored - this door is the import.
+    // An export carries the owner's whole library, so a preset this user already has
+    // (same name, description and settings) is skipped, as the Mute Rules presets
+    // below are: importing exports back into one account doubled its library each time.
     const presetsFile = zip.file('presets/user_project_presets.json')
     if (presetsFile) {
       let imported = 0
       let skipped = 0
       try {
         const presets = JSON.parse(await presetsFile.async('text'))
+        const presetKey = (name: string, description: unknown, settings: unknown) =>
+          `${name}\u0000${typeof description === 'string' ? description : ''}\u0000${canonicalJson(settings)}`
+        const names = (Array.isArray(presets) ? presets : [])
+          .map(p => sanitizePresetText(p?.name, PRESET_NAME_MAX)).filter((n): n is string => Boolean(n))
+        const have = new Set((await prisma.userProjectPreset.findMany({
+          where: { userId, name: { in: [...new Set(names)] } },
+          select: { name: true, description: true, settings: true },
+        })).map(p => presetKey(p.name, p.description, p.settings)))
         for (const preset of Array.isArray(presets) ? presets : []) {
           try {
             const name = sanitizePresetText(preset?.name, PRESET_NAME_MAX)
@@ -645,11 +657,15 @@ export async function POST(request: NextRequest) {
               else delete presetSettings.attackSkillConfig
               skillToggleNotes.push(...skillToggleWarnings(trimmed, `preset "${name}"`))
             }
+            const description = sanitizePresetText(preset?.description, PRESET_DESCRIPTION_MAX, { multiline: true })
+            const k = presetKey(name, description, stored.settings)
+            if (have.has(k)) continue
+            have.add(k)
             await prisma.userProjectPreset.create({
               data: {
                 userId,
                 name,
-                description: sanitizePresetText(preset?.description, PRESET_DESCRIPTION_MAX, { multiline: true }),
+                description,
                 settings: stored.settings as never,
                 createdVia: 'import',
                 updatedVia: 'import',

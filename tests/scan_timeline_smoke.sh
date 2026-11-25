@@ -32,7 +32,9 @@ bad() { echo "  FAIL  $1"; echo "        $2"; fail=$((fail + 1)); }
 expect_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected '$2' got '$3'"; fi; }
 
 q()      { "${PSQL[@]}" -c "$1" 2>&1; }
-cypher() { docker compose exec -T neo4j cypher-shell -u neo4j -p "${NEO4J_PASSWORD:-redamon123}" --format plain "$1" 2>&1; }
+# compose requires NEO4J_PASSWORD (no default), so read the stack's own when the caller set none.
+NEO4J_PW="${NEO4J_PASSWORD:-$(grep -m1 -E '^NEO4J_PASSWORD=' .env | cut -d= -f2-)}"
+cypher() { docker compose exec -T neo4j cypher-shell -u neo4j -p "$NEO4J_PW" --format plain "$1" 2>&1; }
 # Evaluate a python expression over the JSON body on stdin; `d` is the document.
 jqf()    { python3 -c 'import json,sys; print(eval(sys.argv[1], {"d": json.load(sys.stdin)}))' "$1" 2>/dev/null; }
 
@@ -213,8 +215,8 @@ expect_eq "disabling the schedule works" "200" \
   "$(api_code PATCH "/api/projects/$P/schedules/$SCHED_ID" '{"enabled":false}')"
 expect_eq "a schedule id from another project is 404 (BOLA)" "404" \
   "$(api_code PATCH "/api/projects/$P2/schedules/$SCHED_ID" '{"enabled":true}')"
-# The orchestrator worker's own API: due feed + defer. Deliberately NOT /run —
-# that would spawn a real recon container against a real target.
+# The orchestrator worker's own API: the due feed. Deliberately NOT /run (the
+# worker's only other call): that would spawn a real recon container.
 KEY=$(grep -E '^INTERNAL_API_KEY=' .env | cut -d= -f2-)
 # Re-enable it (the disable check above turned it off) and make it due now.
 expect_eq "re-enabling a disabled schedule works" "200" \
@@ -225,20 +227,14 @@ expect_eq "the due feed lists the schedule for the worker" "1" \
   "$(echo "$due" | jqf "len([s for s in d['schedules'] if s['id']=='$SCHED_ID'])")"
 expect_eq "the due feed reports the project's activation state (F3)" "False" \
   "$(echo "$due" | jqf "[s for s in d['schedules'] if s['id']=='$SCHED_ID'][0]['activationInProgress']")"
-deferred=$(curl -sS -X POST -H "x-internal-key: $KEY" -H 'Content-Type: application/json' \
-  -d '{"reason":"graph busy: a version activation is in progress"}' \
-  "$BASE/api/internal/scan-schedules/$SCHED_ID/defer")
-expect_eq "deferring records why nothing ran" "1" \
-  "$(q "select count(*) from scan_jobs where schedule_id='$SCHED_ID' and status='deferred_ram' and ram_reason like 'graph busy%'")"
-expect_eq "deferring pushes the next attempt into the future" "True" \
-  "$(echo "$deferred" | jqf "d['nextRunAt'] is not None")"
-expect_eq "the schedule is no longer due right away" "0" \
-  "$(q "select count(*) from scan_schedules where id='$SCHED_ID' and next_run_at <= now()")"
+# One past occurrence of the schedule, as /run records a refused one.
+q "insert into scan_jobs (id, project_id, schedule_id, trigger, status, ram_reason, updated_at)
+   values ('sj_$SUF', '$P', '$SCHED_ID', 'scheduled', 'failed', 'smoke history row', now())" >/dev/null
 
 expect_eq "deleting the schedule works" "200" \
   "$(api_code DELETE "/api/projects/$P/schedules/$SCHED_ID")"
 expect_eq "its run history survives the schedule (schedule_id -> NULL)" "1" \
-  "$(q "select count(*) from scan_jobs where project_id='$P' and status='deferred_ram' and schedule_id is null")"
+  "$(q "select count(*) from scan_jobs where id='sj_$SUF' and schedule_id is null")"
 
 echo
 echo "  $pass passed, $fail failed"

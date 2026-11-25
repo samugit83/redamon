@@ -12,12 +12,16 @@ returned override wins over the per-tool policy.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import re
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import workspace_fs
 from tool_offload_policy import get_offload_mode, OFFLOAD_THRESHOLD
 
 logger = logging.getLogger(__name__)
@@ -119,27 +123,44 @@ def maybe_offload(
         return output
     # else: mode == "offload", or mode == "auto" and over threshold
 
-    outputs_dir = WORKSPACE_ROOT / project_id / "tool-outputs"
+    # tool-outputs/ is written by every sandbox of the project, and the names below
+    # are predictable: the folder is created and the file written through
+    # workspace_fs's pinned folder, as a new file only, so a link planted at the
+    # folder or at the next name is never written through (FU, STRIDE T4).
+    project_root = WORKSPACE_ROOT / project_id
+    outputs_dir = project_root / "tool-outputs"
     try:
-        outputs_dir.mkdir(parents=True, exist_ok=True)
+        workspace_fs._validate_project_id(project_id)
+        project_root.mkdir(parents=True, exist_ok=True)
+        with workspace_fs._pinned_parent(outputs_dir, project_root) as (dir_fd, name):
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(name, 0o777, dir_fd=dir_fd)
     except Exception as e:
         logger.error(f"offload: cannot create {outputs_dir}: {e}")
         return output
 
+    tool = re.sub(r"[^A-Za-z0-9_.-]", "_", str(tool_name)) or "tool"
     if job_id:
-        filename = f"{job_id}-{tool_name}.log"
+        filename = f"{job_id}-{tool}.log"
     else:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
-        filename = f"{ts}-{tool_name}.txt"
-    target = outputs_dir / filename
-
+        filename = f"{ts}-{tool}.txt"
     try:
-        target.write_text(output, encoding="utf-8")
+        # Inside the try: a lone surrogate (json.loads lets "\ud800" through) fails
+        # the encode, and the output then stays inline instead of being lost.
+        data = output.encode("utf-8")
+        try:
+            workspace_fs._write_file(outputs_dir / filename, project_root, data, create_only=True)
+        except FileExistsError:
+            # Taken: a second offload in the same second, or a name planted ahead.
+            stem, ext = os.path.splitext(filename)
+            filename = f"{stem}-{uuid.uuid4().hex[:8]}{ext}"
+            workspace_fs._write_file(outputs_dir / filename, project_root, data, create_only=True)
     except Exception as e:
-        logger.error(f"offload: failed to write {target}: {e}")
+        logger.error(f"offload: failed to write {outputs_dir / filename}: {e}")
         return output
 
-    return _format_stub(output, target.name, len(output))
+    return _format_stub(output, filename, len(output))
 
 
 def _format_stub(output: str, filename: str, byte_len: int) -> str:

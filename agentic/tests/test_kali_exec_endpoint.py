@@ -73,10 +73,10 @@ class _FakeRegistry:
         d.mkdir(parents=True, exist_ok=True)
         return d / f"{job_id}.log"
 
-    async def spawn(self, project_id, tool_name, args, runner, label=None):
+    async def spawn(self, project_id, tool_name, args, runner, label=None, **owner):
         if self.spawn_error:
             return {"error": self.spawn_error}
-        self.spawned.append({"project_id": project_id, "tool_name": tool_name, "args": args})
+        self.spawned.append({"project_id": project_id, "tool_name": tool_name, "args": args, **owner})
         log = self._log(project_id, self.job_id)
         log.touch()
 
@@ -107,7 +107,17 @@ class _FakeRegistry:
 
 
 class _Base(unittest.IsolatedAsyncioTestCase):
+    """The route's wiring, on the token owner's own sandbox (a per-user gateway double)."""
+
     def setUp(self):
+        import sandbox_router
+        from sandbox_route_fakes import WEBAPP, Fleet
+
+        sandbox_router._reset()
+        self.addCleanup(sandbox_router._reset)
+        self.fleet = Fleet()
+        # A running sandbox: the route waits inline, as it does for a warm one.
+        self.fleet.add("alice")
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = self._tmp.name
@@ -117,12 +127,21 @@ class _Base(unittest.IsolatedAsyncioTestCase):
             mock.patch.dict(os.environ, {"WORKSPACE_ROOT": self.root}),
             mock.patch.object(api, "orchestrator", mock.Mock(tool_executor=self.executor)),
             mock.patch.object(api.job_runner, "get_registry", return_value=self.registry),
+            mock.patch.object(sandbox_router, "_transport", self.fleet.transport()),
+            mock.patch.dict(sandbox_router.INTERNAL_HEADERS, {"X-Internal-Key": "test-internal-key"}),
+            mock.patch.object(sandbox_router, "WEBAPP_API_URL", WEBAPP),
         ]
         for p in patches:
             p.start()
         self.addCleanup(lambda: [p.stop() for p in patches])
 
+    async def asyncTearDown(self):
+        import sandbox_router
+
+        await sandbox_router.shutdown()
+
     async def _exec(self, command, **kw):
+        kw.setdefault("user_id", "alice")
         return await api.kali_exec(api.KaliExecRequest(project_id="p1", command=command, **kw))
 
     def _seed(self, project_id, job_id, text):
@@ -232,7 +251,7 @@ class ExecTests(_Base):
     async def test_an_empty_command_is_still_refused(self):
         # The one check that survives: there is nothing to run.
         for cmd in ("", "   "):
-            resp = await api.kali_exec(api.KaliExecRequest(project_id="p1", command=cmd))
+            resp = await api.kali_exec(api.KaliExecRequest(project_id="p1", command=cmd, user_id="alice"))
             self.assertEqual(resp.status_code, 400)
 
     async def test_an_uninitialised_sandbox_is_unavailable_not_silent(self):
@@ -241,7 +260,8 @@ class ExecTests(_Base):
         self.assertEqual(resp.status_code, 503)
 
     async def test_a_missing_project_id_is_refused(self):
-        resp = await api.kali_exec(api.KaliExecRequest(project_id="", command="curl https://acme.tld"))
+        resp = await api.kali_exec(api.KaliExecRequest(project_id="", command="curl https://acme.tld",
+                                                        user_id="alice"))
         self.assertEqual(resp.status_code, 400)
 
     async def test_the_job_cap_is_reported_as_a_retryable_limit(self):
@@ -415,3 +435,246 @@ class FailedJobIsNotAMissingJobTests(_Base):
         self.assertEqual(resp.status_code, 404)
 
 
+
+
+# =============================================================================
+# Per-user Kali sandboxes (group 1, S11): routed to the token's owner, `starting` on
+# a cold sandbox, and the sandbox's failures as error codes.
+# =============================================================================
+
+import asyncio  # noqa: E402
+
+import job_runner  # noqa: E402
+import sandbox_contract as contract  # noqa: E402
+import sandbox_router as router  # noqa: E402
+import tools  # noqa: E402
+from sandbox_route_fakes import (HARD_PAYLOAD, RAM_PAYLOAD, RAM_SENTENCE, WEBAPP,  # noqa: E402
+                                 Fleet)
+
+
+class _RoutedExecutor:
+    """The executor's side of a /kali/exec job: which person's sandbox handle the call
+    ran on (the one the runner bound), and what it answers."""
+
+    def __init__(self):
+        self.calls = []
+        self.result = {"success": True, "output": "OK", "error": None}
+
+    async def execute(self, name, args, phase, skip_phase_check=False):
+        self.calls.append({"name": name, "args": args, "handle": tools.current_sandbox_handle(),
+                           "person": router.sandbox_user()})
+        return dict(self.result)
+
+
+class _PerUserBase(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = self._tmp.name
+        self.fleet = Fleet()
+        self.executor = _RoutedExecutor()
+        router._reset()
+        self.registry = job_runner.JobRegistry()
+        self._patches = [
+            mock.patch.dict(os.environ, {"WORKSPACE_ROOT": self.root}),
+            mock.patch.object(job_runner, "WORKSPACE_ROOT", Path(self.root)),
+            mock.patch.object(api, "orchestrator", mock.Mock(tool_executor=self.executor)),
+            mock.patch.object(api.job_runner, "get_registry", return_value=self.registry),
+            mock.patch.object(router, "_transport", self.fleet.transport()),
+            mock.patch.dict(router.INTERNAL_HEADERS, {"X-Internal-Key": "test-internal-key"}),
+            mock.patch.object(router, "WEBAPP_API_URL", WEBAPP),
+        ]
+        for p in self._patches:
+            p.start()
+
+    async def asyncTearDown(self):
+        await router._shutdown()
+        for p in reversed(self._patches):
+            p.stop()
+        router._reset()
+
+    async def _exec(self, command="nmap -sV acme.tld", **kw):
+        kw.setdefault("wait_seconds", 5)
+        return await api.kali_exec(api.KaliExecRequest(project_id="p1", command=command, **kw))
+
+    async def _finish(self, job_id):
+        await self.registry.wait("p1", job_id, timeout_sec=10)
+
+    async def _poll(self, job_id, **kw):
+        return await api.kali_exec_status(job_id, project_id="p1", cursor=0, **kw)
+
+
+class PerUserExecRoutingTests(_PerUserBase):
+    async def test_a_cold_sandbox_answers_starting_at_once(self):
+        """MCP kali_exec on a person whose sandbox is not running: the job exists at once
+        and the answer says `starting`, without waiting for the cold start."""
+        self.fleet.cold.add(("alice", "own"))
+        self.fleet.ensure_delay = 0.3
+        body = _body(await self._exec(user_id="alice"))
+        self.assertEqual(body["status"], contract.KALI_EXEC_STATUS_STARTING)
+        self.assertEqual(self.executor.calls, [], "the answer came before the command ran")
+        await self._finish(body["job_id"])
+        done = _body(await self._poll(body["job_id"], user_id="alice"))
+        self.assertEqual(done["status"], "done")
+        self.assertIn("OK", done["output"])
+        self.assertNotIn("error_code", done)
+
+    async def test_a_running_sandbox_waits_as_today(self):
+        self.fleet.add("alice")
+        body = _body(await self._exec(user_id="alice"))
+        self.assertEqual(body["status"], "done")
+        self.assertIn("OK", body["output"])
+
+    async def test_the_command_runs_in_the_token_owners_sandbox(self):
+        bob = self.fleet.add("bob")
+        alice = self.fleet.add("alice")
+        body = _body(await self._exec(user_id="alice"))
+        self.assertEqual(body["status"], "done")
+        call = self.executor.calls[0]
+        self.assertEqual(call["person"], "alice")
+        self.assertEqual((call["handle"].user_id, call["handle"].view, call["handle"].instance),
+                         ("alice", contract.VIEW_OWN, alice.instance))
+        self.assertNotEqual(call["handle"].instance, bob.instance)
+        self.assertEqual({b["userId"] for b in self.fleet.ensures()}, {"alice"})
+        self.assertTrue(all(not b.get("actingAs") for b in self.fleet.ensures()))
+        self.assertEqual([lease["kind"] for lease in self.fleet.leases()], ["exec"])
+        self.assertEqual(len(self.fleet.releases()), 1, "the exec lease ends with the job")
+
+    async def test_a_missing_person_is_refused(self):
+        """A request that names nobody has no sandbox to run in: refused before a job is
+        created or the gateway asked (there is no other container to fall back to)."""
+        self.fleet.add("alice")
+        resp = await self._exec()
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(_body(resp)["code"], contract.ERR_INVALID_USER_ID)
+        self.assertEqual(self.executor.calls, [])
+        self.assertEqual(self.registry._jobs, {})
+        self.assertEqual(self.fleet.gateway_requests, [])
+
+    async def test_a_malformed_person_is_refused(self):
+        for bad in ("../alice", "a b", "x" * 65, "ensure"):
+            resp = await self._exec(user_id=bad)
+            self.assertEqual(resp.status_code, 400, bad)
+        self.assertEqual(self.fleet.ensures(), [])
+
+
+class PerUserExecFailureTests(_PerUserBase):
+    async def _failed(self, **fleet):
+        for key, value in fleet.items():
+            setattr(self.fleet, key, value)
+        body = _body(await self._exec(user_id="alice"))
+        await self._finish(body["job_id"])
+        return _body(await self._poll(body["job_id"], user_id="alice"))
+
+    async def test_not_enough_memory_is_the_ram_code_with_the_governors_sentence(self):
+        view = await self._failed(ensure_answer=(409, {"code": contract.ERR_RAM, **RAM_PAYLOAD}))
+        self.assertEqual(view["status"], "failed")
+        self.assertEqual(view["error_code"], "ram")
+        self.assertEqual(view["error"], RAM_SENTENCE)
+
+    async def test_the_sandbox_limit_is_the_hard_code(self):
+        view = await self._failed(ensure_answer=(409, {"code": contract.ERR_HARD, **HARD_PAYLOAD}))
+        self.assertEqual(view["error_code"], "hard")
+        self.assertEqual(view["error"], "3 of 3 Kali sandboxes allowed")
+
+    async def test_a_refused_person_is_the_sandbox_refused_code(self):
+        view = await self._failed(ensure_answer=(403, {"code": contract.ERR_USER_REFUSED}))
+        self.assertEqual(view["error_code"], "sandbox_refused")
+        self.assertEqual(view["error"], contract.SANDBOX_REFUSED)
+
+    async def test_a_start_error_is_the_sandbox_error_code(self):
+        view = await self._failed(ensure_answer=(503, {"code": contract.ERR_START_FAILED}))
+        self.assertEqual(view["error_code"], "sandbox_error")
+        self.assertEqual(view["error"], contract.SANDBOX_UNAVAILABLE_ERROR)
+
+    async def test_a_sandbox_gone_during_the_call_is_the_sandbox_stopped_code(self):
+        self.fleet.add("alice")
+        self.executor.result = {"success": False, "output": None, "error": contract.SANDBOX_STOPPED}
+        body = _body(await self._exec(user_id="alice"))
+        await self._finish(body["job_id"])
+        view = _body(await self._poll(body["job_id"], user_id="alice"))
+        self.assertEqual(view["status"], "failed")
+        self.assertEqual(view["error_code"], "sandbox_stopped")
+        self.assertEqual(view["error"], contract.SANDBOX_STOPPED)
+
+    async def test_the_ram_text_is_only_ever_a_governor_sentence(self):
+        """S18 review F3: the `error` of a ram/hard failure reaches the MCP caller
+        verbatim, so it is the governor's fixed sentence or the contract's, never
+        command output, an exception or whatever the ensure body carried."""
+        hostile = dict(RAM_PAYLOAD, detail="uid=0(root) /proc/1/environ INTERNAL_API_KEY=xyz")
+        view = await self._failed(ensure_answer=(409, {"code": contract.ERR_RAM, **hostile}))
+        self.assertEqual(view["error_code"], "ram")
+        self.assertEqual(view["error"], contract.SANDBOX_UNAVAILABLE_RAM)
+        hostile = dict(HARD_PAYLOAD, detail="3 of 3 Kali sandboxes allowed; rm -rf /")
+        router._reset()
+        view = await self._failed(ensure_answer=(409, {"code": contract.ERR_HARD, **hostile}))
+        self.assertEqual(view["error"], contract.SANDBOX_UNAVAILABLE_HARD)
+
+    async def test_an_error_code_never_comes_from_the_jobs_own_metadata(self):
+        """The meta file sits in the project's workspace, which a sandbox writes: its
+        fields never become an error code."""
+        d = Path(self.root) / "p1" / "jobs"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{JOB}.log").write_text("x")
+        (d / f"{JOB}.meta.json").write_text(
+            '{"job_id": "%s", "status": "failed", "error_code": "ram", "error": "forged"}' % JOB)
+        view = _body(await self._poll(JOB))
+        self.assertNotIn("error_code", view)
+
+
+class PerUserPollAndCancelTests(_PerUserBase):
+    """S18 review F2: a person polls or cancels only their own command when the webapp
+    names them; another person's job is the same 404 as a job that does not exist."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.fleet.add("alice")
+        self.fleet.add("bob")
+        self.fleet.ensure_delay = 0.5
+        self.fleet.cold.add(("carol", "own"))
+        body = _body(await self._exec(user_id="carol", wait_seconds=0))
+        self.job = body["job_id"]
+
+    async def asyncTearDown(self):
+        await self.registry.cancel("p1", self.job)
+        await super().asyncTearDown()
+
+    async def test_another_persons_job_is_not_found(self):
+        resp = await self._poll(self.job, user_id="bob")
+        self.assertEqual(resp.status_code, 404)
+        resp = await api.kali_exec_cancel(self.job, project_id="p1", user_id="bob")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(self.registry.status("p1", self.job)["status"], "running")
+
+    async def test_the_owner_polls_and_cancels(self):
+        self.assertEqual((await self._poll(self.job, user_id="carol")).status_code, 200)
+        resp = await api.kali_exec_cancel(self.job, project_id="p1", user_id="carol")
+        self.assertEqual(_body(resp)["status"], "cancelled")
+
+    async def test_without_a_person_a_job_recorded_for_someone_is_not_found(self):
+        """The webapp always names the token's owner (kaliClient.ts); a call that names no
+        one never reads or cancels a command the agent recorded for a person."""
+        self.assertEqual((await self._poll(self.job)).status_code, 404)
+        resp = await api.kali_exec_cancel(self.job, project_id="p1")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(self.registry.status("p1", self.job)["status"], "running")
+
+    async def test_a_job_recorded_for_no_one_is_decided_by_project_and_id(self):
+        # A record written before owners were kept names no one (and the agent's own map
+        # is gone after a restart).
+        router.forget_job(self.job)
+        self.registry._jobs[self.job].owner_user = None
+        self.assertEqual((await self._poll(self.job)).status_code, 200)
+
+    async def test_after_a_restart_the_record_still_names_its_owner(self):
+        """The agent's own map is gone after a restart; the job's record names who started
+        it, so another person still reads and stops nothing."""
+        router.forget_job(self.job)
+        self.assertEqual((await self._poll(self.job, user_id="bob")).status_code, 404)
+        resp = await api.kali_exec_cancel(self.job, project_id="p1", user_id="bob")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual((await self._poll(self.job, user_id="carol")).status_code, 200)
+
+    async def test_a_starting_job_reads_starting_when_polled(self):
+        view = _body(await self._poll(self.job, user_id="carol"))
+        self.assertEqual(view["status"], contract.KALI_EXEC_STATUS_STARTING)

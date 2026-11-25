@@ -49,7 +49,10 @@ docker network connect redamon-network h2-guinea-edge
 docker network connect redamon-network h2-guinea-backend
 ```
 
-The agent reaches h2c via the `h2` package in kali-sandbox (`execute_code`). Create a
+The agent reaches h2c via the `h2` package in your Kali sandbox (`execute_code`), which
+is on neither network: connect the edge to your sandbox network too
+(`docker network connect redamon-sbx-<key> h2-guinea-edge`, see
+[Reaching a lab from a Kali sandbox](../README.md#reaching-a-lab-from-a-kali-sandbox)). Create a
 project with **target = `http://h2-guinea-edge`**, enable the **HTTP Request Smuggling
 / Desync** skill, and ask the agent to test the HTTP/2 edge for a downgrade desync and
 reach the edge-blocked `/admin`. The skill's H2 step steers to the Python `h2` library

@@ -22,11 +22,12 @@ import { readJsonBody } from '@/lib/jsonBody'
 import { crossOriginResponse, sameOrigin } from '@/lib/plugins/sameOrigin'
 import { withRouteErrors } from '@/lib/routeErrors'
 import { stopAllNavigatorRuns } from '@/lib/navigator/stopAll'
+import { reconcileRunningSandboxes } from '@/lib/sandbox/lifecycle'
 import {
   CAPTURE_FIELDS, changedCaptureFields, changedTunnelFields, instanceSettingsInForce, maskSecret,
   parseCapturePatch, writeInstanceSettings,
 } from '@/lib/sharedInstanceSettings'
-import { CAPTURE_RECREATE_FIELDS, pushTunnelConfig, reconcileCaptureProxy } from '@/lib/sharedSettingsEffects'
+import { CAPTURE_RECREATE_FIELDS, reconcileCaptureProxy } from '@/lib/sharedSettingsEffects'
 import type { SaveWarning } from '@/app/api/users/[id]/settings/saveWarnings'
 import {
   applyQuotaPatch, changedQuotaKeys, parseQuotaPatch, parseQuotaStore, quotasInForce, quotaStoreToJson,
@@ -56,7 +57,13 @@ import { changeRetention, parseRetentionDays, retentionChangeOf, retentionState,
  * one), keeps the user settings route's rules for the tunnel (a new chisel URL needs its auth
  * typed again, HD-24, and the person's password, ID-25), mirrors each changed group into a
  * user row, audits `instance.settings_changed` with the field names, then applies the change:
- * the capture proxy follows its switch and spawn-time knobs, the sandbox takes the tunnel.
+ * the capture proxy follows its switch and spawn-time knobs.
+ *
+ * Every person runs their own tunnel from their own user settings, in their own Kali sandbox
+ * (group 1, OQ-G1-2 default A): the instance tunnel is unused, shown read-only with
+ * `tunnelsPerPerson`, and a change of it is 409 `tunnels_per_person` before anything is written,
+ * mirrored into a user row (which would become that person's own tunnel) or pushed. Only its "off"
+ * is taken, stored and never mirrored.
  *
  * The security policy (password policy, session and link lifetimes, impersonation settings,
  * public base URL; step 2.6) is the confirmed Root's: every administrator account reads it
@@ -135,6 +142,9 @@ async function access(fresh: boolean): Promise<Access | NextResponse> {
   return { session, principal, admin, capture, tunnels, quotas }
 }
 
+const TUNNELS_PER_PERSON =
+  'Tunnels are per person: each person turns on their own, with their own credentials, in Global Settings, and it runs in their own Kali sandbox. The instance tunnel is not used.'
+
 const ROOT_ONLY_POLICY = 'Only Root can change the instance security policy.'
 const ROOT_ONLY_SHARING = 'Only Root can change the instance sharing policy.'
 const ROOT_ONLY_RETENTION = 'Only Root can change the audit retention.'
@@ -153,6 +163,8 @@ function view(row: InstanceSettings, a: Access, standing: RootStanding, warnings
       : {}),
     ...(a.capture ? Object.fromEntries(CAPTURE_FIELDS.map((f) => [f, row[f]])) : {}),
     canManageTunnels: a.tunnels.allowed,
+    // The tunnel group is unused: every person runs their own, in their own Kali sandbox.
+    ...(a.tunnels.allowed ? { tunnelsPerPerson: true } : {}),
     canManageCapture: a.capture,
     ...(a.admin
       ? { securityPolicy: securityPolicyView(row as unknown as Record<string, unknown>), canManageSecurityPolicy: standing === 'confirmed' }
@@ -231,6 +243,11 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
   if (tunnelChanges.length && !a.tunnels.allowed) {
     return forbidden('Only whoever holds platform:tunnels changes the instance tunnel.', 'platform:tunnels', { fields: tunnelChanges })
   }
+  // Only the instance tunnel's "off" is taken.
+  const instanceOff = 'tunnelsEnabled' in body && !body.tunnelsEnabled && tunnelChanges.every((f) => f === 'tunnelsEnabled')
+  if (tunnelChanges.length && !instanceOff) {
+    return NextResponse.json({ error: TUNNELS_PER_PERSON, code: 'tunnels_per_person', fields: tunnelChanges }, { status: 409 })
+  }
   if (captureChanges.length && !a.capture) {
     return forbidden('Only whoever holds platform:traffic_capture changes the TrafficMind settings.', 'platform:traffic_capture', {
       fields: captureChanges,
@@ -273,10 +290,10 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
 
   const otherChanges = tunnelChanges.length || captureChanges.length || policyChanges.length || sharingChanges.length
     || quotaChanges.length || navigatorChange
-  if (!otherChanges && !retentionChange) return answer(row, a, standing)
   if (!otherChanges) {
-    await changeRetention(retentionAsk!.days, auditActorOf(sessionActor(a.session)), now())
-    return answer((await instanceSettingsInForce()) ?? row, a, standing)
+    if (retentionChange) await changeRetention(retentionAsk!.days, auditActorOf(sessionActor(a.session)), now())
+    const current = retentionChange ? (await instanceSettingsInForce()) ?? row : row
+    return answer(current, a, standing)
   }
 
   const data: Record<string, unknown> = {}
@@ -304,8 +321,14 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
     actor: auditActorOf(sessionActor(a.session)),
     tunnelVia: tunnelChanges.length ? a.tunnels.via : null,
     ...(Object.keys(changedKeys).length ? { changedKeys } : {}),
+    skipMirror: ['tunnel'] as const,
   })
-  if (sharingChanges.length) invalidateSharingPolicy()
+  if (sharingChanges.length) {
+    invalidateSharingPolicy()
+    // A narrower policy drops shared projects from people's Kali sandbox lists (group 1): the running
+    // sandboxes are reconciled now, in the background; the RBAC sweep's backstop catches any it misses.
+    void reconcileRunningSandboxes(auditActorOf(sessionActor(a.session))).catch(() => undefined)
+  }
   // Off: every answer being written ends now; each tool call refuses from here anyway (fresh switch read).
   if (navigatorChange && saved.navigatorEnabled === false) stopAllNavigatorRuns()
 
@@ -315,10 +338,6 @@ export const PUT = withRouteErrors('Could not save the instance settings', async
     recreateFieldChanged: CAPTURE_RECREATE_FIELDS.some((f) => captureChanges.includes(f)),
   })
   if (captureWarning) warnings.push(captureWarning)
-  if (tunnelChanges.length) {
-    const tunnelWarning = await pushTunnelConfig(saved)
-    if (tunnelWarning) warnings.push(tunnelWarning)
-  }
   if (retentionChange) {
     await changeRetention(retentionAsk!.days, auditActorOf(sessionActor(a.session)), now())
     return answer((await instanceSettingsInForce()) ?? saved, a, standing, warnings)

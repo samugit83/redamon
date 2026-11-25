@@ -31,11 +31,12 @@ TOLERANCE = float(os.environ.get("MEM_SAFETY_TOLERANCE", "0.25") or "0.25")
 PROFILE_PATH = os.environ.get("RESOURCE_PROFILE_PATH") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "resource_profile.json")
 
-# Always-on core services (container names) that make up service_baseline.
+# Always-on core services (container names) that make up service_baseline. The
+# per-user Kali sandboxes are not among them: the ledger admits each with its own
+# envelope, and their image matches no TOOL_KEYS hint, so they are never sampled.
 ALWAYS_ON = [
     "redamon-neo4j", "redamon-postgres", "redamon-gvm-gvmd", "redamon-agent",
-    "redamon-recon-orchestrator", "redamon-webapp", "redamon-kali",
-    "redamon-docker-broker",
+    "redamon-recon-orchestrator", "redamon-webapp", "redamon-docker-broker",
 ]
 
 # Sibling tool images -> the tool key used in tool_container_envelope_bytes.

@@ -246,9 +246,11 @@ describe('anyone else: root_only, nothing written', () => {
 
   test('the refusal comes before the tunnel part is written: an admin changing both changes neither', async () => {
     await signIn('admin-a')
-    const res = await put({ tunnelsEnabled: true, resetTtlHours: 2, stepUpPassword: 'right-password' })
+    // The instance tunnel takes only its "off" (tunnels are per person, group 1).
+    h.instance = { ...h.instance!, tunnelsEnabled: true }
+    const res = await put({ tunnelsEnabled: false, resetTtlHours: 2, stepUpPassword: 'right-password' })
     expect(res.status).toBe(403)
-    expect(h.instance!.tunnelsEnabled).toBe(false)
+    expect(h.instance!.tunnelsEnabled).toBe(true)
     expect(changes()).toEqual([])
   })
 })
@@ -256,9 +258,10 @@ describe('anyone else: root_only, nothing written', () => {
 describe('what needs neither', () => {
   test('an admin saving the policy unchanged with a tunnel change (a whole form)', async () => {
     await signIn('admin-a')
-    const res = await put({ ...POLICY, tunnelsEnabled: true })
+    h.instance = { ...h.instance!, tunnelsEnabled: true }
+    const res = await put({ ...POLICY, tunnelsEnabled: false })
     expect(res.status).toBe(200)
-    expect(h.instance!.tunnelsEnabled).toBe(true)
+    expect(h.instance!.tunnelsEnabled).toBe(false)
     expect(changes()).toMatchObject([{ after: { fields: ['tunnelsEnabled'] } }])
   })
 

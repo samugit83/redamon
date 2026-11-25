@@ -776,8 +776,10 @@ Spawn specifics (`container_manager.py`):
 (`redamon-local-llm`) on demand:
 
 - Orchestrator reaches it via container DNS (`http://redamon-local-llm:11434`); the
-  **scan container** reaches it via the published port (`http://localhost:11434`,
-  passed in as `judge_base_url`).
+  **scan container** (host network) reaches it via the port published on the host's
+  loopback (`http://localhost:11434`, passed in as `judge_base_url`). The publish names
+  `127.0.0.1` (`LLM_PUBLISH_HOST`): Ollama's API has no authentication, so nothing off
+  the host may reach it.
 - Model weights (default `qwen2.5:7b`) are pulled once and cached in the
   `redamon_llm_models` volume, surviving container removal.
 - Leases are ref-counted; the Ollama container is stopped/removed when the last scan

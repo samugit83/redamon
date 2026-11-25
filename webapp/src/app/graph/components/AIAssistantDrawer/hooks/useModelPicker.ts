@@ -27,6 +27,7 @@ export function useModelPicker(userId: string, onModelChange?: (modelId: string)
   const setShowModelModal = useCallback((show: boolean) => {
     if (show && modelRefusal) return
     setShowModelModalState(show)
+    if (!show) setModelSearch('')
   }, [modelRefusal])
 
   const allModels = fromOwner ? owner.models ?? NO_MODELS : ownModels
@@ -39,6 +40,7 @@ export function useModelPicker(userId: string, onModelChange?: (modelId: string)
   useEffect(() => {
     if (!showModelModal || fromOwner) return
     let cancelled = false
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- a fetch started by an effect (the modal opening, or the user changing while open) marks itself loading as it starts
     setModelsLoading(true)
     setModelsError(null)
     fetchModelOptions(userId)
@@ -50,12 +52,10 @@ export function useModelPicker(userId: string, onModelChange?: (modelId: string)
     return () => { cancelled = true }
   }, [showModelModal, userId, fromOwner])
 
-  // Auto-focus search when modal opens
+  // Auto-focus search when modal opens (closing it clears the search, in setShowModelModal)
   useEffect(() => {
     if (showModelModal) {
       setTimeout(() => modelSearchRef.current?.focus(), 0)
-    } else {
-      setModelSearch('')
     }
   }, [showModelModal])
 

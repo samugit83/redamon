@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { rowCap } from '../rowCap'
 import { requirePermission } from '@/lib/authz/guards'
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import type { Record as Neo4jRecord } from 'neo4j-driver'
 import { internalError } from '@/lib/routeErrors'
 import { currentDns } from '@/lib/graph/forwardDns'
 
@@ -124,7 +125,7 @@ export async function GET(request: NextRequest) {
       { pid: projectId }
     )
 
-    const mapDomainRow = (r: any) => ({
+    const mapDomainRow = (r: Neo4jRecord) => ({
       nodeId: (r.get('nodeId') as string | null) ?? null,
       assetType: r.get('assetType') as string,
       asset: (r.get('asset') as string) || '',
@@ -161,7 +162,7 @@ export async function GET(request: NextRequest) {
       updatedAt: (r.get('updatedAt') ?? null) as unknown,
     })
 
-    const mapIpRow = (r: any) => ({
+    const mapIpRow = (r: Neo4jRecord) => ({
       nodeId: (r.get('nodeId') as string | null) ?? null,
       assetType: r.get('assetType') as string,
       asset: (r.get('asset') as string) || '',
@@ -228,7 +229,7 @@ export async function GET(request: NextRequest) {
     // Same row shape as the other two arms with the VT/OTX/CriminalIP columns
     // null, so the table renders one uniform grid and the per-column filter
     // engine sees every key.
-    const mapContactRow = (r: any) => ({
+    const mapContactRow = (r: Neo4jRecord) => ({
       nodeId: (r.get('nodeId') as string | null) ?? null,
       assetType: r.get('assetType') as string,
       asset: (r.get('asset') as string) || '',

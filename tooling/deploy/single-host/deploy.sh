@@ -10,7 +10,8 @@
 #  Public surface reduced to ONE PORT: 443. That serves the webapp UI and, when
 #  MCP_SERVER_ENABLED=true, the credentialed inbound MCP endpoint
 #  (/api/mcp-server) that external AI agents connect to. The agent
-#  API, MCP servers, DBs, orchestrator and reverse-shell catcher stay on loopback.
+#  API, DBs and orchestrator stay on loopback; the per-user Kali sandboxes publish
+#  nothing but an optional loopback port pool.
 #
 #  Config lives in tooling/deploy/single-host/.env (see .env.example). A run is just:
 #      ./deploy.sh init
@@ -49,8 +50,8 @@ Examples:
   ./deploy.sh init 1.2.3.4 ~/.ssh/redamon.pem ubuntu
   ./deploy.sh status --env staging
   ./deploy.sh logs agent
-  ./deploy.sh revshell-open      # per-engagement: expose 4444 to REVSHELL_TARGET_CIDRS
-  ./deploy.sh revshell-close     # tear the 4444 forwarder down
+  ./deploy.sh revshell-open      # per-engagement: expose KALI_SANDBOX_PORT_POOL to REVSHELL_TARGET_CIDRS
+  ./deploy.sh revshell-close     # tear the reverse-shell forwarders down
 USAGE
   exit 1
 }
@@ -126,6 +127,11 @@ CERT_BASE="${LEGACY_CERT_DIR:-$SCRIPT_DIR}"
 : "${ENABLE_GVM:=false}"; : "${ENABLE_KB:=false}"; : "${ENABLE_KB_REFRESH:=false}"; : "${ENABLE_ZRAM:=true}"
 : "${SWAP_PCT:=25}"; : "${SWAP_SIZE_GB:=}"; : "${REDAMON_SKIP_RAM_GATE:=false}"; : "${REDAMON_SKIP_DISK_GATE:=false}"; : "${REDAMON_BUILD_PARALLEL:=}"; : "${DOCKER_DNS:=}"; : "${DOCKER_BUILD_CACHE_MAX_GB:=}"
 : "${REVSHELL_TARGET_CIDRS:=}"; : "${TUNNELS_ENABLED:=false}"
+# Per-user Kali sandboxes (the orchestrator's knobs). Empty: removed from the server
+# .env by init and update, so the app's defaults hold (no port pool, no count limit,
+# 20 idle minutes, a 24-hour hold on a stopped sandbox's pool port).
+: "${KALI_SANDBOX_PORT_POOL:=}"; : "${KALI_SANDBOX_MAX_CONCURRENT:=}"; : "${KALI_SANDBOX_IDLE_MINUTES:=}"
+: "${KALI_SANDBOX_PORT_HOLD_HOURS:=}"
 # Inbound MCP server (/api/mcp-server): an external AI agent connects IN with a
 # bearer token and acts as one RedAmon user. OFF by default -- a credentialed
 # programmatic surface must be switched on deliberately, never inherited by an
@@ -187,10 +193,101 @@ NEED_CERTBOT=false; [[ "${TLS_MODE}" == "letsencrypt" ]] && NEED_CERTBOT=true
 MIN_ADMIN_PASSWORD_LEN=12
 MAX_ADMIN_PASSWORD_BYTES=72
 
+# "<first> <last>" of a pool value's first-last range, whatever address precedes it;
+# fails unless it ends in a valid range.
+pool_span() {
+  local range="${1##*:}" first last
+  [[ "$range" =~ ^([0-9]{1,5})-([0-9]{1,5})$ ]] || return 1
+  first=$((10#${BASH_REMATCH[1]})); last=$((10#${BASH_REMATCH[2]}))
+  (( first >= 1 && first <= last && last <= 65535 )) || return 1
+  printf '%s %s\n' "$first" "$last"
+}
+
+# "<first> <last>" of a pool (default: this .env's KALI_SANDBOX_PORT_POOL) when it
+# reads [127.0.0.1:]first-last; fails otherwise. The orchestrator would publish the
+# pool on any address it is given; on a public host only loopback is accepted, and
+# revshell-open's forwarders are the one way in (OQ-G1-4).
+pool_range() {
+  local v="${1-${KALI_SANDBOX_PORT_POOL:-}}"
+  v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+  case "$v" in
+    127.0.0.1:*) v="${v#127.0.0.1:}" ;;
+    *:*) return 1 ;;
+  esac
+  pool_span "$v"
+}
+
+# One key's value in the server's app .env, or nothing; never the whole file, which
+# holds every secret. The app runs with that file, and it lags this .env until an
+# update carries a change, or for good when the server's REPO_BRANCH ignores the key.
+server_app_env() {
+  local line
+  line="$($SSH "grep -m1 '^${1}=' \"\$HOME/${APP_DIR}/.env\"" 2>/dev/null)" || true
+  line="${line#*=}"
+  printf '%s' "${line}" | tr -d "\"' \r"
+}
+
+# Every host port the stack serves, one per line: verify()'s internal ports (4444
+# included: the forwarder of a host opened before per-user sandboxes listens there),
+# the SSH/HTTP/HTTPS ports, and every port a compose file this checkout ships
+# publishes (the base, its root overlays, the prod overlay). A `${VAR:-N}` counts as
+# both N and this environment's VAR: the deploy forwards no *_PORT knob, so the server
+# may publish either. An entry it cannot read as [ipv4:]host:container is printed as
+# "UNREAD <file>: <entry>" so the caller fails closed. revshell-open forwards each pool
+# port from the public address to 127.0.0.1, so a pool over one of these would publish
+# it past nginx.
+served_host_ports() {
+  local root="${SCRIPT_DIR}/../../.." f line spec var def m
+  printf '%s\n' 5432 7474 7687 8010 4444 11434 "${SSH_PORT}" "${HTTP_PORT}" "${HTTPS_PORT}"
+  for f in "${root}"/docker-compose*.yml "${SCRIPT_DIR}/compose/docker-compose.prod.yml"; do
+    [[ -f "$f" ]] || continue
+    while IFS= read -r line; do
+      spec="${line#*- }"; spec="${spec%%#*}"; spec="${spec//[\"\' ]/}"; spec="${spec%/tcp}"; spec="${spec%/udp}"
+      while [[ "$spec" =~ \$\{([A-Z0-9_]+):-([0-9]+)\} ]]; do
+        m="${BASH_REMATCH[0]}"; var="${BASH_REMATCH[1]}"; def="${BASH_REMATCH[2]}"
+        spec="${spec/"$m"/$def}"
+        printf '%s\n' "$def"
+        [[ "${!var:-}" =~ ^[0-9]+$ ]] && printf '%s\n' "${!var}"
+      done
+      if [[ "$spec" =~ ^(([0-9]{1,3}\.){3}[0-9]{1,3}:)?([0-9]+):[0-9]+$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[3]}"
+      else
+        printf 'UNREAD %s: %s\n' "${f##*/}" "${line#"${line%%[![:space:]]*}"}"
+      fi
+    done < <(awk '/^    ports:/ { p = 1; next } p && /^      - / { print; next } p && !/^      / { p = 0 }' "$f")
+  done
+}
+
+# revshell-open runs one systemd forwarder unit per pool port.
+POOL_MAX_PORTS=100
+
 # ------------------------------------------------------------------ local preflight validation
 preflight_validate() {
   hr "Local preflight"
   [[ -n "${HOST_IP}" ]] || die "HOST_IP is empty (set it in .env or pass as CLI positional)"
+
+  if [[ -n "${KALI_SANDBOX_PORT_POOL}" ]]; then
+    local pool p first last served unread
+    pool="$(pool_range)" || die "KALI_SANDBOX_PORT_POOL ('${KALI_SANDBOX_PORT_POOL}') must read first-last or 127.0.0.1:first-last (ports 1-65535): on this host the pool is bound on loopback only and opened per engagement with 'deploy.sh revshell-open'"
+    first="${pool% *}"; last="${pool#* }"
+    (( first >= 1024 )) || die "KALI_SANDBOX_PORT_POOL ('${KALI_SANDBOX_PORT_POOL}') starts below 1024: a privileged port is never a reverse-shell listener here"
+    (( last - first + 1 <= POOL_MAX_PORTS )) || die "KALI_SANDBOX_PORT_POOL ('${KALI_SANDBOX_PORT_POOL}') holds more than ${POOL_MAX_PORTS} ports ('deploy.sh revshell-open' runs one forwarder per port)"
+    served="$(served_host_ports)"
+    unread="$(grep '^UNREAD ' <<< "$served" | head -n1)"
+    [[ -z "$unread" ]] || die "KALI_SANDBOX_PORT_POOL is refused: a compose publish cannot be read, so the pool cannot be shown to stay clear of it (${unread#UNREAD })"
+    while read -r p; do
+      [[ "$p" =~ ^[0-9]+$ ]] || continue
+      (( p >= first && p <= last )) && die "KALI_SANDBOX_PORT_POOL ('${KALI_SANDBOX_PORT_POOL}') covers port ${p}, which this host already serves: 'deploy.sh revshell-open' would expose it past nginx"
+    done <<< "$served"
+  fi
+  # The orchestrator reads one to nine digits and only logs anything else, so a typo
+  # would run the server with no sandbox cap, or with the default idle time.
+  [[ -z "${KALI_SANDBOX_MAX_CONCURRENT}" || "${KALI_SANDBOX_MAX_CONCURRENT}" =~ ^[0-9]{1,9}$ ]] \
+    || die "KALI_SANDBOX_MAX_CONCURRENT ('${KALI_SANDBOX_MAX_CONCURRENT}') must be a whole number (0 blocks every new sandbox; blank: no cap)"
+  [[ -z "${KALI_SANDBOX_IDLE_MINUTES}" || ( "${KALI_SANDBOX_IDLE_MINUTES}" =~ ^[0-9]{1,9}$ && 10#${KALI_SANDBOX_IDLE_MINUTES} -ge 1 ) ]] \
+    || die "KALI_SANDBOX_IDLE_MINUTES ('${KALI_SANDBOX_IDLE_MINUTES}') must be a whole number of minutes, at least 1 (blank: 20)"
+  [[ -z "${KALI_SANDBOX_PORT_HOLD_HOURS}" || "${KALI_SANDBOX_PORT_HOLD_HOURS}" =~ ^[0-9]{1,9}$ ]] \
+    || die "KALI_SANDBOX_PORT_HOLD_HOURS ('${KALI_SANDBOX_PORT_HOLD_HOURS}') must be a whole number of hours (0: a stopped sandbox's pool port is free at once; blank: 24)"
 
   case "${ACCESS_MODE}" in
     *-domain) [[ -n "${DOMAIN}" ]] || die "ACCESS_MODE=${ACCESS_MODE} requires DOMAIN" ;;
@@ -388,6 +485,7 @@ build_deploy_env() {
              OS_RESERVE_PCT SERVICES_PCT BURST_FACTOR BURST_SWAP_MIN_PCT BLAST_PCT DISK_RESERVE_PCT \
              REDAMON_WEIGHT_WEBAPP REDAMON_WEIGHT_NEO4J REDAMON_WEIGHT_AGENT \
              REVSHELL_TARGET_CIDRS TUNNELS_ENABLED \
+             KALI_SANDBOX_PORT_POOL KALI_SANDBOX_MAX_CONCURRENT KALI_SANDBOX_IDLE_MINUTES KALI_SANDBOX_PORT_HOLD_HOURS \
              MCP_SERVER_ENABLED MCP_EDGE_ALLOW_BEARER MCP_CLIENT_CIDRS \
              MCP_TOKEN_RETENTION_DAYS MCP_LLM_DAILY_BUDGET MCP_RATE_MUTE_PER_MIN \
              MCP_RATE_READ_PER_MIN MCP_RATE_QUERY_PER_MIN MCP_RATE_WRITE_PER_MIN \
@@ -517,11 +615,23 @@ step "Seed application .env (operator app-config only; secrets are redamon.sh's 
 touch .env
 # A key is appended on a line of its own even when the operator's .env has no final newline.
 seed() { local k="\$1" v="\$2"; [ -z "\$v" ] && return 0; grep -q "^\$k=" .env && sed -i "s|^\$k=.*|\$k=\$v|" .env || { [ -z "\$(tail -c1 .env)" ] || echo >> .env; echo "\$k=\$v" >> .env; }; }
+# seed() keeps an earlier value when this one is blank; this removes it instead, so
+# blanking the key in the deploy .env returns the server to the app's default.
+seed_or_unset() { if [ -z "\$2" ]; then sed -i "/^\$1=/d" .env; else seed "\$1" "\$2"; fi; }
 seed NVD_API_KEY "\${NVD_API_KEY}"
 seed KB_EMBEDDING_USE_API "\${KB_EMBEDDING_USE_API}"
 seed KB_EMBEDDING_API_BASE_URL "\${KB_EMBEDDING_API_BASE_URL}"
 seed KB_EMBEDDING_API_KEY "\${KB_EMBEDDING_API_KEY}"
 seed TUNNELS_ENABLED "\${TUNNELS_ENABLED}"
+seed_or_unset KALI_SANDBOX_PORT_POOL "\${KALI_SANDBOX_PORT_POOL}"
+seed_or_unset KALI_SANDBOX_MAX_CONCURRENT "\${KALI_SANDBOX_MAX_CONCURRENT}"
+seed_or_unset KALI_SANDBOX_IDLE_MINUTES "\${KALI_SANDBOX_IDLE_MINUTES}"
+seed_or_unset KALI_SANDBOX_PORT_HOLD_HOURS "\${KALI_SANDBOX_PORT_HOLD_HOURS}"
+# The LHOST the agent and the project settings suggest. redamon.sh would detect the
+# default route's source address, which on a cloud host behind 1:1 NAT is the private
+# one, while a target reaches revshell-open's forwarders at the public one. A DNS name
+# is left alone.
+if [[ "\${HOST_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}\$ ]]; then seed HOST_LAN_IP "\${HOST_IP}"; fi
 # Offline OSV database (supply-chain SCA). redamon.sh install/update/up call
 # ensure_osv_db, which downloads ~280 MB for all 8 ecosystems on a cold host.
 # These are read by recon-orchestrator (explicitly wired in its compose
@@ -592,7 +702,7 @@ seed REDAMON_WEIGHT_NEO4J "\${REDAMON_WEIGHT_NEO4J}"
 seed REDAMON_WEIGHT_AGENT "\${REDAMON_WEIGHT_AGENT}"
 
 # Cap each per-service CPU limit to the host's CPU count. compose sets generous
-# \`cpus:\` defaults (neo4j 8, kali 10, agent 8) that assume a big host; Docker
+# \`cpus:\` defaults (neo4j 8, agent 8) that assume a big host; Docker
 # REFUSES to create a container whose cpus limit exceeds the host's CPU count, so
 # on a 4-vCPU box \`up\` dies with "range of CPUs is from 0.01 to N.00". Seed
 # min(default, nproc) so it auto-fits any instance; skip any value the operator
@@ -608,7 +718,6 @@ cap_cpus() {  # key generous_default
 }
 cap_cpus POSTGRES_CPUS 4
 cap_cpus NEO4J_CPUS 8
-cap_cpus KALI_CPUS 10
 cap_cpus RECON_ORCHESTRATOR_CPUS 4
 cap_cpus AGENT_CPUS 8
 cap_cpus WEBAPP_CPUS 4
@@ -782,6 +891,12 @@ EOF
 # ============================================================================
 verify() {
   hr "Verify"
+  # The server's pool, bind address and all: it is what its sandboxes publish, and a
+  # pool bound off loopback is what the check looks for.
+  local first="" last="" pool_ports=""
+  if read -r first last <<< "$(pool_span "$(server_app_env KALI_SANDBOX_PORT_POOL)")" && [[ -n "${first}" ]]; then
+    pool_ports="$(seq "${first}" "${last}" | tr '\n' ' ')"
+  fi
   remote <<EOF || warn "verification reported issues -- review above"
 ${PREAMBLE}
 cd "\$APP_PATH"
@@ -794,25 +909,58 @@ for p in 3000 8090; do
   elif printf '%s\n' "\$hits" | grep -qvE '^127\.0\.0\.1:|^\[::1\]:'; then err "port \${p} bound off-loopback: \$hits"; rc=1;
   else success "port \${p} loopback-only"; fi
 done
-step "Internal ports must never bind off-loopback (datastores, orchestrator, 4444 catcher)"
+step "Internal ports must never bind off-loopback (datastores, orchestrator, reverse-shell ports, Ollama judge)"
 db_bad=0
-# 4444 is the reverse-shell catcher: loopback-bound at rest (exposed per-engagement
-# only via 'deploy.sh revshell-open', which adds a host-side socat forwarder, not a
-# docker port change), so its docker binding must always be loopback here.
-for p in 5432 7474 7687 8010 4444; do
+# 4444 was the shared Kali container's reverse-shell catcher: nothing binds it now,
+# and it stays listed so a leftover publish is caught. The ports of the server's
+# KALI_SANDBOX_PORT_POOL are each sandbox's catcher, published on loopback and exposed
+# per engagement only via 'deploy.sh revshell-open' (host-side socat forwarders, not a
+# docker port change), so while no engagement is open they too bind loopback or nothing.
+# 11434 is the AI attack-surface judge (Ollama, no authentication). The orchestrator
+# publishes it through the Docker SDK while a scan holds it, so the prod overlay
+# cannot re-bind it and ufw does not filter it: it listens only during a scan, and
+# then only on loopback.
+for p in 5432 7474 7687 8010 4444 11434; do
   hits=\$(printf '%s\n' "\$LB" | grep -E "[:.]\${p}\b" || true)
   if [ -n "\$hits" ] && printf '%s\n' "\$hits" | grep -qvE '^127\.0\.0\.1:|^\[::1\]:'; then err "port \${p} off-loopback: \$hits"; rc=1; db_bad=1; fi
 done
+for p in ${pool_ports}; do
+  hits=\$(printf '%s\n' "\$LB" | grep -E "[:.]\${p}\b" || true)
+  if [ -n "\$hits" ] && printf '%s\n' "\$hits" | grep -qvE '^127\.0\.0\.1:|^\[::1\]:'; then err "pool port \${p} off-loopback: \$hits (an engagement left open? ./deploy.sh revshell-close)"; rc=1; db_bad=1; fi
+done
 [ "\$db_bad" -eq 0 ] && success "internal ports loopback-only"
+if printf '%s\n' "\$LB" | grep -E "[:.]4444\b" | grep -qvE '^127\.0\.0\.1:|^\[::1\]:'; then
+  pub=\$(sg docker -c "docker ps --filter publish=4444 --format '{{.Names}}'" 2>/dev/null | xargs || true)
+  if [ -n "\$pub" ]; then
+    info "4444 is published by \${pub}: the app on this server is likely older than these deploy assets, from before per-user sandboxes (REPO_BRANCH=\${REPO_BRANCH}, or a server checkout behind it). Put REPO_BRANCH and the local checkout on one release and run './deploy.sh update'; revshell-close cannot remove a Docker publish"
+  else
+    info "4444 is the reverse-shell forwarder of a host opened before per-user sandboxes: './deploy.sh revshell-close' removes it and its ufw rules"
+  fi
+fi
 step "Container health"
 sg docker -c "docker compose ps" || true
-# NB: tests/test_port_bindings.sh is a DEV/CI test that asserts webapp(3000),
-# agent(8090) and 4444 stay externally ROUTABLE -- the default (local) compose
-# posture. The single-origin prod overlay deliberately loopback-binds all three
-# (nginx:443 is the only public surface), so that test's expectation is inverted
-# here and the loopback checks above are the correct prod assertion. Do NOT run it
-# in prod: it would report false failures for the very hardening prod requires.
-info "single-origin prod: webapp/agent/4444 loopback by design (dev-only test_port_bindings.sh not run)"
+step "Kali sandboxes (one per person, orchestrator-spawned)"
+sg docker -c "docker ps --filter label=redamon.sandbox=1 --format '{{.Names}}  ({{.Status}})'" || true
+if [ "\$(sg docker -c "docker container inspect -f '{{.State.Running}}' redamon-kali" 2>/dev/null || true)" = "true" ]; then
+  err "the shared Kali container redamon-kali still runs, so the images predate this checkout. In \$APP_PATH: after a failed Kali build run './redamon.sh update' again; otherwise 'docker compose build agent webapp && docker compose --profile tools build kali-sandbox', then './redamon.sh up', which removes it. If the app itself predates per-user sandboxes, REPO_BRANCH (\${REPO_BRANCH}) is older than these deploy assets"; rc=1
+fi
+# Only the per-user image sets this label (to an empty value until a Metasploit
+# refresh); the shared container's image had the same name and no such label.
+labels=\$(sg docker -c "docker image inspect -f '{{json .Config.Labels}}' redamon-kali-sandbox:latest" 2>/dev/null || true)
+if [ -z "\$labels" ]; then
+  warn "no redamon-kali-sandbox:latest image: no Kali sandbox can start ('./redamon.sh update' builds it)"
+elif printf '%s' "\$labels" | grep -q '"redamon.msf_refresh":'; then
+  success "redamon-kali-sandbox:latest is the per-user sandbox image"
+else
+  warn "redamon-kali-sandbox:latest lacks the redamon.msf_refresh label: the Kali image was not rebuilt since per-user sandboxes, so it is the old shared container's. Rebuild it in the checkout on the server: docker compose --profile tools build kali-sandbox"
+fi
+# NB: tests/test_port_bindings.sh is a DEV/CI test that asserts webapp(3000) and
+# agent(8090) stay externally ROUTABLE -- the default (local) compose posture. The
+# single-origin prod overlay deliberately loopback-binds both (nginx:443 is the only
+# public surface), so that test's expectation is inverted here and the loopback
+# checks above are the correct prod assertion. Do NOT run it in prod: it would
+# report false failures for the very hardening prod requires.
+info "single-origin prod: webapp/agent loopback by design (dev-only test_port_bindings.sh not run)"
 step "Offline OSV database (supply-chain SCA)"
 # redamon.sh's ensure_osv_db is deliberately best-effort: a network failure warns
 # and lets the stack come up. Without a check here, that warning scrolls past in a
@@ -925,7 +1073,10 @@ source modules/host_bootstrap.sh
 bootstrap_docker
 EOF
   hr "Pull --ff-only + diff-driven rebuild via redamon.sh update"
-  remote <<EOF
+  # Spelled out rather than left to `set -e`: a refused or half-done redamon.sh update
+  # (a failed Kali build, images older than the checkout) must end the run as a
+  # failure, before the secrets gate, nginx and verify run against a stale stack.
+  remote <<EOF || die "UPDATE failed on the server: redamon.sh's update, or a step around it, exited non-zero (its output above says why). Nothing after it ran: no webapp recreate, secrets gate, nginx render or verify."
 ${PREAMBLE}
 cd "\$APP_PATH"
 [ -d .git ] || { err "no checkout at \$APP_PATH -- run 'init' first"; exit 1; }
@@ -944,6 +1095,9 @@ step "Re-seed application .env (operator app-config; init-only before, so update
 touch .env
 # A key is appended on a line of its own even when the operator's .env has no final newline.
 seed() { local k="\$1" v="\$2"; [ -z "\$v" ] && return 0; grep -q "^\$k=" .env && sed -i "s|^\$k=.*|\$k=\$v|" .env || { [ -z "\$(tail -c1 .env)" ] || echo >> .env; echo "\$k=\$v" >> .env; }; }
+# seed() keeps an earlier value when this one is blank; this removes it instead, so
+# blanking the key in the deploy .env returns the server to the app's default.
+seed_or_unset() { if [ -z "\$2" ]; then sed -i "/^\$1=/d" .env; else seed "\$1" "\$2"; fi; }
 # Inbound MCP server. Seeded BEFORE redamon.sh runs: ensure_auth_secrets appends
 # MCP_SERVER_ENABLED=false when the key is ABSENT, so without this the deployed
 # host actively pins the flag off and the operator's choice is unreachable.
@@ -968,6 +1122,15 @@ seed MCP_RATE_LOOP_PER_MIN "\${MCP_RATE_LOOP_PER_MIN}"
 seed WORKSPACE_URL_IMPORT_ENABLED "\${WORKSPACE_URL_IMPORT_ENABLED}"
 seed MCP_DISABLED_TOOLS "\${MCP_DISABLED_TOOLS}"
 seed MCP_TOKEN_PRUNE_INTERVAL "\${MCP_TOKEN_PRUNE_INTERVAL}"
+seed_or_unset KALI_SANDBOX_PORT_POOL "\${KALI_SANDBOX_PORT_POOL}"
+seed_or_unset KALI_SANDBOX_MAX_CONCURRENT "\${KALI_SANDBOX_MAX_CONCURRENT}"
+seed_or_unset KALI_SANDBOX_IDLE_MINUTES "\${KALI_SANDBOX_IDLE_MINUTES}"
+seed_or_unset KALI_SANDBOX_PORT_HOLD_HOURS "\${KALI_SANDBOX_PORT_HOLD_HOURS}"
+# The LHOST the agent and the project settings suggest. redamon.sh would detect the
+# default route's source address, which on a cloud host behind 1:1 NAT is the private
+# one, while a target reaches revshell-open's forwarders at the public one. A DNS name
+# is left alone.
+if [[ "\${HOST_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}\$ ]]; then seed HOST_LAN_IP "\${HOST_IP}"; fi
 # The webapp validates the request Origin against its own URL, which nginx
 # builds from \`proxy_set_header Host \$host\` -- and \$host DROPS THE PORT. On a
 # non-default HTTPS_PORT an Origin-sending client would be 403'd against its own
@@ -1058,17 +1221,27 @@ EOF
 }
 
 # ============================================================================
-#  Reverse-shell (4444) engagement exposure -- host-side socat forwarder + ufw scope.
-#  The container keeps 4444 on loopback (prod overlay); a transient systemd unit runs
-#  `socat <primary-ip>:4444 -> 127.0.0.1:4444` so the port is a HOST listener that ufw
-#  (INPUT chain) can source-scope -- unlike a Docker-published port, which bypasses ufw.
-#  A reboot drops the transient unit, so the catcher fails CLOSED.
+#  Reverse-shell engagement exposure -- host-side socat forwarders + ufw scope.
+#  Each person's Kali sandbox publishes its KALI_SANDBOX_PORT_POOL port on loopback
+#  only (preflight_validate refuses any other bind address); one transient systemd
+#  unit per pool port runs `socat <primary-ip>:<port> -> 127.0.0.1:<port>`, so the
+#  port is a HOST listener that ufw (INPUT chain) can source-scope -- unlike a
+#  Docker-published port, which bypasses ufw. A reboot drops the transient units,
+#  so the catchers fail CLOSED.
 # ============================================================================
 cmd_revshell_open() {
-  [[ -n "${REVSHELL_TARGET_CIDRS}" ]] || die "revshell-open requires REVSHELL_TARGET_CIDRS (your RoE target scope) in .env -- never expose 4444 unscoped"
-  hr "REVSHELL-OPEN ${HOST_IP}  (4444 -> RoE targets: ${REVSHELL_TARGET_CIDRS})"
-  warn "The msf handler on 4444 is UNAUTHENTICATED. Exposing it to anything beyond your"
-  warn "signed RoE target scope is dangerous. Run 'revshell-close' the moment you are done."
+  [[ -n "${REVSHELL_TARGET_CIDRS}" ]] || die "revshell-open requires REVSHELL_TARGET_CIDRS (your RoE target scope) in .env -- never expose a reverse-shell port unscoped"
+  [[ -n "${KALI_SANDBOX_PORT_POOL}" ]] || die "revshell-open needs KALI_SANDBOX_PORT_POOL (e.g. 4500-4509) set and applied with 'deploy.sh update': without a pool each person's Kali sandbox publishes nothing. Otherwise catch reverse shells through each person's own tunnel (Settings > Tunneling)."
+  local first last server_pool
+  read -r first last <<< "$(pool_range)"
+  # The sandboxes publish the server's pool, which lags this .env until an update
+  # carries it: forwarders for any other range would lead to ports nothing publishes.
+  server_pool="$(server_app_env KALI_SANDBOX_PORT_POOL)"
+  [[ -n "${server_pool}" ]] || die "revshell-open refused: KALI_SANDBOX_PORT_POOL is not set on the server, so no sandbox there publishes a pool port. Run './deploy.sh update' first to carry the pool (${KALI_SANDBOX_PORT_POOL}) to the server."
+  [[ "$(pool_range "${server_pool}" 2>/dev/null)" == "${first} ${last}" ]] || die "revshell-open refused: the server's KALI_SANDBOX_PORT_POOL is '${server_pool}', this .env's is '${KALI_SANDBOX_PORT_POOL}'. Run './deploy.sh update' first to carry the pool to the server."
+  hr "REVSHELL-OPEN ${HOST_IP}  (pool ${first}-${last} -> RoE targets: ${REVSHELL_TARGET_CIDRS})"
+  warn "The msf handler behind each pool port is UNAUTHENTICATED. Exposing the pool to anything beyond"
+  warn "your signed RoE target scope is dangerous. Run 'revshell-close' the moment you are done."
   ship_assets
   remote <<EOF
 ${PREAMBLE}
@@ -1076,45 +1249,79 @@ ${PREAMBLE}
 install_if_missing socat
 PRIMARY_IP=\$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if(\$i=="src"){print \$(i+1); exit}}')
 [ -n "\${PRIMARY_IP}" ] || { err "could not detect the host primary IP to bind socat"; exit 1; }
-step "ufw: scope host port 4444 to the RoE target CIDRs"
+FIRST=${first}; LAST=${last}
+if [ "\$FIRST" -eq "\$LAST" ]; then UFW_PORT="\$FIRST"; else UFW_PORT="\$FIRST:\$LAST"; fi
+step "ufw: scope host ports \${UFW_PORT} to the RoE target CIDRs"
 if is_true "\${ENABLE_UFW}"; then
   IFS=',' read -ra _cidrs <<< "\${REVSHELL_TARGET_CIDRS}"
-  for c in "\${_cidrs[@]}"; do c=\$(echo "\$c" | xargs); [ -n "\$c" ] && run_sudo ufw allow from "\$c" to any port 4444 proto tcp; done
+  for c in "\${_cidrs[@]}"; do c=\$(echo "\$c" | xargs); [ -n "\$c" ] && run_sudo ufw allow from "\$c" to any port "\$UFW_PORT" proto tcp comment redamon-revshell; done
 else
-  warn "ENABLE_UFW=false -- 4444 will be reachable from ANY source that can hit \${PRIMARY_IP}. Enforce scoping in your cloud Security Group."
+  warn "ENABLE_UFW=false -- ports \${UFW_PORT} will be reachable from ANY source that can hit \${PRIMARY_IP}. Enforce scoping in your cloud Security Group."
 fi
-step "Start the transient 4444 forwarder (auto-removed on stop/reboot)"
+step "Start one transient forwarder per pool port (auto-removed on stop/reboot)"
+# A host opened before per-user sandboxes runs one 4444 forwarder to a catcher that no
+# longer exists; it goes (revshell-close removes its ufw rules).
 run_sudo systemctl stop redamon-revshell 2>/dev/null || true
 run_sudo systemctl reset-failed redamon-revshell 2>/dev/null || true
-run_sudo systemd-run --unit=redamon-revshell --collect --description="RedAmon reverse-shell 4444 forwarder" \
-  /usr/bin/socat "TCP-LISTEN:4444,bind=\${PRIMARY_IP},fork,reuseaddr" TCP:127.0.0.1:4444
+failed=0
+for p in \$(seq "\$FIRST" "\$LAST"); do
+  run_sudo systemctl stop "redamon-revshell-\$p" 2>/dev/null || true
+  run_sudo systemctl reset-failed "redamon-revshell-\$p" 2>/dev/null || true
+  run_sudo systemd-run --unit="redamon-revshell-\$p" --collect --description="RedAmon reverse-shell forwarder (pool port \$p)" \
+    /usr/bin/socat "TCP-LISTEN:\$p,bind=\${PRIMARY_IP},fork,reuseaddr" "TCP:127.0.0.1:\$p" >/dev/null || failed=1
+done
 sleep 1
-if run_sudo systemctl is-active --quiet redamon-revshell; then
-  success "4444 OPEN on \${PRIMARY_IP} (scoped to \${REVSHELL_TARGET_CIDRS}) -> 127.0.0.1:4444 (kali msf handler)"
-  info "Set your payload LHOST to the host's public IP, LPORT 4444, and start the msf handler in RedAmon."
+for p in \$(seq "\$FIRST" "\$LAST"); do
+  run_sudo systemctl is-active --quiet "redamon-revshell-\$p" || { err "forwarder for port \$p is not running"; failed=1; }
+done
+if [ "\$failed" -eq 0 ]; then
+  success "pool ports \${UFW_PORT} OPEN on \${PRIMARY_IP} (scoped to \${REVSHELL_TARGET_CIDRS}) -> 127.0.0.1 (each person's Kali sandbox)"
+  info "Each person's LPORT is their own sandbox's pool port, which the agent names in its LHOST/LPORT hint; LHOST is this host's public IP."
   warn "Run './deploy.sh revshell-close' when the engagement ends. A reboot also auto-closes it."
 else
-  err "socat forwarder failed to start"; run_sudo journalctl -u redamon-revshell -n 20 --no-pager 2>/dev/null || true; exit 1
+  run_sudo journalctl -u 'redamon-revshell-*' -n 20 --no-pager 2>/dev/null || true; exit 1
 fi
 EOF
   ok "revshell-open complete"
 }
 
+# Closes whatever an open left, a host opened before per-user sandboxes included:
+# the single `redamon-revshell` unit and its 4444 rules, every pool unit, and every
+# rule an open tagged, even for a pool or CIDRs changed since.
 cmd_revshell_close() {
-  hr "REVSHELL-CLOSE ${HOST_IP} (stop 4444 forwarder, re-scope to loopback-only)"
+  hr "REVSHELL-CLOSE ${HOST_IP} (stop the reverse-shell forwarders, back to loopback-only)"
+  local first="" last="" ufw_port=""
+  if read -r first last <<< "$(pool_range 2>/dev/null)" && [[ -n "${first}" ]]; then
+    ufw_port="${first}"; [[ "${first}" -eq "${last}" ]] || ufw_port="${first}:${last}"
+  fi
   ship_assets
   remote <<EOF
 ${PREAMBLE}
-step "Stop the 4444 forwarder"
+step "Stop every reverse-shell forwarder"
+for u in \$(run_sudo systemctl list-units --all --plain --no-legend 'redamon-revshell*' 2>/dev/null | awk '{print \$1}'); do
+  run_sudo systemctl stop "\$u" 2>/dev/null || true
+  run_sudo systemctl reset-failed "\$u" 2>/dev/null || true
+done
 run_sudo systemctl stop redamon-revshell 2>/dev/null || true
 run_sudo systemctl reset-failed redamon-revshell 2>/dev/null || true
-step "Remove ufw 4444 allow rules"
+step "Remove the reverse-shell ufw rules"
 if is_true "\${ENABLE_UFW}"; then
   IFS=',' read -ra _cidrs <<< "\${REVSHELL_TARGET_CIDRS:-}"
-  for c in "\${_cidrs[@]}"; do c=\$(echo "\$c" | xargs); [ -n "\$c" ] && run_sudo ufw delete allow from "\$c" to any port 4444 proto tcp 2>/dev/null || true; done
+  for c in "\${_cidrs[@]}"; do
+    c=\$(echo "\$c" | xargs); [ -n "\$c" ] || continue
+    run_sudo ufw delete allow from "\$c" to any port 4444 proto tcp 2>/dev/null || true
+    [ -n "${ufw_port}" ] && { run_sudo ufw delete allow from "\$c" to any port "${ufw_port}" proto tcp 2>/dev/null || true; }
+  done
   run_sudo ufw --force delete allow 4444/tcp 2>/dev/null || true
+  # Every rule an open tagged, and every 4444 allow: a host opened before per-user
+  # sandboxes tagged none, maybe for CIDRs no longer listed, and nothing serves 4444
+  # now. Highest number first, so the numbers still to delete do not move.
+  for n in \$(run_sudo ufw status numbered 2>/dev/null | sed -n -e 's/^\[ *\([0-9][0-9]*\)\].*# redamon-revshell.*/\1/p' \
+      -e 's/^\[ *\([0-9][0-9]*\)\] 4444\/tcp\( (v6)\)\{0,1\}  *ALLOW .*/\1/p' | sort -rnu); do
+    run_sudo ufw --force delete "\$n" >/dev/null 2>&1 || true
+  done
 fi
-success "4444 forwarder stopped; reverse-shell catcher is back to loopback-only"
+success "reverse-shell forwarders stopped; every sandbox port is back to loopback-only"
 EOF
   ok "revshell-close complete"
 }

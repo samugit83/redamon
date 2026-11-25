@@ -236,3 +236,21 @@ describe('schedules and the out_of_policy marker', () => {
     expect(mockMark).not.toHaveBeenCalled()
   })
 })
+
+describe('a target in the Kali sandbox address pool is never stored (G-05)', () => {
+  test('an address or a CIDR overlapping 10.214.0.0/16 is a 400 and nothing is written', async () => {
+    for (const targetIps of [['203.0.113.1', '10.214.0.9'], ['10.0.0.0/8'], [' 10.214.4.0/24 ']]) {
+      mockUpdate.mockClear()
+      const res = await put({ targetIps })
+      expect(res.status, JSON.stringify(targetIps)).toBe(400)
+      expect(await res.json()).toMatchObject({ code: 'target_in_sandbox_pool' })
+      expect(mockUpdate).not.toHaveBeenCalled()
+    }
+  })
+
+  test('targets beside the pool are saved as before', async () => {
+    const res = await put({ targetIps: ['10.213.0.0/24', '10.215.1.1'] })
+    expect(res.status).toBe(200)
+    expect(written().targetIps).toEqual(['10.213.0.0/24', '10.215.1.1'])
+  })
+})

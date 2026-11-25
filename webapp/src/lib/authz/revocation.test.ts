@@ -148,9 +148,10 @@ describe('a share ending on one project', () => {
       ['/agent-sessions/stop-for', { user_id: 'bob', project_ids: ['P1'] }],
       ['/ws/close', { user_id: 'bob', project_id: 'P1', kinds: KINDS, scope: 'access' }],
     ])
+    // The sandbox step reports its count (vitest.setup.ts's lifecycle double: none stopped).
     expect(out).toEqual({
       runs: { stopped: 1 }, sockets: { closed: 2 }, scans: { cancelled: 2 }, schedules: { paused: 1 }, triage: { stopped: 1 },
-      navigator: { stopped: 0 }, failed: [],
+      navigator: { stopped: 0 }, sandbox: { stopped: 0 }, failed: [],
     })
     expect(h.jobs.filter((j) => j.status === 'canceled').map((j) => j.id)).toEqual(['j-queued', 'j-review'])
     expect(h.jobs.find((j) => j.id === 'j-queued')).toMatchObject({ blockedCode: 'actor_no_access', blockedReason: 'the account that queued it no longer has access to this project' })

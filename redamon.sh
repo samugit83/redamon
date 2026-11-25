@@ -15,18 +15,19 @@ KBASE_DISABLED_FLAG_FILE="$SCRIPT_DIR/.kbase-disabled"
 LEGACY_SKIPKBASE_FLAG_FILE="$SCRIPT_DIR/.skipkbase"
 
 # Service lists
-CORE_SERVICES="postgres neo4j docker-broker recon-orchestrator kali-sandbox agent webapp"
+CORE_SERVICES="postgres neo4j docker-broker recon-orchestrator agent webapp"
 # Build-only images run on demand (NOT long-running services). All live under the
 # compose `tools` profile and the redamon-* tag namespace. ai-attack-surface is the
 # AI Attack Surface scanner (garak/pyrit/giskard/promptfoo). wcvs is the Web Cache
 # Vulnerability Scanner, run docker-in-docker by the recon container for the web
-# cache poisoning module.
-TOOL_IMAGES="redamon-recon:latest redamon-vuln-scanner:latest redamon-github-hunter:latest redamon-trufflehog:latest redamon-baddns:latest redamon-ai-attack-surface:latest redamon-codefix-sandbox:latest redamon-wcvs:latest redamon-supply-chain-analyzer:latest redamon-supply-chain:latest"
+# cache poisoning module. redamon-kali-sandbox is the image the orchestrator starts
+# each person's Kali sandbox from.
+TOOL_IMAGES="redamon-recon:latest redamon-vuln-scanner:latest redamon-github-hunter:latest redamon-trufflehog:latest redamon-baddns:latest redamon-ai-attack-surface:latest redamon-codefix-sandbox:latest redamon-wcvs:latest redamon-supply-chain-analyzer:latest redamon-supply-chain:latest redamon-kali-sandbox:latest"
 # Core services whose images are BUILT from this repo (postgres/neo4j are pulled,
 # so they are absent here). Used to verify `up` has something to start; the tags
 # are resolved through `docker compose config` so a renamed compose project or a
 # clone directory other than "redamon" still matches.
-CORE_BUILD_SERVICES="docker-broker recon-orchestrator kali-sandbox agent webapp"
+CORE_BUILD_SERVICES="docker-broker recon-orchestrator agent webapp"
 DEV_COMPOSE="-f docker-compose.yml -f docker-compose.dev.yml"
 
 # Free disk (GB) required before a Docker build starts. A full build has to fit
@@ -69,6 +70,10 @@ UPDATE_PENDING_FILE="$SCRIPT_DIR/.update-pending"
 #   - AI Attack Surface scan containers:  redamon-ai-attack-<proj>-<run>
 #   - On-demand local LLM (Ollama) judge/attacker:  redamon-local-llm
 #   - CodeFix build sandboxes (T6/E10):  redamon-codefix-<job>
+#   - Per-user Kali sandboxes and their nuclei templates refresher: selected by
+#     the label redamon.sandbox=1 and this stack's owner label
+#     (remove_spawned_containers), never by name, so other plans' containers and
+#     another stack's sandboxes are never caught.
 # Orchestrator-spawned, NON-compose-managed containers (repeated name filters are
 # OR'd by docker ps). Includes the capture proxy + ingest pair: they are spawned by
 # the orchestrator with restart:unless-stopped and live in the "capture" profile, so
@@ -340,10 +345,13 @@ preflight_ram_gate() {
     local required_mb baseline_mb headroom_mb
     if [[ -n "${REDAMON_MIN_RAM_MB:-}" ]]; then
         required_mb="${REDAMON_MIN_RAM_MB//[^0-9]/}"
-    elif [[ -n "${SERVICE_BASELINE_MEM:-}" || -n "${OS_HEADROOM_MEM:-}" ]]; then
-        # An operator pinned the budget: honour it verbatim.
-        baseline_mb="$(_size_to_mb "${SERVICE_BASELINE_MEM:-6g}")"; [[ -z "$baseline_mb" ]] && baseline_mb=6144
-        headroom_mb="$(_size_to_mb "${OS_HEADROOM_MEM:-2g}")";      [[ -z "$headroom_mb" ]] && headroom_mb=2048
+    elif _mem_pinned SERVICE_BASELINE_MEM || _mem_pinned OS_HEADROOM_MEM; then
+        # An operator pinned the budget: honour it verbatim. Not a bare test of the
+        # variables: the dispatch exports both before any command reaches this gate,
+        # and reading that as a pin left the allocator's refusals below unreachable.
+        # _env_knob, because a pin in .env is not in this shell.
+        baseline_mb="$(_size_to_mb "$(_env_knob SERVICE_BASELINE_MEM)")"; [[ -z "$baseline_mb" ]] && baseline_mb=6144
+        headroom_mb="$(_size_to_mb "$(_env_knob OS_HEADROOM_MEM)")";      [[ -z "$headroom_mb" ]] && headroom_mb=2048
         required_mb=$(( baseline_mb + headroom_mb ))
     else
         # Ask the ALLOCATOR whether this host can actually satisfy the software
@@ -492,7 +500,14 @@ preflight_disk_gate() {
 # busy service can use the headroom the others are not touching. A third tier
 # `t` (transient) is for one-shot containers that exit before the stack is in
 # use and whose ceiling covers reclaimable page cache rather than an anonymous
-# allocation: those sit outside the over-commit accounting entirely.
+# allocation: those sit outside the over-commit accounting entirely. A fourth
+# tier `p` (pool) is a share that is not a container: KALI, the per-user Kali
+# sandboxes, which the orchestrator admits from the scan pool like scans, one
+# envelope each (recon_orchestrator/sandbox_contract.py). Its fair share is
+# computed exactly as a service's, then moved from `services` to `scan_pool`; it
+# exports no *_MEM (an operator's KALI_MEM is ignored), takes no part in the
+# burst clamp or the services floors, and its floor (one sandbox envelope) is a
+# floor on the scan pool after the move.
 #
 # FLOORS are the only absolute numbers, and they are a property of the SOFTWARE
 # (a JVM cannot boot in 128 MB), not of the host. They never bind at >= 8 GB; on
@@ -505,8 +520,8 @@ preflight_disk_gate() {
 # docs/readmes/README.MEMORY_GOVERNOR.md.
 # =============================================================================
 
-# name:weight(per-mille of the services pool):floor(MB):tier(r=reserved,b=burst,t=transient)
-_MEM_SPECS_BASE="NEO4J:320:1024:r POSTGRES:80:256:r AGENT:180:768:b WEBAPP:180:512:b KALI:100:512:b RECON_ORCHESTRATOR:60:256:b CAPTURE_PROXY:40:128:b DOCKER_BROKER:20:96:b TRAFFIC_INGEST:20:96:b"
+# name:weight(per-mille of the services pool):floor(MB):tier(r=reserved,b=burst,t=transient,p=pool)
+_MEM_SPECS_BASE="NEO4J:320:1024:r POSTGRES:80:256:r AGENT:180:768:b WEBAPP:180:512:b KALI:100:1024:p RECON_ORCHESTRATOR:60:256:b CAPTURE_PROXY:40:128:b DOCKER_BROKER:20:96:b TRAFFIC_INGEST:20:96:b"
 # Optional profiles ADD weight; the sum is renormalised, so enabling one shrinks
 # everybody else proportionally instead of over-committing the host.
 #
@@ -687,6 +702,31 @@ _mem_self_exported() {
     return 1
 }
 
+# cmd_update re-execs the script it just pulled, and that process inherits every
+# variable the old script's dispatch exported (KALI_MEM too, from releases that
+# sized a shared Kali container). _MEM_SELF_EXPORTED starts empty here, so each
+# would read as an operator pin: this run would keep the old split, call KALI_MEM
+# ignored, and write an empty managed block. The old dispatch wrote the same values
+# into the block just before the exec, so a value equal to the block's is the
+# parent's and is dropped. A pin is never in the block (the block omits what is
+# pinned), so a shell value the block does not hold, and any pin in .env, stay.
+_mem_forget_parent_exports() {
+    [[ -n "${REDAMON_UPDATE_FROM:-}" ]] || return 0
+    local env_file="$SCRIPT_DIR/.env" key val
+    [[ -r "$env_file" ]] || return 0
+    while IFS='=' read -r key val; do
+        [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || continue
+        if [[ -n "${!key:-}" && "${!key}" == "$val" ]]; then
+            unset "$key"
+        fi
+    done < <(awk -v b="$_MEM_BLOCK_BEGIN" -v e="$_MEM_BLOCK_END" '
+        $0 == b { inblk = 1; next }
+        $0 == e { inblk = 0; next }
+        inblk && /^[A-Za-z_][A-Za-z0-9_]*=/ { print }
+    ' "$env_file")
+    return 0
+}
+
 # Compute the allocation. Exports every *_MEM / NEO4J_* var that is not pinned.
 # Returns 1 when the host cannot even satisfy the software floors, having still
 # exported the floor values so callers that ignore the status get a sane stack.
@@ -719,6 +759,7 @@ allocate_memory() {
     # Parse the specs ONCE into parallel arrays; the passes below then need no
     # re-parsing (and no subshells) per service.
     local spec name weight floor tier w_override wsum=0 floorsum=0
+    local pool_names="" pool_weight=0 pool_floor=0
     _ALLOC_FLOORS=(); _ALLOC_TIERS=(); _ALLOC_WEIGHTS=()
     for spec in $(_mem_specs); do
         IFS=':' read -r name weight floor tier <<< "$spec"
@@ -728,6 +769,12 @@ allocate_memory() {
         [[ "$w_override" =~ ^[0-9]+$ ]] && weight="$w_override"
         [[ "$weight" =~ ^[0-9]+$ ]] || weight=0
         wsum=$(( wsum + weight ))
+        if [[ "$tier" == "p" ]]; then
+            pool_names="$pool_names $name"
+            pool_weight=$(( pool_weight + weight ))
+            pool_floor=$(( pool_floor + floor ))
+            continue
+        fi
         floorsum=$(( floorsum + floor ))
         _ALLOC_NAMES+=("$name")
         _ALLOC_WEIGHTS+=("$weight")
@@ -735,6 +782,15 @@ allocate_memory() {
         _ALLOC_TIERS+=("$tier")
     done
     [[ "$wsum" -le 0 ]] && wsum=1
+
+    # Pool-tier shares are taken from the FULL services figure, so every other
+    # service keeps the share it had, and move to the scan pool.
+    local services_full_mb="$services_mb" pool_mb pool_short=0
+    pool_mb=$(( services_full_mb * pool_weight / wsum ))
+    services_mb=$(( services_mb - pool_mb ))
+    scan_mb=$(( scan_mb + pool_mb ))
+    [[ "$scan_mb" -lt "$pool_floor" ]] && pool_short=$(( pool_floor - scan_mb ))
+    _mem_note_ignored_pool_pins "$pool_names"
 
     local i n=${#_ALLOC_NAMES[@]}
 
@@ -744,7 +800,7 @@ allocate_memory() {
     # it -- preflight_ram_gate turns this into the refusal.
     if [[ "$floorsum" -gt "$services_mb" ]]; then
         _ALLOC_FEASIBLE=0
-        _ALLOC_SHORTFALL_MB=$(( floorsum - services_mb ))
+        _ALLOC_SHORTFALL_MB=$(( floorsum - services_mb + pool_short ))
         for (( i = 0; i < n; i++ )); do _ALLOC_MB[$i]="${_ALLOC_FLOORS[$i]}"; done
         _ALLOC_OS_MB="$os_mb"; _ALLOC_SERVICES_MB="$services_mb"
         _ALLOC_SCAN_MB="$scan_mb"; _ALLOC_TOTAL_MB="$total"
@@ -755,7 +811,7 @@ allocate_memory() {
     # --- fair shares, then raise anyone under its floor and reclaim the deficit
     # --- proportionally from those still above theirs. Iterate to a fixpoint.
     for (( i = 0; i < n; i++ )); do
-        _ALLOC_MB[$i]=$(( services_mb * ${_ALLOC_WEIGHTS[$i]} / wsum ))
+        _ALLOC_MB[$i]=$(( services_full_mb * ${_ALLOC_WEIGHTS[$i]} / wsum ))
     done
 
     local pass deficit above cur
@@ -834,8 +890,32 @@ allocate_memory() {
     _ALLOC_SCAN_MB="$scan_mb"
     _ALLOC_TOTAL_MB="$total"
 
+    # The services fit but the scan pool cannot hold one Kali sandbox: the same
+    # refusal as a services shortfall, by the same path (preflight_ram_gate).
+    if [[ "$pool_short" -gt 0 ]]; then
+        _ALLOC_FEASIBLE=0
+        _ALLOC_SHORTFALL_MB="$pool_short"
+    fi
+
     _mem_export_all
     [[ "$_ALLOC_FEASIBLE" -eq 1 ]]
+}
+
+# Pool-tier specs export no <NAME>_MEM, so an operator's pin of one (in the shell,
+# or in .env outside the managed block) changes nothing; say so once per run
+# rather than leave a dead knob looking live.
+_MEM_POOL_PIN_NOTED=""
+_mem_note_ignored_pool_pins() {
+    local name var
+    for name in $1; do
+        var="${name}_MEM"
+        case " $_MEM_POOL_PIN_NOTED " in *" $var "*) continue ;; esac
+        if [[ -n "${!var:-}" ]] || _env_pin_outside_block "$var"; then
+            info "${var} is set but ignored: each person's Kali sandbox is admitted from the scan pool with its own fixed limits."
+            _MEM_POOL_PIN_NOTED="${_MEM_POOL_PIN_NOTED} ${var}"
+        fi
+    done
+    return 0
 }
 
 # Export the computed values, skipping anything the operator pinned. Neo4j is
@@ -912,7 +992,7 @@ _export_cpu_cap() {
 }
 
 # #163: docker-compose.yml carries generous `cpus:` defaults sized for a
-# workstation (neo4j 8, kali 10, agent 8). The Docker daemon REJECTS any cpus
+# workstation (neo4j 8, agent 8). The Docker daemon REJECTS any cpus
 # value above the host core count -- "range of CPUs is from 0.01 to 4.00, as
 # there are only 4 CPUs available" -- so on a 4-vCPU VM every `docker compose
 # up` died before the stack came up. Clamp each cap to the detected core count.
@@ -923,7 +1003,6 @@ export_cpu_caps() {
     [[ -z "${BUILD_NCPU:-}" ]] && detect_build_resources
     _export_cpu_cap POSTGRES_CPUS 4
     _export_cpu_cap NEO4J_CPUS 8
-    _export_cpu_cap KALI_CPUS 10
     _export_cpu_cap RECON_ORCHESTRATOR_CPUS 4
     _export_cpu_cap AGENT_CPUS 8
     _export_cpu_cap WEBAPP_CPUS 4
@@ -932,10 +1011,11 @@ export_cpu_caps() {
 }
 
 # The Docker host's LAN IP, exported so the agent can SUGGEST it as the reverse-
-# shell LHOST (issue #180). The tools run inside kali-sandbox on a private 172.x
-# bridge that a real target cannot reach; the reachable address is the host's own
-# LAN IP, and port 4444 is forwarded host->container. A container cannot discover
-# this itself, so it is detected here on the host and passed in via env.
+# shell LHOST (issue #180). The tools run inside each person's Kali sandbox on a
+# private bridge that a real target cannot reach; the reachable address is the
+# host's own LAN IP, with the sandbox's KALI_SANDBOX_PORT_POOL port forwarded to it.
+# A container cannot discover this itself, so it is detected here on the host and
+# passed in via env.
 #
 # IPv4 only: the webapp validates agentLhost against an IPv4 regex, so a v6/zoned
 # value would produce a suggestion the form then refuses to save. Best-effort:
@@ -981,6 +1061,8 @@ _mem_managed_vars() {
     local spec name
     for spec in $(_mem_specs); do
         name="${spec%%:*}"
+        # A pool-tier share has no container, hence no var (see allocate_memory).
+        [[ "${spec##*:}" == "p" ]] && continue
         if [[ "$name" == "NEO4J" ]]; then
             printf 'NEO4J_MEM\nNEO4J_HEAP\nNEO4J_PAGECACHE\n'
         else
@@ -1236,7 +1318,7 @@ _compose_build_targets() {
 # args that would follow `docker compose`, e.g.:
 #   compose_build --profile tools build
 #   compose_build --profile tools build recon vuln-scanner
-#   compose_build build recon-orchestrator kali-sandbox agent webapp docker-broker
+#   compose_build build recon-orchestrator agent webapp docker-broker
 compose_build() {
     detect_build_resources
     local parallel; parallel="$(pick_parallelism)"
@@ -1994,9 +2076,12 @@ ensure_auth_secrets() {
         echo "ORCHESTRATOR_API_KEY=$(openssl rand -hex 32)" >> "$env_file"
         info "Generated ORCHESTRATOR_API_KEY"
     fi
-    # Shared bearer token the agent presents to the Kali MCP servers and the
-    # servers validate on every inbound SSE request (STRIDE S10 defense-in-depth).
-    # Stateless (not baked into any volume), so append-if-absent is safe.
+    # No service uses it: each person's Kali sandbox gets its own random MCP and
+    # tunnel tokens from the orchestrator, and docker-compose.yml blanks both in the
+    # agent's environment (its env_file is this .env). Still written (with
+    # TUNNEL_AUTH_TOKEN below) because the single-host deploy's secrets gate refuses
+    # a .env without them, and that module ships from the operator's own checkout,
+    # which can be older than the server's. Stateless, so append-if-absent is safe.
     if ! grep -q '^MCP_AUTH_TOKEN=' "$env_file" 2>/dev/null; then
         echo "MCP_AUTH_TOKEN=$(openssl rand -hex 32)" >> "$env_file"
         info "Generated MCP_AUTH_TOKEN"
@@ -2008,10 +2093,7 @@ ensure_auth_secrets() {
         echo "AGENT_WS_TICKET_SECRET=$(openssl rand -hex 32)" >> "$env_file"
         info "Generated AGENT_WS_TICKET_SECRET"
     fi
-    # Inbound token the tunnel-manager (:8015) validates on config pushes, and the
-    # webapp presents when pushing tunnel config (STRIDE I19/S14). Inbound-validation
-    # only (same category as MCP_AUTH_TOKEN), so the worker holding it does not
-    # violate the "worker holds no secrets" rule. Stateless.
+    # Unused too, kept for the deploy's secrets gate (see above).
     if ! grep -q '^TUNNEL_AUTH_TOKEN=' "$env_file" 2>/dev/null; then
         echo "TUNNEL_AUTH_TOKEN=$(openssl rand -hex 32)" >> "$env_file"
         info "Generated TUNNEL_AUTH_TOKEN"
@@ -3054,13 +3136,85 @@ cmd_reset_password() {
 # scan containers + the on-demand local LLM). Safe to call anytime — a no-op when
 # none are present. Must run BEFORE `compose down --volumes` so the local-llm
 # container releases the models volume and it can actually be removed.
+# With --stop-sandboxes (down, clean) the per-user Kali sandboxes are stopped, not
+# removed: the orchestrator's next start adopts nothing that exited and removes it,
+# holding its reverse-shell pool port for its person (KALI_SANDBOX_PORT_HOLD_HOURS),
+# so a late callback never reaches whoever starts next. purge removes them.
 remove_spawned_containers() {
-    local ids
+    local ids sandboxes keep_sandboxes=0
+    [[ "${1:-}" == "--stop-sandboxes" ]] && keep_sandboxes=1
     ids=$(docker ps -aq "${SPAWNED_CONTAINER_NAME_FILTERS[@]}" 2>/dev/null || true)
+    # A separate call: docker ps ANDs a label filter with the name filters.
+    sandboxes=$(docker ps -aq "${_SANDBOX_LABEL_FILTERS[@]}" --filter "$(_sandbox_owner_filter)" 2>/dev/null || true)
     if [[ -n "$ids" ]]; then
         info "Removing orchestrator-spawned AI containers (scan + local LLM)..."
         # shellcheck disable=SC2086
         docker rm -f $ids >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$sandboxes" && $keep_sandboxes -eq 1 ]]; then
+        info "Stopping per-user Kali sandboxes..."
+        # shellcheck disable=SC2086
+        docker stop -t 10 $sandboxes >/dev/null 2>&1 || true
+    elif [[ -n "$sandboxes" ]]; then
+        info "Removing per-user Kali sandboxes..."
+        # shellcheck disable=SC2086
+        docker rm -f $sandboxes >/dev/null 2>&1 || true
+    fi
+}
+
+# Asks the running orchestrator to stop every sandbox (reason "operator"): it holds
+# each one's pool port for its person and removes the sandbox networks. Best effort,
+# bounded; what it leaves (no key, the orchestrator down or slow) is stopped by
+# remove_spawned_containers --stop-sandboxes and held at the next adoption.
+_sandbox_stop_all_post() {
+    local env_file="$SCRIPT_DIR/.env" okey="" port=""
+    okey="$(_env_get ORCHESTRATOR_API_KEY "$env_file")"
+    port="$(_env_get RECON_ORCH_PORT "$env_file")"
+    port="${port:-8010}"
+    [ -z "$okey" ] && return 1
+    docker ps -q "${_SANDBOX_LABEL_FILTERS[@]}" --filter "$(_sandbox_owner_filter)" 2>/dev/null | grep -q . || return 0
+    info "Stopping per-user Kali sandboxes through the orchestrator..."
+    curl -fsS --max-time 60 -X POST "http://127.0.0.1:${port}/sandboxes/stop-all" \
+        -H "X-Orchestrator-Key: ${okey}" -H 'Content-Type: application/json' \
+        -d '{"reason":"operator"}' -o /dev/null 2>/dev/null
+}
+
+# Per-user Kali sandboxes and their networks carry the label redamon.sandbox=1
+# and the owner label redamon.sandbox.owner=<compose project> the orchestrator
+# writes (recon_orchestrator/sandbox_manager.py, LABEL_OWNER): another RedAmon
+# stack on the same daemon (a test stack) keeps its own.
+_SANDBOX_LABEL_FILTERS=(--filter label=redamon.sandbox=1)
+_sandbox_owner_filter() {
+    printf 'label=redamon.sandbox.owner=%s' "$(compose_project_name)"
+}
+
+# Per-user Kali sandbox networks (one per person and view) and the nuclei
+# templates volume they mount, all made at runtime by the orchestrator, so
+# `compose down` never removes them; the volume's name has no <project>_ prefix,
+# so purge's volume sweep misses it. Run after the sandboxes are gone; an
+# endpoint still attached (a lab an operator connected) is disconnected first.
+_purge_kali_sandbox_resources() {
+    local net ep
+    for net in $(docker network ls -q "${_SANDBOX_LABEL_FILTERS[@]}" --filter "$(_sandbox_owner_filter)" 2>/dev/null || true); do
+        for ep in $(docker network inspect -f '{{range $id, $c := .Containers}}{{$id}} {{end}}' "$net" 2>/dev/null || true); do
+            docker network disconnect -f "$net" "$ep" >/dev/null 2>&1 || true
+        done
+        docker network rm "$net" >/dev/null 2>&1 || true
+    done
+    docker volume rm redamon-kali-nuclei-templates >/dev/null 2>&1 || true
+}
+
+# What the sandboxes left in mcp/output: every person's output folder (their Kali
+# tools' output, possibly target data), the per-view custom templates copies and the
+# reverse-shell port holds, which would keep pool ports from new people for a day
+# after a reinstall. The orchestrator made them as root, so a plain rm may fail.
+_purge_kali_sandbox_output() {
+    local out="$SCRIPT_DIR/mcp/output"
+    local paths=("$out/users" "$out/templates" "$out/.sandbox-port-holds.json" "$out/.sandbox-port-holds.json.prev")
+    if ! rm -rf -- "${paths[@]}" 2>/dev/null; then
+        warn "Root-owned Kali sandbox output detected, elevating with sudo..."
+        sudo rm -rf -- "${paths[@]}" \
+            || warn "Could not remove the Kali sandbox output; remove it manually: sudo rm -rf ${paths[*]}"
     fi
 }
 
@@ -3699,6 +3853,8 @@ cmd_install() {
 
     # Start services (force-recreate ensures compose changes like command: are applied)
     info "Starting services..."
+    _retire_shared_kali
+    _ensure_pentest_net
     if [[ "$gvm_mode" == "true" ]]; then
         gvm_up_or_diagnose --force-recreate
     else
@@ -3787,15 +3943,6 @@ _map_core_changes() {
         rebuild_core+=(recon-orchestrator)
     elif echo "$changed_files" | grep -q "^recon_orchestrator/"; then
         restart_only+=(recon-orchestrator)
-    fi
-
-    # kali-sandbox: its image bakes everything under mcp/kali-sandbox/ (pip
-    # constraints, the adkc helpers, the motd) and mcp/requirements.txt; any other
-    # mcp/ path is mounted over the baked copy, so a restart picks it up.
-    if echo "$changed_files" | grep -qE "^(mcp/kali-sandbox/|mcp/requirements\.txt$)"; then
-        rebuild_core+=(kali-sandbox)
-    elif echo "$changed_files" | grep -q "^mcp/"; then
-        restart_only+=(kali-sandbox)
     fi
 
     # agent: always rebuild when agentic/ changes — source code is baked into
@@ -3908,6 +4055,16 @@ _map_tool_changes() {
     # mounted, so rebuild on ANY change to the analyzer dir (entrypoint or Dockerfile).
     if echo "$changed_files" | grep -q "^scanners/supply_chain_analyzer/"; then
         rebuild_tools+=(supply-chain-analyzer)
+    fi
+    # kali-sandbox: the image each person's sandbox starts from bakes everything
+    # under mcp/kali-sandbox/ (pip constraints, the adkc helpers, the motd) and
+    # mcp/requirements.txt. Nothing to restart: the orchestrator drains every
+    # sandbox started on an older image or older mcp/servers code onto a new one
+    # (TD-28), so a change elsewhere in mcp/ needs neither a build nor a restart.
+    # mcp/.dockerignore decides what COPY servers/ bakes in (it keeps old scan output
+    # out of the image), so a change to it rebuilds the image too.
+    if echo "$changed_files" | grep -qE "^(mcp/kali-sandbox/|mcp/requirements\.txt$|mcp/\.dockerignore$)"; then
+        rebuild_tools+=(kali-sandbox)
     fi
     _map_baked_graph_db "$changed_files"
     # capture-proxy / traffic-ingest (HTTP Traffic Capture): both share the
@@ -4130,11 +4287,28 @@ cmd_update() {
         fi
 
         if [[ "$old_head" == "$new_head" ]]; then
+            # The shared container outlives only a checkout that no update finished: a
+            # manual `git pull`, or an earlier update whose Kali build failed. Its images
+            # then predate the code, and converging the services here would recreate
+            # them from those images against the new compose file.
+            if _shared_kali_present; then
+                error "Nothing to pull, but the images predate this checkout: the shared Kali container redamon-kali"
+                error "  is still here, so the code came from a manual git pull (or an earlier update whose Kali build failed)."
+                error "  Rebuild the agent and webapp images and the Kali image, then start the stack (it removes redamon-kali):"
+                error "    docker compose build agent webapp"
+                error "    docker compose --profile tools build kali-sandbox"
+                error "    ./redamon.sh up"
+                exit 1
+            fi
             success "Already up to date (v$(get_version))."
             if [[ "$preview_only" == true ]]; then
                 info "Nothing to preview: there is no new version to apply."
             else
+                _ensure_pentest_net
                 _update_apply_env
+                # A completed update, so the daily Metasploit refresh too: sandboxes
+                # run with Metasploit's own auto-update off.
+                _kali_msf_refresh
             fi
             return
         fi
@@ -4171,7 +4345,7 @@ cmd_update() {
 
     if [[ "$rebuild_all" == "true" ]]; then
         info "docker-compose.yml changed -- rebuilding core service images"
-        rebuild_core=(recon-orchestrator kali-sandbox agent webapp docker-broker)
+        rebuild_core=(recon-orchestrator agent webapp docker-broker)
     else
         _map_core_changes "$changed_files"
     fi
@@ -4180,6 +4354,11 @@ cmd_update() {
     _map_tool_changes "$changed_files"
     if [[ "$rebuild_plugins" != "true" ]] && ! docker image inspect "$PLUGINS_RUNNER_IMAGE" >/dev/null 2>&1; then
         rebuild_plugins=true
+    fi
+    # Without it no person's sandbox can start (sandbox_image_missing).
+    if [[ " ${rebuild_tools[*]-} " != *" kali-sandbox "* ]] \
+        && ! docker image inspect redamon-kali-sandbox:latest >/dev/null 2>&1; then
+        rebuild_tools+=(kali-sandbox)
     fi
 
     # Remember whether the stack was serving BEFORE anything is touched. `update`
@@ -4230,11 +4409,22 @@ cmd_update() {
     # Rebuild tool-profile images. A tool image is build-only (not a running core
     # service), so a failure here must NOT abort the rest of the update (core
     # services, broker, auth key). Warn and continue; the existing tool image keeps
-    # working until its build is fixed.
+    # working until its build is fixed. The Kali image is the exception at the end:
+    # every person's sandbox starts from it and speaks the new release's protocol,
+    # so the update still finishes but fails, and the shared container stays.
+    local kali_build_failed=false
     if [[ ${#rebuild_tools[@]} -gt 0 ]]; then
         info "Rebuilding tool images: ${rebuild_tools[*]}"
         if ! compose_build --profile tools build "${rebuild_tools[@]}"; then
             warn "One or more tool images failed to build (${rebuild_tools[*]}); continuing with the core update. Re-run the build later: docker compose --profile tools build ${rebuild_tools[*]}"
+            # The status does not name the image that failed, and a failed batch skips
+            # the batches after it: building the Kali image alone settles it, a cache
+            # hit when it did build. No prune: it would drop the partial cache of the
+            # image that failed, which its retry resumes from.
+            if [[ " ${rebuild_tools[*]} " == *" kali-sandbox "* ]] \
+                && ! REDAMON_NO_AUTO_PRUNE=1 compose_build --profile tools build kali-sandbox; then
+                kali_build_failed=true
+            fi
         fi
     fi
 
@@ -4298,6 +4488,12 @@ cmd_update() {
     if [[ ${#rebuild_core[@]} -gt 0 || ${#rebuild_tools[@]} -gt 0 ]]; then
         docker image prune -f >/dev/null 2>&1 || true
     fi
+
+    # Only now: the images are built and the operator has not said no, so an update
+    # that stops earlier leaves the shared container (and its sessions) running. So
+    # does one whose Kali image did not build: no sandbox could start from it yet.
+    [[ "$kali_build_failed" == true ]] || _retire_shared_kali
+    _ensure_pentest_net
 
     # Restart rebuilt core services (tool images are build-only, not running).
     # When docker-compose.yml changed (rebuild_all), recreate ALL core services so
@@ -4411,8 +4607,10 @@ cmd_update() {
     if _service_running webapp; then
         plugins_converge || exit 1
     fi
-    # Everything the release changed is built and applied; what remains is a health check.
-    rm -f "$UPDATE_PENDING_FILE"
+    # Everything the release changed is built and applied; what remains is a health
+    # check. Not the Kali image when it failed: the marker stays, so the next `update`
+    # builds it and finishes this one.
+    [[ "$kali_build_failed" == true ]] || rm -f "$UPDATE_PENDING_FILE"
 
     # An update that leaves the stack down must not report success. This is the
     # exact gap the v6.1.1 -> v6.4.1 field report hit: the update finished, said
@@ -4425,10 +4623,17 @@ cmd_update() {
         exit 1
     fi
 
+    [[ "$kali_build_failed" == true ]] || _kali_msf_refresh   # not a third build of what just failed twice
+
     echo ""
-    success "Updated to v${new_version}!"
+    if [[ "$kali_build_failed" != true ]]; then
+        success "Updated to v${new_version}!"
+    else
+        warn "Updated to v${new_version}, all but the Kali sandbox image (see the end of this output)."
+    fi
     if [[ ${#rebuild_core[@]} -gt 0 || ${#rebuild_tools[@]} -gt 0 ]]; then
         local rebuilt_list="${rebuild_core[*]:+${rebuild_core[*]} }${rebuild_tools[*]}"
+        [[ "$kali_build_failed" == true ]] && rebuilt_list="${rebuilt_list/kali-sandbox/kali-sandbox (failed)}"
         echo -e "  ${CYAN}Rebuilt:${NC}  ${rebuilt_list}"
     fi
     if [[ ${#restart_only[@]} -gt 0 ]]; then
@@ -4468,6 +4673,37 @@ cmd_update() {
     _reconcile_capture_if_running
     # ...and start it if it was down (a stack recreate leaves the pair stopped).
     ensure_capture_proxy_running
+
+    # Last, so the deploy (and anyone scripting this) cannot read the update as done.
+    if [[ "$kali_build_failed" == true ]]; then
+        echo ""
+        error "The Kali sandbox image did not build: each person's sandbox starts from the previous image (none starts"
+        error "  where there was none), and the shared Kali container redamon-kali, if this host still has it, was kept."
+        error "  The build's own output says why: docker compose --profile tools build kali-sandbox"
+        error "  Once it builds, run ./redamon.sh update again: it builds the image and finishes this update."
+        exit 1
+    fi
+}
+
+# Per-user sandboxes start with Metasploit's auto-update off and take its modules
+# from the Kali image, so an update refreshes them at most once a day: when the
+# image's redamon.msf_refresh label is not today's UTC date, only the image's last
+# layers are rebuilt with today's stamp (mcp/kali-sandbox/Dockerfile). The stamp is
+# made here, exported for that one build and written nowhere; an MSF_REFRESH_STAMP
+# in .env or the environment is never used, and the label is only compared with it.
+# Outside rebuild_tools, so it never raises the update's full-build disk gate, and
+# best-effort like the capture rebuild: a failed build keeps the image it had.
+_kali_msf_refresh() {
+    local stamp label
+    stamp="$(date -u +%Y%m%d)"
+    label="$(docker image inspect -f '{{ index .Config.Labels "redamon.msf_refresh" }}' \
+        redamon-kali-sandbox:latest 2>/dev/null)" || return 0
+    [[ "$label" == "$stamp" ]] && return 0
+    info "Refreshing the Metasploit modules of the Kali sandbox image (once a day)..."
+    if ! MSF_REFRESH_STAMP="$stamp" compose_build --profile tools build kali-sandbox; then
+        warn "The Metasploit refresh of the Kali sandbox image failed; sandboxes keep the current image. The next update retries it."
+    fi
+    return 0
 }
 
 # Populate the offline OSV database volume (supply-chain feature). Lazy and
@@ -4734,6 +4970,8 @@ cmd_up_dev() {
     ensure_db_secrets
 
     info "Starting RedAmon in DEV mode (GVM: ${gvm_flag})..."
+    _retire_shared_kali
+    _ensure_pentest_net
 
     if [[ "$gvm_flag" == "true" ]]; then
         pull_gvm_images
@@ -4848,6 +5086,8 @@ cmd_up() {
         pull_gvm_images
     fi
 
+    _retire_shared_kali
+    _ensure_pentest_net
     if [[ "$gvm_mode" == "true" ]]; then
         gvm_up_or_diagnose
     else
@@ -4902,9 +5142,13 @@ cmd_down() {
     # The on-demand LLM + any in-flight AI scan containers are orchestrator-spawned
     # (not compose-managed), so stop them too — otherwise the local LLM keeps
     # holding RAM after `down`.
-    remove_spawned_containers
+    _sandbox_stop_all_post || true
+    remove_spawned_containers --stop-sandboxes
+    _retire_shared_kali
     # --profile plugins: older Compose leaves profile containers running otherwise.
     docker compose --profile plugins down
+    # Again: a sandbox the orchestrator started while compose was stopping it.
+    remove_spawned_containers --stop-sandboxes
     success "All services stopped. Volumes and images preserved."
 }
 
@@ -4919,13 +5163,22 @@ cmd_clean() {
     fi
 
     info "Stopping containers..."
-    remove_spawned_containers
+    _sandbox_stop_all_post || true
+    remove_spawned_containers --stop-sandboxes
     docker compose --profile tools --profile plugins down
+    # Again: a sandbox the orchestrator started while compose was stopping it.
+    remove_spawned_containers --stop-sandboxes
 
     info "Removing RedAmon images..."
     remove_redamon_images
     docker image prune -f >/dev/null 2>&1 || true
 
+    local kept
+    kept=$(docker ps -aq "${_SANDBOX_LABEL_FILTERS[@]}" --filter "$(_sandbox_owner_filter)" 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "${kept:-0}" -gt 0 ]]; then
+        info "${kept} stopped Kali sandbox(es) are kept, with the Kali image they use, so their reverse-shell"
+        info "ports stay held for their people; the next start removes them, and ./redamon.sh purge does now."
+    fi
     success "All RedAmon containers and images removed. Volumes preserved."
     echo ""
     info "To reinstall: ./redamon.sh install"
@@ -4936,6 +5189,7 @@ cmd_purge() {
     warn "This will PERMANENTLY DELETE:"
     warn "  - All RedAmon containers and images"
     warn "  - ALL DATA: PostgreSQL, Neo4j, GVM feeds, reports, scan results"
+    warn "  - Every person's Kali sandbox output (mcp/output/users) and reverse-shell port holds"
     warn "  - Host-side KB index state (FAISS index, manifest, last-ingest marker)"
     warn "  - KB dedup state (.manifest.json, .file_hashes.json)"
     warn "  - Downloaded source files under services/knowledge_base/data/cache are PRESERVED"
@@ -4954,6 +5208,8 @@ cmd_purge() {
     # is gone.
     remove_spawned_containers
     docker compose --profile tools --profile plugins down --volumes --remove-orphans
+    # Again: a sandbox the orchestrator started while compose was stopping it.
+    remove_spawned_containers
     # `compose down --volumes` only removes volumes attached to the services it
     # actually loaded, so several always survive and a "purge" silently keeps
     # data: capture_* (the proxy/ingest are orchestrator-spawned, not compose
@@ -4972,6 +5228,10 @@ cmd_purge() {
     # attached to them), so `compose down` never removes them.
     docker network rm redamon-codefix-net >/dev/null 2>&1 || true
     docker network rm "${TRUFFLEHOG_NETWORK:-redamon-trufflehog-net}" >/dev/null 2>&1 || true
+    _purge_kali_sandbox_resources
+    _purge_kali_sandbox_output
+    # No profile of the down above has a service on it (_ensure_pentest_net).
+    docker network rm "${_proj}_pentest-net" >/dev/null 2>&1 || true
     # Per-run TruffleHog scratch dirs (job file + findings before publication).
     # One per project+source, so bounded — but `purge` claims to leave nothing.
     rm -rf /tmp/redamon/trufflehog_* >/dev/null 2>&1 || true
@@ -5107,7 +5367,7 @@ _status_expected_mb() {
     local svc="$1" i n=${#_ALLOC_NAMES[@]} key
     case "$svc" in
         webapp) key=WEBAPP ;; agent) key=AGENT ;; neo4j) key=NEO4J ;;
-        postgres) key=POSTGRES ;; kali) key=KALI ;;
+        postgres) key=POSTGRES ;;
         recon-orchestrator) key=RECON_ORCHESTRATOR ;; docker-broker) key=DOCKER_BROKER ;;
         capture-proxy) key=CAPTURE_PROXY ;; traffic-ingest) key=TRAFFIC_INGEST ;;
         plugin-runner) key=PLUGIN_RUNNER ;;
@@ -5235,6 +5495,20 @@ cmd_status() {
         echo ""
         echo -e "  ${CYAN}AI Attack Surface (on-demand, orchestrator-spawned):${NC}"
         echo "$spawned"
+    fi
+
+    _status_kali_sandboxes
+}
+
+# Names and status only: a sandbox's environment holds its tokens.
+_status_kali_sandboxes() {
+    local sandboxes
+    sandboxes=$(docker ps -a "${_SANDBOX_LABEL_FILTERS[@]}" --filter "$(_sandbox_owner_filter)" \
+                --format '    {{.Names}}  ({{.Status}})' 2>/dev/null || true)
+    if [[ -n "$sandboxes" ]]; then
+        echo ""
+        echo -e "  ${CYAN}Kali sandboxes (one per person, orchestrator-spawned):${NC}"
+        echo "$sandboxes"
     fi
 }
 
@@ -5364,7 +5638,7 @@ cmd_kb_help() {
     echo -e "${BOLD}Profiles:${NC}"
     echo "  lite      tool_docs + metasploit + gtfobins + lolbas + owasp + exploitdb + NVD (90 days)"
     echo "  standard  same sources as lite + NVD (2 years)"
-    echo "  full      standard + Nuclei (requires redamon-kali container running)"
+    echo "  full      standard + Nuclei templates (downloaded from GitHub)"
     echo ""
     echo -e "${BOLD}Examples:${NC}"
     echo "  ./redamon.sh kb build             # Build lite KB (default)"
@@ -5688,6 +5962,101 @@ _test_run_webapp() {
 #   every repeat `up` and left gvmd crash-looping (issue #174).
 _REMOVED_CONTAINERS=(redamon-gvm-postgres-init)
 
+# The shared Kali container of earlier releases (TD-29). Its service is build-only
+# now, so compose neither starts nor stops it: `up` would leave it running beside
+# the per-user sandboxes, and `down` (no tools profile) would too. Not one of the
+# _REMOVED_CONTAINERS: the dispatch prunes those before update's builds and its
+# --preview, and this one must outlive both (the sessions still open in it end
+# when it goes). The exact name only, never a per-user sandbox.
+_retire_shared_kali() {
+    _shared_kali_present || return 0
+    info "Removing the shared Kali container redamon-kali: each person now gets their own sandbox (sessions still open in it end now)"
+    docker rm -f redamon-kali >/dev/null 2>&1 \
+        || warn "Could not remove redamon-kali; remove it by hand: docker rm -f redamon-kali"
+    return 0
+}
+
+# Only this checkout's: a container name is daemon-wide, so another stack's (a test
+# stack, a second clone) is never taken for it.
+_shared_kali_present() {
+    command -v docker >/dev/null 2>&1 || return 1
+    [[ "$(docker container inspect -f '{{.Name}} {{index .Config.Labels "com.docker.compose.project"}}' \
+        redamon-kali 2>/dev/null)" == "/redamon-kali $(compose_project_name)" ]]
+}
+
+# The orchestrator starts the capture proxy on the pentest network and the labs name
+# it external, but compose creates a network only for the services it starts, and
+# the shared Kali container was the only one of the default model on it (the capture
+# proxy's profile is never `up`). Created here as compose would, with its subnet and
+# its project and network labels, so a later `--profile capture up` adopts it.
+_ensure_pentest_net() {
+    command -v docker >/dev/null 2>&1 || return 0
+    local proj net subnet have want n holder=""
+    proj="$(compose_project_name)"; net="${proj}_pentest-net"
+    # `|| true`: callers run under `set -e`, and a missing file is "no subnet known".
+    subnet="$(awk '/^networks:/ { n = 1 } n && /^  pentest-net:/ { p = 1; next }
+                   p && /^  [^ ]/ { exit } p && /subnet:/ { print $NF; exit }' \
+               "$SCRIPT_DIR/docker-compose.yml" 2>/dev/null || true)"
+    if have="$(docker network inspect -f '{{index .Labels "com.docker.compose.project"}}|{{index .Labels "com.docker.compose.network"}}|{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$net" 2>/dev/null)"; then
+        want="${proj}|pentest-net|${subnet}"
+        [[ -n "$subnet" ]] || { have="${have%|*}|"; want="${proj}|pentest-net|"; }
+        [[ "$have" == "$want" ]] && return 0
+        warn "The ${net} network is not the one docker-compose.yml describes (project|network|subnet: ${have}, expected ${want}): compose refuses one with other labels, and the capture proxy and the labs land on a wrong one. Once nothing uses it: docker network rm ${net}, then ./redamon.sh up"
+        return 0
+    fi
+    if docker network create --driver bridge ${subnet:+--subnet "$subnet"} \
+        --label "com.docker.compose.project=${proj}" --label com.docker.compose.network=pentest-net \
+        --label "com.docker.compose.version=$(docker compose version --short 2>/dev/null)" \
+        "$net" >/dev/null 2>&1; then
+        info "Created the ${net} network (the capture proxy and the labs use it)"
+        return 0
+    fi
+    # Usually the subnet is taken: name the network that holds it.
+    if [[ -n "$subnet" ]]; then
+        for n in $(docker network ls --format '{{.Name}}' 2>/dev/null); do
+            [[ "$n" == "$net" ]] && continue
+            if [[ " $(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' "$n" 2>/dev/null) " == *" ${subnet} "* ]]; then
+                holder="$n"; break
+            fi
+        done
+    fi
+    if [[ "$holder" == mcp_pentest-net ]]; then
+        warn "Could not create ${net}: its subnet ${subnet} is held by mcp_pentest-net, the network of an older standalone mcp/docker-compose.yml. Stop that container (docker compose -f mcp/docker-compose.yml down) or remove the network (docker network rm mcp_pentest-net), then ./redamon.sh up"
+    elif [[ -n "$holder" ]]; then
+        warn "Could not create ${net}: its subnet ${subnet} is held by the network ${holder}. Free it (docker network rm ${holder}, once nothing uses it), then ./redamon.sh up"
+    else
+        warn "Could not create ${net}; the capture proxy and the labs need it. Check the Docker daemon, then ./redamon.sh up"
+    fi
+    return 0
+}
+
+# Knobs of the shared Kali container that nothing reads any more. An operator's
+# line stays where it is (a roll-back needs it, and --preview writes nothing) and is
+# named once per run; KALI_MEM is the allocator's to name (_mem_note_ignored_pool_pins).
+# The *_HOST_PORT and MCP_*_PORT keys moved the host side of that container's
+# published ports; the other three reached its environment, and a sandbox's
+# environment is fixed (sandbox_contract.py CONTAINER_ENV_FIXED).
+_RETIRED_KALI_KEYS=(KALI_SANDBOX_MODE KALI_PIDS KALI_CPUS MSF_PROGRESS_HOST_PORT HYDRA_PROGRESS_HOST_PORT NGROK_API_HOST_PORT
+    MCP_NETWORK_RECON_PORT MCP_NUCLEI_PORT MCP_METASPLOIT_PORT MCP_NMAP_PORT MCP_PLAYWRIGHT_PORT
+    MSF_AUTO_UPDATE NUCLEI_AUTO_UPDATE MSF_PROJECT_LEASE_IDLE_S)
+_RETIRED_KALI_NOTED=""
+_env_note_retired_kali_keys() {
+    local env_file="$SCRIPT_DIR/.env" key why
+    [[ -f "$env_file" && -z "$_RETIRED_KALI_NOTED" ]] || return 0
+    _RETIRED_KALI_NOTED=1
+    for key in "${_RETIRED_KALI_KEYS[@]}"; do
+        grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}=[[:space:]]*[^[:space:]]" "$env_file" 2>/dev/null || continue
+        case "$key" in
+            *_HOST_PORT|MCP_*_PORT) why="it moved a port of the shared Kali container, and no person's sandbox publishes that port" ;;
+            MSF_AUTO_UPDATE|NUCLEI_AUTO_UPDATE) why="a sandbox never updates itself: update refreshes the Kali image's Metasploit daily and the orchestrator the shared nuclei templates" ;;
+            MSF_PROJECT_LEASE_IDLE_S) why="each person's Kali sandbox has a fixed environment, with the default handover time" ;;
+            *) why="each person's Kali sandbox has fixed limits and no mode switch" ;;
+        esac
+        info "${key} in .env is ignored: ${why}"
+    done
+    return 0
+}
+
 prune_removed_containers() {
     command -v docker >/dev/null 2>&1 || return 0
     local existing c
@@ -5698,6 +6067,24 @@ prune_removed_containers() {
                 && info "Removed obsolete container $c (its service no longer exists)"
         fi
     done
+    return 0
+}
+
+# The Kali image has a fixed tag, redamon-kali-sandbox:latest: the orchestrator
+# starts each person's sandbox from it (docker-compose.yml `image:`). A checkout
+# whose compose project is not `redamon` built it as <project>-kali-sandbox:latest;
+# without this tag `up` rebuilds every tool image (ensure_tool_images) and `update`
+# the Kali image. Touches no container, so --preview is safe.
+_kali_image_tag_once() {
+    command -v docker >/dev/null 2>&1 || return 0
+    local want="redamon-kali-sandbox:latest" old
+    docker image inspect "$want" >/dev/null 2>&1 && return 0
+    old="$(compose_project_name)-kali-sandbox:latest"
+    [[ "$old" == "$want" ]] && return 0
+    docker image inspect "$old" >/dev/null 2>&1 || return 0
+    if docker tag "$old" "$want" >/dev/null 2>&1; then
+        info "Tagged the Kali sandbox image $old as $want"
+    fi
     return 0
 }
 
@@ -5712,6 +6099,11 @@ prune_removed_containers() {
 # tested in isolation.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 cd "$SCRIPT_DIR"
+
+# The Kali image's Metasploit refresh stamp is _kali_msf_refresh's alone. Set empty
+# here, it outranks a value in .env or the caller's environment for every other
+# build compose runs (the build argument is "${MSF_REFRESH_STAMP:-}").
+export MSF_REFRESH_STAMP=""
 
 # #163: clamp the per-service `cpus:` caps to the host's core count for EVERY
 # command that can touch Docker. Done here rather than inside each command
@@ -5737,7 +6129,7 @@ esac
 # Running it here also means the .env block is written BEFORE any `docker compose
 # up` in those commands reads it.
 case "${1:-help}" in
-    install|update|up) export_resource_caps; prune_removed_containers ;;
+    install|update|up) _env_note_retired_kali_keys; _mem_forget_parent_exports; export_resource_caps; prune_removed_containers; _kali_image_tag_once ;;
 esac
 
 case "${1:-help}" in

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { rowCap } from '../rowCap'
 import { requirePermission } from '@/lib/authz/guards'
 import { getGraphSession } from '@/app/api/graph/neo4j'
+import type { Record as Neo4jRecord } from 'neo4j-driver'
 import { notMuted } from '@/lib/graphMute'
 import { reportCountable } from '@/lib/triage/reportable'
 import { internalError } from '@/lib/routeErrors'
@@ -110,7 +111,7 @@ export async function GET(request: NextRequest) {
       { pid: projectId, vulnTypes: NET_VULN_TYPES }
     )
 
-    const mapRow = (r: any) => {
+    const mapRow = (r: Neo4jRecord) => {
       const port = r.get('port') != null ? toNum(r.get('port')) : null
       const category = port != null ? PORT_CATEGORY[port] || null : null
       return {
@@ -143,8 +144,9 @@ export async function GET(request: NextRequest) {
     }))
 
     // Merge on (ip, port). Prefer port-row base; merge vuln tags.
-    const keyOf = (r: any) => `${r.ipAddress}|${r.port ?? ''}`
-    const merged = new Map<string, any>()
+    type Row = ReturnType<typeof mapRow>
+    const keyOf = (r: Row) => `${r.ipAddress}|${r.port ?? ''}`
+    const merged = new Map<string, Row>()
     const findingKeys = new Set<string>()
     for (const r of portRows) merged.set(keyOf(r), r)
     for (const { row: r, ipNodeId } of vulnRows) {

@@ -76,6 +76,7 @@ export default function AdminSharesPage() {
     }
   }, [])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: each filter change reads the list again from the loading state; the generation counter drops a superseded answer
   useEffect(() => { void load(filters) }, [load, filters])
 
   function apply(next: Filters) {

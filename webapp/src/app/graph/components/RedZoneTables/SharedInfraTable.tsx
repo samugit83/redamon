@@ -113,7 +113,7 @@ export const SharedInfraTable = memo(function SharedInfraTable({ projectId }: Pr
     }
   }, [sortedRows, rows.length])
 
-  const m = data?.meta as any
+  const m = data?.meta
   const meta =
     rows.length && m
       ? `${m.certClusters ?? 0} cert · ${m.asnClusters ?? 0} asn · ${m.ipClusters ?? 0} ip`

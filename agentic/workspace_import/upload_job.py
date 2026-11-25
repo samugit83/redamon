@@ -15,7 +15,7 @@ import threading
 
 import job_runner
 from workspace_import import busy, jobs_common, place, staging, upload_sessions
-from workspace_import.errors import ImportFailure, map_os_error
+from workspace_import.errors import ImportFailure, map_os_error, spawn_refusal
 from workspace_import.extract import safe_extract, single_top_dir
 from workspace_import.redact import safe_traceback
 
@@ -120,6 +120,6 @@ async def commit(project_id: str, upload_id: str) -> dict:
     )
     if not isinstance(started, dict) or "job_id" not in started:
         upload_sessions.restore(session)
-        raise ImportFailure("too_many_jobs")
+        raise spawn_refusal(started)
     return {"jobId": started["job_id"], "destDir": session.dest_dir, "name": session.name,
             "kind": session.kind, "size": session.size}

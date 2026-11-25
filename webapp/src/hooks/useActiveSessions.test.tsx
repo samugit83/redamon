@@ -80,6 +80,7 @@ describe('useActiveSessions failures', () => {
     answer = () => json(502, { error: 'Failed to interact with session', code: 'agent_error', upstreamStatus: 504 })
     let out: { output?: string } = {}
     await act(async () => { out = await result.current.interactWithSession(7, 'id') })
-    expect(out.output).toBe('[ERROR] Failed to interact with session (agent_error · HTTP 502 · upstream HTTP 504)')
+    // A 504 behind the 502: nobody answered in time, so the command may still be running (S16b).
+    expect(out.output).toBe('[ERROR] No answer in time: the command may still be running in the session; check before sending it again (agent_error · HTTP 502 · upstream HTTP 504)')
   })
 })

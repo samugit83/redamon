@@ -74,7 +74,7 @@ export function SummarySection({ ctx, resource, onResource, onJob }: {
             id="tc-summary-text" className="textarea" rows={6} maxLength={SUMMARY_MAX} value={text}
             onChange={e => setText(e.target.value)}
           />
-          <span className="formHint">{text.length.toLocaleString('en-US')} / {SUMMARY_MAX.toLocaleString('en-US')} characters. Saving your own text makes it "Written by me".</span>
+          <span className="formHint">{text.length.toLocaleString('en-US')} / {SUMMARY_MAX.toLocaleString('en-US')} characters. Saving your own text makes it &quot;Written by me&quot;.</span>
           <label className={css.checkLine}>
             <input type="checkbox" className="checkbox" checked={locked} onChange={e => setLocked(e.target.checked)} />
             <span>Lock summary: a refresh rebuilds the map and keeps this summary</span>

@@ -334,6 +334,10 @@ class TestScanJobEnvelopes(GovernorTestBase):
         # analyzer is sized from it on all three of its spawn paths.
         self.assertEqual(shipped["tool_container_envelope_bytes"],
                          g._FALLBACK_PROFILE["tool_container_envelope_bytes"])
+        # A top-level scalar the two tables above do not cover: the per-user Kali
+        # sandbox's envelope, which the sandbox manager reserves per instance.
+        self.assertEqual(shipped["kali_sandbox_envelope_bytes"],
+                         g._FALLBACK_PROFILE["kali_sandbox_envelope_bytes"])
 
     def test_supply_chain_covers_its_analyzer_sibling(self):
         """The L1 scan dispatches the dirty analyzer, so its envelope must be
@@ -423,6 +427,45 @@ class TestScanJobEnvelopes(GovernorTestBase):
         # The whole fallback table, not just the envelopes: the copies must not
         # diverge on bytes_per_unit or the agent/session envelopes either.
         self.assertEqual(orch._FALLBACK_PROFILE, g._FALLBACK_PROFILE)
+
+
+class TestKaliSandboxEnvelope(GovernorTestBase):
+    """The memory a per-user Kali sandbox may peak at, which admission reserves per
+    instance. One top-level scalar kept in the same three copies as the scan
+    envelopes; the host profile is the single place to raise it."""
+
+    KEY = "kali_sandbox_envelope_bytes"
+
+    def setUp(self):
+        super().setUp()
+        self.orch = _load_governor('recon_orchestrator', '_orch_resource_governor')
+        self.addCleanup(self.orch.reset_profile_cache)
+        self.addCleanup(os.environ.pop, "RESOURCE_PROFILE_PATH", None)
+
+    def test_kali_sandbox_envelope_in_all_three_copies(self):
+        import json
+        path = os.path.join(ROOT, 'recon_orchestrator', 'resource_profile.default.json')
+        with open(path) as fh:
+            shipped = json.load(fh)
+        self.assertEqual(shipped[self.KEY], GB)
+        self.assertEqual(g._FALLBACK_PROFILE[self.KEY], GB)
+        self.assertEqual(self.orch._FALLBACK_PROFILE[self.KEY], GB)
+        os.environ["RESOURCE_PROFILE_PATH"] = "/nonexistent/resource_profile.json"
+        for mod in (g, self.orch):
+            mod.reset_profile_cache()
+            self.assertEqual(mod.envelope(self.KEY), GB, mod.__file__)
+
+    def test_host_profile_raises_the_envelope_and_a_zero_is_ignored(self):
+        import json
+        import tempfile
+        for measured, expected in ((1_610_612_736, 1_610_612_736), (0, GB)):
+            fh = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+            json.dump({self.KEY: measured}, fh)
+            fh.close()
+            self.addCleanup(os.unlink, fh.name)
+            os.environ["RESOURCE_PROFILE_PATH"] = fh.name
+            self.orch.reset_profile_cache()
+            self.assertEqual(self.orch.envelope(self.KEY), expected, measured)
 
 
 class TestContainerCap(GovernorTestBase):

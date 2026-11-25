@@ -13,14 +13,14 @@ import { json, refused, stubAgent, timedOut } from '@/lib/tradecraft/__testing__
 
 const h = vi.hoisted(() => ({
   db: null as unknown as TradecraftDb, denied: null as Response | null, person: 'owner' as string | null,
-  actingAs: false, loginRefusal: null as Response | null, order: [] as string[],
+  actingAs: false, loginRefusal: null as Response | null, order: [] as string[], onBehalfOf: null as string | null,
 }))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => (h.db.prisma as Record<string | symbol, unknown>)[k] }) }))
 vi.mock('@/lib/authz/selfService', () => ({ requireSelfPermission: vi.fn(async () => null) }))
 vi.mock('@/lib/session', () => ({ requireUserAccess: vi.fn(async () => h.denied), isInternalRequest: vi.fn(() => false) }))
 vi.mock('@/lib/auditActor', async orig => ({
   ...(await orig<typeof import('@/lib/auditActor')>()),
-  auditActor: async () => ({ actorId: h.person, onBehalfOfUserId: null }),
+  auditActor: async () => ({ actorId: h.person, onBehalfOfUserId: h.onBehalfOf }),
 }))
 vi.mock('@/lib/authz/actAsRefusals', () => ({
   refuseWhileActingAsOn: vi.fn(async () => (h.actingAs ? NextResponse.json({ code: 'not_while_acting_as' }, { status: 403 }) : null)),
@@ -54,6 +54,7 @@ beforeEach(() => {
   h.actingAs = false
   h.loginRefusal = null
   h.order = []
+  h.onBehalfOf = null
   h.db.seed('tradecraftUserSettings', { userId: 'owner', v2Enabled: true, ingestion: { 'crawl.maxPages': 90 } })
   h.db.seed('userSettings', { userId: 'owner', githubAccessToken: '' })
   h.db.seed('userTradecraftResource', {
@@ -129,6 +130,18 @@ describe('Check URL', () => {
     expect((await post({ resourceId: 'r1' })).status).toBe(403)
     expect(agent.calls).toEqual([])
     expect((await post({ url: 'https://wiki.tc-fixture.test/' })).status).toBe(200)
+  })
+
+  test("FU-18: the agent is told who really acts: null for the account itself, the administrator acting as it otherwise", async () => {
+    let agent = checkUrlAgent()
+    await post({ url: 'https://wiki.tc-fixture.test/' })
+    expect(CheckUrlRequest.parse(agent.calls[0].body)).toMatchObject({ user_id: 'owner', real_actor_user_id: null })
+    // An administrator acting as the account: the actor is the admin, the account the one acted as.
+    h.person = 'admin-x'
+    h.onBehalfOf = 'owner'
+    agent = checkUrlAgent()
+    expect((await post({ url: 'https://wiki.tc-fixture.test/' })).status).toBe(200)
+    expect(agent.calls[0].body).toMatchObject({ user_id: 'owner', real_actor_user_id: 'admin-x' })
   })
 
   test('check_url_timeout_fixed_error: past the deadline, a fixed 504; the agent waited its deadline plus the margin', async () => {

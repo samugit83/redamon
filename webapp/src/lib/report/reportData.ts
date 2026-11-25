@@ -29,6 +29,13 @@ function toNum(val: unknown): number {
   return typeof val === 'number' ? val : 0
 }
 
+/** A result row as a report query reads it: a neo4j Record and a test's fake both fit. */
+interface ReportRecord { get(key: string): unknown }
+
+interface ReportSession {
+  run(query: string, params: Record<string, unknown>): Promise<{ records: ReportRecord[] }>
+}
+
 /** Run a query function with its own Neo4j session, auto-closing when done. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function withSession<T>(fn: (session: any) => Promise<T>): Promise<T> {
@@ -280,6 +287,9 @@ export interface MalwareRecord {
 }
 
 export type { JudgedFindingCounts }
+
+/** One IP map the subdomain query collects; every key is null when the subdomain resolved to none. */
+type RawIpMap = Record<'address' | 'version' | 'isCdn' | 'cdnName' | 'ownership', unknown>
 
 export interface SubdomainMapping {
   subdomain: string
@@ -931,7 +941,7 @@ export async function gatherReportData(projectId: string): Promise<ReportData> {
           // and use those as authoritative per-member findings.
           const ftKeys = ftRows.map(f => f.fireteamIdKey)
           const ftSession = getGraphSession()
-          let authoritativeCounts: Map<string, number> = new Map()
+          const authoritativeCounts: Map<string, number> = new Map()
           try {
             const ftFindingsRes = await ftSession.run(
               `
@@ -1143,7 +1153,7 @@ export async function queryGraphOverview(session: any, pid: string, hostnamePoli
     { pid }
   )
 
-  const nodeCounts = nodeRes.records.map((r: any) => ({
+  const nodeCounts = nodeRes.records.map((r: ReportRecord) => ({
     label: r.get('label') as string,
     count: toNum(r.get('count')),
   }))
@@ -1153,9 +1163,9 @@ export async function queryGraphOverview(session: any, pid: string, hostnamePoli
   const certRec = certRes.records[0]
   const infraRec = infraRes.records[0]
 
-  const subdomainMappings: SubdomainMapping[] = subDetailRes.records.map((r: any) => ({
+  const subdomainMappings: SubdomainMapping[] = subDetailRes.records.map((r: ReportRecord) => ({
     subdomain: r.get('subdomain') as string,
-    ips: (r.get('ips') as any[]).filter((ip: any) => ip.address != null).map((ip: any) => ({
+    ips: (r.get('ips') as RawIpMap[]).filter(ip => ip.address != null).map(ip => ({
       address: ip.address as string,
       version: ip.version as string | null,
       isCdn: ip.isCdn === true,
@@ -1165,7 +1175,7 @@ export async function queryGraphOverview(session: any, pid: string, hostnamePoli
     openPorts: toNum(r.get('openPorts')),
   }))
 
-  const ipMappings: IpMapping[] = ipDetailRes.records.map((r: any) => ({
+  const ipMappings: IpMapping[] = ipDetailRes.records.map((r: ReportRecord) => ({
     ip: r.get('ip') as string,
     version: r.get('version') as string | null,
     isCdn: r.get('isCdn') === true,
@@ -1323,36 +1333,36 @@ export async function queryAttackSurface(session: any, pid: string) {
   )
 
   return {
-    services: svcRes.records.map((r: any) => ({
+    services: svcRes.records.map((r: ReportRecord) => ({
       service: (r.get('service') as string) || 'unknown',
       port: toNum(r.get('port')),
       count: toNum(r.get('count')),
     })),
-    ports: portRes.records.map((r: any) => ({
+    ports: portRes.records.map((r: ReportRecord) => ({
       port: toNum(r.get('port')),
       protocol: (r.get('protocol') as string) || 'tcp',
       count: toNum(r.get('count')),
     })),
-    technologies: techRes.records.map((r: any) => ({
+    technologies: techRes.records.map((r: ReportRecord) => ({
       name: (r.get('name') as string) || 'Unknown',
       version: r.get('version') as string | null,
       cveCount: toNum(r.get('cveCount')),
     })),
-    dnsRecords: dnsRes.records.map((r: any) => ({
+    dnsRecords: dnsRes.records.map((r: ReportRecord) => ({
       type: (r.get('type') as string) || 'unknown',
       count: toNum(r.get('count')),
     })),
-    securityHeaders: secHdrRes.records.map((r: any) => ({
+    securityHeaders: secHdrRes.records.map((r: ReportRecord) => ({
       name: (r.get('name') as string) || 'unknown',
       isSecurity: r.get('isSecurity') as boolean,
       count: toNum(r.get('count')),
     })),
-    endpointCategories: epCatRes.records.map((r: any) => ({
+    endpointCategories: epCatRes.records.map((r: ReportRecord) => ({
       category: (r.get('category') as string) || 'other',
       count: toNum(r.get('count')),
       declared: toNum(r.get('declared')),
     })),
-    parameterAnalysis: paramRes.records.map((r: any) => ({
+    parameterAnalysis: paramRes.records.map((r: ReportRecord) => ({
       position: (r.get('position') as string) || 'unknown',
       total: toNum(r.get('total')),
       injectable: toNum(r.get('injectable')),
@@ -1420,11 +1430,11 @@ export async function queryVulnerabilities(session: any, pid: string) {
   )
 
   return {
-    severityDistribution: sevRes.records.map((r: any) => ({
+    severityDistribution: sevRes.records.map((r: ReportRecord) => ({
       severity: (r.get('severity') as string) || 'unknown',
       count: toNum(r.get('count')),
     })),
-    findings: findingsRes.records.map((r: any) => ({
+    findings: findingsRes.records.map((r: ReportRecord) => ({
       name: (r.get('name') as string) || 'Unknown',
       severity: (r.get('severity') as string) || 'unknown',
       source: (r.get('source') as string) || 'unknown',
@@ -1442,15 +1452,15 @@ export async function queryVulnerabilities(session: any, pid: string) {
       paramName: r.get('paramName') as string | null,
       findingSource: (r.get('findingSource') as string) || 'Unknown',
     })),
-    cvssHistogram: cvssRes.records.map((r: any) => ({
+    cvssHistogram: cvssRes.records.map((r: ReportRecord) => ({
       bucket: toNum(r.get('bucket')),
       count: toNum(r.get('count')),
     })),
-    cveSeverity: cveSevRes.records.map((r: any) => ({
+    cveSeverity: cveSevRes.records.map((r: ReportRecord) => ({
       severity: (r.get('severity') as string) || 'unknown',
       count: toNum(r.get('count')),
     })),
-    gvmRemediation: gvmRemRes.records.map((r: any) => ({
+    gvmRemediation: gvmRemRes.records.map((r: ReportRecord) => ({
       status: (r.get('status') as string) || 'Open',
       count: toNum(r.get('count')),
     })),
@@ -1486,7 +1496,7 @@ export async function queryCveIntelligence(session: any, pid: string) {
   const ghRec = ghRes.records[0]
 
   return {
-    cveChains: chainRes.records.map((r: any) => ({
+    cveChains: chainRes.records.map((r: ReportRecord) => ({
       tech: (r.get('tech') as string) || 'Unknown',
       techVersion: r.get('techVersion') as string | null,
       cveId: (r.get('cveId') as string) || '',
@@ -1498,7 +1508,7 @@ export async function queryCveIntelligence(session: any, pid: string) {
       capecName: r.get('capecName') as string | null,
       capecSeverity: r.get('capecSeverity') as string | null,
     })),
-    exploits: exploitRes.records.map((r: any) => ({
+    exploits: exploitRes.records.map((r: ReportRecord) => ({
       name: (r.get('name') as string) || 'Unknown',
       severity: (r.get('severity') as string) || 'critical',
       targetIp: r.get('targetIp') as string | null,
@@ -1557,15 +1567,15 @@ export async function queryAttackChains(session: any, pid: string) {
 
   return {
     chains: chainsRes.records
-      .filter((r: any) => r.get('title'))
-      .map((r: any) => ({
+      .filter((r: ReportRecord) => r.get('title'))
+      .map((r: ReportRecord) => ({
         title: (r.get('title') as string) || 'Untitled',
         status: (r.get('status') as string) || 'unknown',
         steps: toNum(r.get('steps')),
         findings: toNum(r.get('findings')),
         failures: toNum(r.get('failures')),
       })),
-    exploitSuccesses: exploitRes.records.map((r: any) => ({
+    exploitSuccesses: exploitRes.records.map((r: ReportRecord) => ({
       title: (r.get('title') as string) || 'Untitled',
       targetIp: r.get('targetIp') as string | null,
       targetPort: toNum(r.get('targetPort')) || null,
@@ -1574,7 +1584,7 @@ export async function queryAttackChains(session: any, pid: string) {
       attackType: r.get('attackType') as string | null,
       cveIds: (r.get('cveIds') as string[]) || [],
     })),
-    topFindings: topRes.records.map((r: any) => ({
+    topFindings: topRes.records.map((r: ReportRecord) => ({
       title: (r.get('title') as string) || 'Untitled',
       severity: (r.get('severity') as string) || 'unknown',
       findingType: (r.get('findingType') as string) || 'unknown',
@@ -1639,7 +1649,7 @@ async function queryTrufflehog(session: any, pid: string) {
     verifiedFindings: sumRec ? toNum(sumRec.get('verified')) : 0,
     liveFindings: sumRec ? toNum(sumRec.get('live')) : 0,
     repositories: sumRec ? toNum(sumRec.get('assets')) : 0,
-    sources: bySourceRes.records.map((r: any) => ({
+    sources: bySourceRes.records.map((r: ReportRecord) => ({
       source: (r.get('source') as string) || 'unknown',
       target: r.get('target') as string | null,
       status: r.get('status') as string | null,
@@ -1647,7 +1657,7 @@ async function queryTrufflehog(session: any, pid: string) {
       live: toNum(r.get('live')),
       assets: toNum(r.get('assets')),
     })),
-    findings: findingsRes.records.map((r: any) => {
+    findings: findingsRes.records.map((r: ReportRecord) => {
       const asset = r.get('asset') as string | null
       const location = r.get('location') as string | null
       return {
@@ -1719,19 +1729,19 @@ export async function querySecrets(session: any, pid: string) {
 
   return {
     total: toNum(totalRes.records[0]?.get('total')),
-    bySeverity: bySevRes.records.map((r: any) => ({
+    bySeverity: bySevRes.records.map((r: ReportRecord) => ({
       severity: (r.get('severity') as string) || 'unknown',
       count: toNum(r.get('count')),
     })),
-    bySource: bySrcRes.records.map((r: any) => ({
+    bySource: bySrcRes.records.map((r: ReportRecord) => ({
       source: (r.get('source') as string) || 'unknown',
       count: toNum(r.get('count')),
     })),
-    byType: byTypeRes.records.map((r: any) => ({
+    byType: byTypeRes.records.map((r: ReportRecord) => ({
       secretType: (r.get('secretType') as string) || 'unknown',
       count: toNum(r.get('count')),
     })),
-    findings: findingsRes.records.map((r: any) => ({
+    findings: findingsRes.records.map((r: ReportRecord) => ({
       secretType: (r.get('secretType') as string) || 'Unknown',
       severity: (r.get('severity') as string) || 'unknown',
       source: (r.get('source') as string) || 'unknown',
@@ -1743,7 +1753,7 @@ export async function querySecrets(session: any, pid: string) {
       keyType: r.get('keyType') as string | null,
     })),
     publicClientKeys: (() => {
-      const byType = publicRes.records.map((r: any) => ({
+      const byType = publicRes.records.map((r: ReportRecord) => ({
         secretType: (r.get('publicType') as string) || 'unknown',
         count: toNum(r.get('count')),
       }))
@@ -1781,18 +1791,18 @@ async function querySupplyChain(session: any, pid: string) {
   )
 
   const verdictCounts = new Map<string, number>(
-    verdictRes.records.map((r: any) => [String(r.get('verdict') || 'unknown'), toNum(r.get('count'))] as [string, number])
+    verdictRes.records.map((r: ReportRecord) => [String(r.get('verdict') || 'unknown'), toNum(r.get('count'))] as [string, number])
   )
 
   return {
-    totalPackages: pkgRes.records.reduce((s: number, r: any) => s + toNum(r.get('count')), 0),
+    totalPackages: pkgRes.records.reduce((s: number, r: ReportRecord) => s + toNum(r.get('count')), 0),
     maliciousCount: verdictCounts.get('malicious') || 0,
     suspiciousCount: verdictCounts.get('suspicious') || 0,
-    byEcosystem: pkgRes.records.map((r: any) => ({
+    byEcosystem: pkgRes.records.map((r: ReportRecord) => ({
       ecosystem: (r.get('ecosystem') as string) || 'unknown',
       count: toNum(r.get('count')),
     })),
-    findings: findingsRes.records.map((r: any) => ({
+    findings: findingsRes.records.map((r: ReportRecord) => ({
       purl: (r.get('purl') as string) || '',
       name: (r.get('name') as string) ?? null,
       version: (r.get('version') as string) ?? null,
@@ -1807,7 +1817,7 @@ async function querySupplyChain(session: any, pid: string) {
   }
 }
 
-export async function queryJsRecon(session: any, pid: string) {
+export async function queryJsRecon(session: ReportSession, pid: string) {
   const bySevRes = await session.run(
     `MATCH (jf:JsReconFinding {project_id: $pid})
     WHERE ${notMuted('jf')} AND ${reportCountable('jf')}
@@ -1840,20 +1850,20 @@ export async function queryJsRecon(session: any, pid: string) {
     { pid }
   )
 
-  const totalFindings = bySevRes.records.reduce((s: number, r: any) => s + toNum(r.get('count')), 0)
+  const totalFindings = bySevRes.records.reduce((s: number, r: ReportRecord) => s + toNum(r.get('count')), 0)
 
   return {
     totalFindings,
     coverage: jsReconCoverage(coverageRes.records),
-    bySeverity: bySevRes.records.map((r: any) => ({
+    bySeverity: bySevRes.records.map((r: ReportRecord) => ({
       severity: (r.get('severity') as string) || 'unknown',
       count: toNum(r.get('count')),
     })),
-    byType: byTypeRes.records.map((r: any) => ({
+    byType: byTypeRes.records.map((r: ReportRecord) => ({
       findingType: (r.get('findingType') as string) || 'unknown',
       count: toNum(r.get('count')),
     })),
-    findings: findingsRes.records.map((r: any) => ({
+    findings: findingsRes.records.map((r: ReportRecord) => ({
       findingType: (r.get('findingType') as string) || 'unknown',
       severity: (r.get('severity') as string) || 'unknown',
       confidence: r.get('confidence') as string | null,
@@ -1941,7 +1951,7 @@ async function queryGraphql(session: any, pid: string) {
     { pid }
   )
 
-  const endpoints: GraphqlEndpointRecord[] = endpointsRes.records.map((r: any) => ({
+  const endpoints: GraphqlEndpointRecord[] = endpointsRes.records.map((r: ReportRecord) => ({
     url: (r.get('url') as string) || '',
     introspectionEnabled: !!r.get('introspectionEnabled'),
     schemaExtracted: !!r.get('schemaExtracted'),
@@ -1950,22 +1960,22 @@ async function queryGraphql(session: any, pid: string) {
     subscriptionsCount: toNum(r.get('subscriptionsCount')),
     schemaHash: r.get('schemaHash') as string | null,
   }))
-  const totalFindings = bySevRes.records.reduce((s: number, r: any) => s + toNum(r.get('count')), 0)
+  const totalFindings = bySevRes.records.reduce((s: number, r: ReportRecord) => s + toNum(r.get('count')), 0)
 
   return {
     totalFindings,
     endpointsTested: endpoints.length,
     introspectionEnabled: endpoints.filter(e => e.introspectionEnabled).length,
-    bySeverity: bySevRes.records.map((r: any) => ({
+    bySeverity: bySevRes.records.map((r: ReportRecord) => ({
       severity: (r.get('severity') as string) || 'unknown',
       count: toNum(r.get('count')),
     })),
-    byType: byTypeRes.records.map((r: any) => ({
+    byType: byTypeRes.records.map((r: ReportRecord) => ({
       vulnerabilityType: (r.get('vulnerabilityType') as string) || 'unknown',
       count: toNum(r.get('count')),
     })),
     endpoints,
-    findings: findingsRes.records.map((r: any) => {
+    findings: findingsRes.records.map((r: ReportRecord) => {
       const evidence = r.get('evidence') as string | null
       // Extract the graphql-cop cURL reproducer from the evidence JSON if present.
       let curlVerify: string | null = null
@@ -2042,9 +2052,9 @@ async function queryVhostSni(session: any, pid: string) {
     { pid }
   )
 
-  const totalFindings = bySevRes.records.reduce((s: number, r: any) => s + toNum(r.get('count')), 0)
+  const totalFindings = bySevRes.records.reduce((s: number, r: ReportRecord) => s + toNum(r.get('count')), 0)
   const ipsRecord = ipsRes.records[0]
-  const byLayer = byLayerRes.records.map((r: any) => ({ layer: r.get('layer') as string, count: toNum(r.get('count')) }))
+  const byLayer = byLayerRes.records.map((r: ReportRecord) => ({ layer: r.get('layer') as string, count: toNum(r.get('count')) }))
   const anomaliesL7 = byLayer.filter((d: { layer: string; count: number }) => d.layer === 'L7' || d.layer === 'both').reduce((s: number, d: { count: number }) => s + d.count, 0)
   const anomaliesL4 = byLayer.filter((d: { layer: string; count: number }) => d.layer === 'L4' || d.layer === 'both').reduce((s: number, d: { count: number }) => s + d.count, 0)
 
@@ -2055,16 +2065,16 @@ async function queryVhostSni(session: any, pid: string) {
     anomaliesL7,
     anomaliesL4,
     reverseProxiesDetected: ipsRecord ? toNum(ipsRecord.get('reverseProxies')) : 0,
-    bySeverity: bySevRes.records.map((r: any) => ({
+    bySeverity: bySevRes.records.map((r: ReportRecord) => ({
       severity: (r.get('severity') as string) || 'unknown',
       count: toNum(r.get('count')),
     })),
     byLayer,
-    byType: byTypeRes.records.map((r: any) => ({
+    byType: byTypeRes.records.map((r: ReportRecord) => ({
       findingType: (r.get('findingType') as string) || 'unknown',
       count: toNum(r.get('count')),
     })),
-    findings: findingsRes.records.map((r: any) => ({
+    findings: findingsRes.records.map((r: ReportRecord) => ({
       hostname: (r.get('hostname') as string) || '',
       ip: (r.get('ip') as string) || null,
       port: r.get('port') != null ? toNum(r.get('port')) : null,
@@ -2214,24 +2224,24 @@ async function queryWebCachePoison(session: any, pid: string) {
     { pid }
   )
 
-  const totalFindings = bySevRes.records.reduce((s: number, r: any) => s + toNum(r.get('count')), 0)
+  const totalFindings = bySevRes.records.reduce((s: number, r: ReportRecord) => s + toNum(r.get('count')), 0)
   const tierCounts = new Map<string, number>(
-    tierRes.records.map((r: any) => [r.get('tier') as string, toNum(r.get('count'))] as [string, number])
+    tierRes.records.map((r: ReportRecord) => [r.get('tier') as string, toNum(r.get('count'))] as [string, number])
   )
 
   return {
     totalFindings,
     confirmed: tierCounts.get('Confirmed') || 0,
     strong: tierCounts.get('Strong') || 0,
-    bySeverity: bySevRes.records.map((r: any) => ({
+    bySeverity: bySevRes.records.map((r: ReportRecord) => ({
       severity: (r.get('severity') as string) || 'unknown',
       count: toNum(r.get('count')),
     })),
-    byImpact: byImpactRes.records.map((r: any) => ({
+    byImpact: byImpactRes.records.map((r: ReportRecord) => ({
       impact: (r.get('impact') as string) || 'unknown',
       count: toNum(r.get('count')),
     })),
-    findings: findingsRes.records.map((r: any) => ({
+    findings: findingsRes.records.map((r: ReportRecord) => ({
       endpoint: (r.get('endpoint') as string) || '',
       cacheHeader: (r.get('cacheHeader') as string) || null,
       cacheParam: (r.get('cacheParam') as string) || null,
@@ -2435,7 +2445,7 @@ async function queryOtx(session: any, pid: string) {
     { pid }
   )
 
-  const pulses = pulseRes.records.map((r: any) => ({
+  const pulses = pulseRes.records.map((r: ReportRecord) => ({
     name: (r.get('name') as string) || 'Unknown',
     adversary: r.get('adversary') as string | null,
     malwareFamilies: (r.get('malwareFamilies') as string[]) || [],
@@ -2457,7 +2467,7 @@ async function queryOtx(session: any, pid: string) {
     enrichedIps: toNum(enrichedRes.records[0]?.get('enrichedIps')),
     adversaries,
     pulses,
-    malware: malwareRes.records.map((r: any) => ({
+    malware: malwareRes.records.map((r: ReportRecord) => ({
       hash: (r.get('hash') as string) || '',
       hashType: r.get('hashType') as string | null,
       fileType: r.get('fileType') as string | null,

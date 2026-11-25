@@ -126,7 +126,10 @@ triage write, `redamon-testing` for the tests.
   expired, consent withdrawn, an account disabled, deleted or reset, a capability removed, a device
   session revoked. A ticket and a queued scan are checked only when they start, so without it the
   person's runs, sockets, queued scans, schedules and triage run go on. A new reason joins
-  `ProjectReduction` or `AccountReduction` with its entry in `PLANS`.
+  `ProjectReduction` or `AccountReduction` with its entry in `PLANS`, which also names what
+  happens to the person's Kali sandboxes (`sandbox`: `reconcile` stops the instances that mount
+  a project the person lost, `stop` stops them all, `none` leaves them; the hooks live in
+  [lib/sandbox/lifecycle.ts](../../webapp/src/lib/sandbox/lifecycle.ts)).
 - **A start that writes a project asks who else is writing it.** With sharing in force one
   person writes a project at a time: while anyone writes it (a scan, an agent run, a triage run, a
   mute-rule apply), another person's scan start or agent run is refused, 409 `project_writer_busy`
@@ -173,6 +176,7 @@ triage write, `redamon-testing` for the tests.
 - **A live matrix row whose answer depends on a switch carries its tag** (`identity:`,
   `permissions:`, `sharing:`, `sharingwrite:`, `governance:` with `on` or `off`, read by
   [rbac_matrix_live.sh](../../tests/rbac_matrix_live.sh)), or it fails in the other state.
+  The Kali sandbox has one mode, so a row carrying a `sandbox:` tag is a LINT error.
   `sharing:` is sharing in force (the switch and Root's policy); a route or field gated on
   `RBAC_SHARING_ENABLED` itself, which exists with the switch on and the policy `{}`, takes
   `sharingswitch:` (the S3a red: four `sharing:off` rows failed there). A write grant refused

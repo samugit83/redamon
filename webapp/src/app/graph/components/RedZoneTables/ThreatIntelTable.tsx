@@ -165,7 +165,7 @@ export const ThreatIntelTable = memo(function ThreatIntelTable({ projectId }: Pr
   return (
     <RedZoneTableShell
       title="OSINT Threat Intelligence Overlay"
-      meta={rows.length ? `${(data?.meta as any)?.domainCount ?? 0} domain · ${(data?.meta as any)?.ipCount ?? 0} ip flagged` : undefined}
+      meta={rows.length ? `${data?.meta?.domainCount ?? 0} domain · ${data?.meta?.ipCount ?? 0} ip flagged` : undefined}
       search={search}
       onSearchChange={setSearch}
       searchPlaceholder="Search asset, adversary, malware, tag..."

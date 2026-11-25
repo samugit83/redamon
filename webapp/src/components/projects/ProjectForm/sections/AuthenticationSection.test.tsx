@@ -51,9 +51,24 @@ describe('writes', () => {
     put = () => json(400, { error: 'agentEnabled must be a boolean' })
     open()
     const toggle = await screen.findByRole('switch', { name: 'Apply to agent' })
+    await waitFor(() => expect(toggle).toBeEnabled())
     fireEvent.click(toggle)
     await waitFor(() => expect(alertError).toHaveBeenCalledWith('agentEnabled must be a boolean (HTTP 400)'))
     expect(toggle).toHaveAttribute('aria-checked', 'true')
+  })
+
+  test('the switches wait for the first load, so its answer cannot overwrite a click', async () => {
+    let answer: (r: Response) => void = () => {}
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) =>
+      init?.method === 'PUT' ? Promise.resolve(put({})) : new Promise<Response>(r => { answer = r })))
+    open()
+    const toggle = screen.getByRole('switch', { name: 'Apply to agent' })
+    expect(toggle).toBeDisabled()
+    fireEvent.click(toggle)
+    answer(json(200, { authProfile: { ...PROFILE, agentEnabled: false } }))
+    await waitFor(() => expect(toggle).toBeEnabled())
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(fetch).toHaveBeenCalledTimes(1)
   })
 
   test('a failed clear is alerted, not swallowed', async () => {

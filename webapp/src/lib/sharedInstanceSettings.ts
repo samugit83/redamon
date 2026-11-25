@@ -199,6 +199,11 @@ export interface InstanceSettingsWrite {
   tunnelVia?: string | null
   /** For a JSON column, the settings inside it that changed (names only), for the audit row. */
   changedKeys?: Record<string, string[]>
+  /**
+   * Groups written to the instance row only. Per-user Kali sandboxes: a person's row holds that
+   * person's own tunnel, so the instance tunnel is never mirrored into one.
+   */
+  skipMirror?: ReadonlyArray<(typeof GROUPS)[number]['name']>
 }
 
 /**
@@ -208,7 +213,7 @@ export interface InstanceSettingsWrite {
  * is gone), and the `instance.settings_changed` audit row naming the fields, never their
  * values: all in one transaction, which a failed audit write rolls back (AU-05).
  */
-export async function writeInstanceSettings({ data, actor, tunnelVia, changedKeys }: InstanceSettingsWrite): Promise<InstanceSettings> {
+export async function writeInstanceSettings({ data, actor, tunnelVia, changedKeys, skipMirror = [] }: InstanceSettingsWrite): Promise<InstanceSettings> {
   const fields = Object.keys(data)
   return auditedTransaction(prisma, async (tx) => {
     let row = await tx.instanceSettings.update({
@@ -219,6 +224,10 @@ export async function writeInstanceSettings({ data, actor, tunnelVia, changedKey
     const sources: Record<string, string | null> = {}
     for (const group of GROUPS) {
       if (!group.fields.some((f) => fields.includes(f))) continue
+      if (skipMirror.includes(group.name)) {
+        mirror[group.name] = null
+        continue
+      }
       const current = row[group.source]
       const target = await mirrorTarget(tx, current, row)
       if (target) {
@@ -243,14 +252,5 @@ export async function writeInstanceSettings({ data, actor, tunnelVia, changedKey
       after: { fields, ...(tunnelVia ? { tunnelVia } : {}), ...(changedKeys ? { changedKeys } : {}), mirroredTo: mirror },
     })
     return row
-  })
-}
-
-/** With the identity switch on, turns the instance's tunnel off (the boot sync); off, nothing. */
-export async function instanceTunnelDown(): Promise<void> {
-  if (!rbacFlags().identity) return
-  await prisma.instanceSettings.updateMany({
-    where: { id: INSTANCE_SETTINGS_ID, tunnelsEnabled: true },
-    data: { tunnelsEnabled: false },
   })
 }

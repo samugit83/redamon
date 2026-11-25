@@ -153,3 +153,51 @@
   color: var(--status-error, #ef4444);
   overflow-wrap: anywhere;
 }
+
+.reversePort,
+.stopWarning,
+.partialAnswer {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.stopWarning {
+  color: var(--status-warning, #f59e0b);
+}
+
+.partialAnswer {
+  color: var(--text-secondary);
+}
+
+.reversePort {
+  color: var(--text-primary);
+}
+
+.nothingListed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.closeTerminal {
+  padding: 3px 8px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.closeTerminal:hover {
+  background: var(--bg-hover, var(--bg-tertiary));
+}

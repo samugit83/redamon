@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
-import { getSession, isInternalRequest, isScannerRequest, requireUserAccess } from '@/lib/session'
+import { authzIdentityOf, getSession, isInternalRequest, isScannerRequest, requireUserAccess } from '@/lib/session'
 import { sanitizeBodyRules } from '@/lib/captureBodyRules'
 import { isValidGithubHost } from '@/lib/github/ownerTarget'
 import { ROTATION_TOOL_NAMES } from '@/lib/rotationTools'
@@ -24,7 +24,10 @@ import { requireSelfPermission } from '@/lib/authz/selfService'
 import { type SaveWarning } from './saveWarnings'
 import { rbacFlags } from '@/lib/authz/flags'
 import { changedCaptureFields, changedTunnelFields, parseCapturePatch } from '@/lib/sharedInstanceSettings'
-import { CAPTURE_RECREATE_FIELDS, pushTunnelConfig, reconcileCaptureProxy, type CaptureValues } from '@/lib/sharedSettingsEffects'
+import {
+  CAPTURE_RECREATE_FIELDS, pushTunnelConfig, reconcileCaptureProxy, withPersonTunnelLock,
+  type CaptureValues,
+} from '@/lib/sharedSettingsEffects'
 
 interface RouteParams {
   params: Promise<{ id: string }>
@@ -36,26 +39,34 @@ function maskSecret(value: string): string {
   return '••••••••' + value.slice(-4)
 }
 
-const TUNNELS_ADMIN_ONLY =
-  'The tunnel is shared by the whole instance: only an administrator, or the member who configured it, can change it.'
+const TUNNELS_OWN_SANDBOX =
+  'Turning on a tunnel from your own Kali sandbox, or changing its settings, takes the Tunnels permission. Turning your tunnel off does not.'
+
+const TUNNELS_NOT_UNDER_ACT_AS =
+  'A tunnel is not turned on or changed while acting as another account: it would run in that account\'s own Kali sandbox, not the one your act-as work uses. Turning it off is allowed.'
 
 const MOVED_TO_INSTANCE_SETTINGS =
-  'The tunnel and TrafficMind settings are instance settings: change them in the Tunneling section or the TrafficMind settings, not in your own settings.'
+  'The TrafficMind settings are instance settings: change them in the TrafficMind settings, not in your own settings.'
 
 /**
- * Whether the signed-in account may change the instance tunnel (HD-06, F-05): whoever holds
- * platform:tunnels (every admin and the member who kept the `tunnels` legacy grant with
- * RBAC_PERMISSIONS_ENABLED off), or a pre-upgrade account under the escape hatch
+ * Whether the signed-in account may turn on or change a tunnel of its own Kali sandbox (HD-06,
+ * F-05): whoever holds platform:tunnels (every admin and the member who kept the `tunnels` legacy
+ * grant with RBAC_PERMISSIONS_ENABLED off), or a pre-upgrade account under the escape hatch
  * (sharedTools.ts). `record: false` asks without counting a use of that hatch. The PUT decides
- * on a `fresh` read, so a demoted admin or a removed grant never changes the instance's tunnel.
+ * on a `fresh` read, so a demoted admin or a removed grant never opens a tunnel.
  */
-async function tunnelAccess(record: boolean, { fresh = false }: { fresh?: boolean } = {}): Promise<{ access: SharedToolAccess; actor: AuditActor }> {
+async function tunnelAccess(
+  record: boolean,
+  { fresh = false, actAs = false }: { fresh?: boolean; actAs?: boolean } = {},
+): Promise<{ access: SharedToolAccess; actor: AuditActor; actingAs: boolean }> {
   const session = await getSession({ fresh })
-  if (!session) return { access: { allowed: false, via: null }, actor: auditActorOf(null) }
+  if (!session) return { access: { allowed: false, via: null }, actor: auditActorOf(null), actingAs: false }
   const actor = auditActorOf(sessionActor(session))
   const principal = await loadPrincipal(session.userId, { fresh })
-  if (!principal) return { access: { allowed: false, via: null }, actor: auditActorOf(null) }
-  return { access: await sharedToolAccess(principal, 'tunnels', { record }), actor }
+  if (!principal) return { access: { allowed: false, via: null }, actor: auditActorOf(null), actingAs: false }
+  // `actAs`: whether the session acts as another account (asked only where a tunnel is turned on or changed).
+  const actingAs = actAs && (await authzIdentityOf(session, { fresh })).actingAs !== null
+  return { access: await sharedToolAccess(principal, 'tunnels', { record }), actor, actingAs }
 }
 
 /** Whether the signed-in person may change the instance's capture policy, on a fresh read. */
@@ -64,19 +75,31 @@ async function capturePolicyHolder(): Promise<boolean> {
   return session !== null && await sessionHolds(session, 'platform:traffic_capture', { fresh: true })
 }
 
+interface TunnelHint {
+  canManageTunnels?: boolean
+  sharedSettingsAt?: 'instance'
+  /** The tunnel is this row's own and runs in the person's own Kali sandbox. */
+  tunnelScope?: 'own_sandbox'
+  /** The session acts as this row's person: the tunnel shown is theirs, not the viewer's. */
+  tunnelActingAs?: true
+}
+
 /**
  * Tells a browser whether to offer the tunnel controls. Only a hint: a failed read leaves
- * it out, the page then keeps the controls, and the PUT still decides. With the identity
- * switch on these settings live in the instance settings (step 2.4): this row's controls
- * are off and `sharedSettingsAt` sends the page to /api/admin/instance-settings.
+ * `canManageTunnels` out, the page then keeps the controls, and the PUT still decides. The tunnel
+ * is every person's own (`tunnelScope`), whatever the identity switch; with that switch on
+ * `sharedSettingsAt` sends the capture settings to /api/admin/instance-settings (step 2.4). Under
+ * act-as the controls are never offered: the PUT refuses turning the member's tunnel on, and an
+ * off from this page would end the member's own shells while the viewer believes it is theirs.
  */
-async function tunnelControlsHint(): Promise<{ canManageTunnels?: boolean; sharedSettingsAt?: 'instance' }> {
-  if (rbacFlags().identity) return { canManageTunnels: false, sharedSettingsAt: 'instance' }
+async function tunnelControlsHint(): Promise<TunnelHint> {
+  const scope: TunnelHint = { tunnelScope: 'own_sandbox', ...(rbacFlags().identity ? { sharedSettingsAt: 'instance' as const } : {}) }
   try {
-    return { canManageTunnels: (await tunnelAccess(false)).access.allowed }
+    const { access, actingAs } = await tunnelAccess(false, { actAs: true })
+    return { canManageTunnels: access.allowed && !actingAs, ...(actingAs ? { tunnelActingAs: true as const } : {}), ...scope }
   } catch (err) {
     console.warn(`[rbac] tunnel access hint unavailable code=${safeErrorCode(err)}`)
-    return {}
+    return scope
   }
 }
 
@@ -328,7 +351,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     if (!sameOrigin(request)) return crossOriginResponse(request)
     const parsed = await readJsonBody(request)
     if (parsed instanceof NextResponse) return parsed
-    const body = parsed.body as Record<string, any>
+    const body = parsed.body
 
     // A feature's model decides whose provider keys that feature spends, so it
     // is the person's own choice: no service key extends to it. Refused or
@@ -366,16 +389,18 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       where: { userId: id },
     })
 
-    // With the identity switch on the tunnel and capture settings live in the instance
-    // settings (step 2.4): a real change of one is refused here, before anything is
-    // written. Unchanged and masked values pass, since the Global Settings page and the
-    // API-keys template send the tunnel fields with every save.
+    // The tunnel settings this save changes: this person's own row, whatever the identity
+    // switch. An explicit "off" is read too: it is sent even when the row already reads off,
+    // since an earlier stop may not have reached the sandbox.
+    const tunnelChanges = changedTunnelFields(existing as Record<string, unknown> | null, body)
+    const explicitOff = 'tunnelsEnabled' in body && !body.tunnelsEnabled
+
+    // With the identity switch on the capture settings live in the instance settings (step
+    // 2.4): a real change of one is refused here, before anything is written. Unchanged and
+    // masked values pass, since the Global Settings page sends the fields with every save.
     if (rbacFlags().identity) {
       const existingRow = existing as Record<string, unknown> | null
-      const moved = [
-        ...changedTunnelFields(existingRow, body),
-        ...changedCaptureFields(existingRow, parseCapturePatch(body, sanitizeBodyRules), body),
-      ]
+      const moved = changedCaptureFields(existingRow, parseCapturePatch(body, sanitizeBodyRules), body)
       if (moved.length) {
         return NextResponse.json(
           { error: MOVED_TO_INSTANCE_SETTINGS, code: 'moved_to_instance_settings', fields: moved },
@@ -398,21 +423,32 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       }
     }
 
-    // The tunnel is one listener for the whole instance (HD-06): changing it is refused
-    // here, before any check of the request's values and before anything is written.
-    const tunnelChanges = changedTunnelFields(existing as Record<string, unknown> | null, body)
+    // Turning a tunnel on or changing its settings takes platform:tunnels (HD-06: an
+    // internet-facing listener, a single-host deploy included), refused here, before any check
+    // of the request's values and before anything is written; turning one's own tunnel off needs
+    // nothing. Under act-as a tunnel is never turned on: it would run in the member's own
+    // sandbox, not the act_as one Kali work under act-as uses (TD-26).
+    const turnsOnOrEdits = tunnelChanges.filter((f) => f !== 'tunnelsEnabled' || Boolean(body.tunnelsEnabled))
     let tunnelActor = auditActorOf(null)
     let tunnelVia = 'internal'
     if (tunnelChanges.length && !isInternalRequest(request)) {
-      const { access, actor } = await tunnelAccess(true, { fresh: true })
-      if (!access.allowed || !access.via) {
-        return NextResponse.json(
-          { error: TUNNELS_ADMIN_ONLY, code: 'tunnels_admin_only', fields: tunnelChanges },
-          { status: 403 },
-        )
-      }
+      const { access, actor, actingAs } = await tunnelAccess(true, { fresh: true, actAs: turnsOnOrEdits.length > 0 })
       tunnelActor = actor
-      tunnelVia = access.via
+      if (turnsOnOrEdits.length) {
+        if (!access.allowed || !access.via) {
+          return NextResponse.json(
+            { error: TUNNELS_OWN_SANDBOX, code: 'tunnels_admin_only', fields: tunnelChanges },
+            { status: 403 },
+          )
+        }
+        if (actingAs) {
+          return NextResponse.json(
+            { error: TUNNELS_NOT_UNDER_ACT_AS, code: 'tunnels_act_as_refused', fields: tunnelChanges },
+            { status: 403 },
+          )
+        }
+      }
+      tunnelVia = access.via ?? 'own_tunnel_off'
     }
 
     // The GHE host is the ALLOWLIST every supply-chain host check is made
@@ -478,52 +514,69 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     // Before the upsert below, so the row it returns carries the merged map.
     if (featureModelsPatch) await applyFeatureModels(id, featureModelsPatch, featureModelsActor)
 
-    const settings = await prisma.userSettings.upsert({
-      where: { userId: id },
-      update: {
-        ...data, ...captureData,
-        ...(enabledProvided ? { tunnelsEnabled: desiredEnabled } : {}),
-        ...(captureEnabledProvided ? { captureProxyEnabled: captureDesiredEnabled } : {}),
-      },
-      create: {
-        userId: id, ...data, ...captureData,
-        tunnelsEnabled: desiredEnabled,
-        captureProxyEnabled: captureDesiredEnabled,
-      },
-    })
-
-    // The capture proxy container follows the master toggle and the spawn-time knobs.
+    // One person's tunnel saves run one at a time from the write to the push, so a later "off" is
+    // never undone by an earlier "on" still waiting for the sandbox to start.
+    const tunnelSave = tunnelChanges.length > 0 || explicitOff
+    const serialized = <T>(fn: () => Promise<T>): Promise<T> => (tunnelSave ? withPersonTunnelLock(id, fn) : fn())
     const warnings: SaveWarning[] = []
-    const existingRow = existing as Record<string, unknown> | null
-    const captureWarning = await reconcileCaptureProxy(settings as CaptureValues, {
-      enabledChanged: captureEnabledProvided && captureDesiredEnabled !== (existing?.captureProxyEnabled ?? true),
-      recreateFieldChanged: CAPTURE_RECREATE_FIELDS.some((k) => k in captureData && captureData[k] !== existingRow?.[k]),
-    })
-    if (captureWarning) warnings.push(captureWarning)
-
-    // Push tunnel config to kali-sandbox when the enabled state OR a tunnel credential changed.
-    if (tunnelChanges.length) {
-      // Which fields changed and through what right, never their values.
-      await writeAudit({
-        ...actorFields(tunnelActor),
-        action: 'settings.tunnel_changed',
-        targetType: 'user',
-        targetId: id,
-        after: { fields: tunnelChanges, via: tunnelVia },
+    const settings = await serialized(async () => {
+      let row = await prisma.userSettings.upsert({
+        where: { userId: id },
+        update: {
+          ...data, ...captureData,
+          ...(enabledProvided ? { tunnelsEnabled: desiredEnabled } : {}),
+          ...(captureEnabledProvided ? { captureProxyEnabled: captureDesiredEnabled } : {}),
+        },
+        create: {
+          userId: id, ...data, ...captureData,
+          tunnelsEnabled: desiredEnabled,
+          captureProxyEnabled: captureDesiredEnabled,
+        },
       })
-      const warning = await pushTunnelConfig(settings)
-      if (warning) warnings.push(warning)
-    }
+
+      // The capture proxy container follows the master toggle and the spawn-time knobs.
+      const existingRow = existing as Record<string, unknown> | null
+      const captureWarning = await reconcileCaptureProxy(row as CaptureValues, {
+        enabledChanged: captureEnabledProvided && captureDesiredEnabled !== (existing?.captureProxyEnabled ?? true),
+        recreateFieldChanged: CAPTURE_RECREATE_FIELDS.some((k) => k in captureData && captureData[k] !== existingRow?.[k]),
+      })
+      if (captureWarning) warnings.push(captureWarning)
+
+      // Push the tunnel config when the enabled state OR a tunnel credential changed, to this
+      // account's own sandbox only; an explicit "off" is sent again even when nothing changed.
+      if (tunnelSave) {
+        if (tunnelChanges.length) {
+          // Which fields changed and through what right, never their values.
+          await writeAudit({
+            ...actorFields(tunnelActor),
+            action: 'settings.tunnel_changed',
+            targetType: 'user',
+            targetId: id,
+            after: { fields: tunnelChanges, via: tunnelVia },
+          })
+        }
+        const pushed = await pushTunnelConfig(row, {
+          userId: id,
+          turnedOn: tunnelChanges.includes('tunnelsEnabled') && desiredEnabled,
+          actor: tunnelActor,
+        })
+        if (pushed.warning) warnings.push(pushed.warning)
+        // A stored "on" the person's sandbox no longer runs was turned off: answer what is stored.
+        if (pushed.tunnelsEnabled !== row.tunnelsEnabled) row = { ...row, tunnelsEnabled: pushed.tunnelsEnabled }
+      }
+      return row
+    })
 
     // Handle rotation configs if provided
     const rotationConfigs: Record<string, { extraKeys?: string[]; extraKeyCount: number; rotateEveryN: number }> = {}
     if (body.rotationConfigs && typeof body.rotationConfigs === 'object') {
+      const configs = body.rotationConfigs as Record<string, { extraKeys?: unknown; rotateEveryN?: unknown } | undefined>
       for (const toolName of ROTATION_TOOL_NAMES) {
-        const cfg = body.rotationConfigs[toolName]
+        const cfg = configs[toolName]
         if (!cfg) continue
 
         const extraKeysRaw = (cfg.extraKeys || '') as string
-        const rotateEveryN = Math.max(1, parseInt(cfg.rotateEveryN, 10) || 10)
+        const rotateEveryN = Math.max(1, parseInt(String(cfg.rotateEveryN), 10) || 10)
 
         // If extraKeys is a masked marker, preserve existing
         if (extraKeysRaw.startsWith('••••')) {

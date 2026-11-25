@@ -1,6 +1,6 @@
 'use client'
 
-import { memo, useRef } from 'react'
+import { memo, useRef, useState } from 'react'
 import { GraphData, GraphNode } from '../../types'
 import { GraphCanvas2D } from './GraphCanvas2D'
 import { GraphCanvas3D } from './GraphCanvas3D'
@@ -39,18 +39,16 @@ export const GraphCanvas = memo(function GraphCanvas({
   activeChainId,
 }: GraphCanvasProps) {
   // Track theme changes as a version counter (for 3D node cache invalidation)
-  const themeVersionRef = useRef(0)
-  const prevIsDarkRef = useRef(isDark)
+  const [themeVersion, setThemeVersion] = useState(0)
+  const [prevIsDark, setPrevIsDark] = useState(isDark)
   // Shared ref for nav controls to access the ForceGraph instance
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sharedGraphRef = useRef<any>(null)
 
-  if (isDark !== prevIsDarkRef.current) {
-    prevIsDarkRef.current = isDark
-    themeVersionRef.current++
+  if (isDark !== prevIsDark) {
+    setPrevIsDark(isDark)
+    setThemeVersion(v => v + 1)
   }
-
-  const themeVersion = themeVersionRef.current
 
   // Auto-switch to 2D for large graphs
   const nodeCount = data?.nodes.length ?? 0

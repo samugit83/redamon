@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react'
 import type { Project } from '@prisma/client'
 import { useToast } from '@/components/ui'
 import { readApiError, toApiError } from '@/lib/apiError'
@@ -62,10 +62,11 @@ export function useSettingsModal(projectId: string) {
   const settingsDropdownRef = useRef<HTMLDivElement>(null)
   const pendingSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const latestFormDataRef = useRef(projectFormData)
-  latestFormDataRef.current = projectFormData
+  // Every render, as the skills-changed handler below also writes it ahead of its state update.
+  useLayoutEffect(() => { latestFormDataRef.current = projectFormData })
   const dirtyRef = useRef<Set<keyof ProjectFormData>>(new Set())
   const toastRef = useRef(toast)
-  toastRef.current = toast
+  useLayoutEffect(() => { toastRef.current = toast }, [toast])
   // The toggle map as the server last had it, so a change from elsewhere can be told from this
   // window's own unsaved toggles.
   const skillBaseRef = useRef<unknown>(null)
@@ -144,6 +145,7 @@ export function useSettingsModal(projectId: string) {
   useEffect(() => {
     if (!settingsModal || !projectId) {
       flushPendingSave()
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- a fetch effect: the form is cleared only after flushPendingSave has sent the pending edits it reads
       setProjectFormData(null)
       setProjectLoadError(null)
       return

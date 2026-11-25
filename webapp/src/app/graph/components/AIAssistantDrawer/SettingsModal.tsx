@@ -14,7 +14,7 @@ interface SettingsModalProps {
   settingsModal: 'agent' | 'toolmatrix' | 'attack' | null
   setSettingsModal: (v: 'agent' | 'toolmatrix' | 'attack' | null) => void
   projectFormData: ProjectFormData | null
-  updateProjectField: (field: any, value: any) => void
+  updateProjectField: <K extends keyof ProjectFormData>(field: K, value: ProjectFormData[K]) => void
   /** The chat is always for a saved project; passed so Agent Skills shows plugin version controls. */
   projectId?: string | null
   /** The project could not be read; shown in place of the spinner. */

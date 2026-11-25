@@ -6,8 +6,19 @@ import {
 } from './config'
 import type { TruncationInfo } from './truncate'
 
+/** What the cache reads of a node: its id, and the triage properties the ETag hashes. */
+interface CachedNode {
+  id: string
+  properties?: Record<string, unknown>
+}
+
+interface CachedGraph {
+  nodes: CachedNode[]
+  links: unknown[]
+}
+
 interface CacheEntry {
-  data: { nodes: any[]; links: any[] }
+  data: CachedGraph
   etag: string
   timestamp: number
   /** Truncation state is cached WITH the payload: a cache hit must report the
@@ -47,7 +58,7 @@ const TRIAGE_ETAG_PROPS = [
  * XOR-hashes all node IDs, plus each finding's triage result, for an O(n)
  * fingerprint. Other property changes keep the ETag.
  */
-function generateEtag(nodes: any[], links: any[]): string {
+function generateEtag(nodes: CachedNode[], links: unknown[]): string {
   // Fast numeric hash: XOR all node ID chars with position mixing
   let hash = 0
   for (let i = 0; i < nodes.length; i++) {
@@ -114,7 +125,7 @@ export function getCached(projectId: string): CacheEntry | null {
 
 export function setCached(
   projectId: string,
-  data: { nodes: any[]; links: any[] },
+  data: CachedGraph,
   info?: TruncationInfo,
 ): string {
   const etag = generateEtag(data.nodes, data.links)

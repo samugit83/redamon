@@ -25,10 +25,11 @@ afterEach(() => {
 })
 
 const base = {
-  jobs: [], nonMsfSessions: [], agentBusy: false, isLoading: false, projectId: 'p1',
+  jobs: [], nonMsfSessions: [], busyInstances: [], isLoading: false, projectId: 'p1',
   onInteract: vi.fn(), onKillSession: vi.fn(async () => {}), onKillJob: vi.fn(async () => {}),
 }
-const session = { id: 7, type: 'shell', info: '', tunnel_peer: '10.0.0.1:4444', target_host: '', via_exploit: '', chat_session_id: null } as never
+// Every real row names its Kali sandbox; one without an instance is never driven (gap G-47).
+const session = { id: 7, sandbox: 'aaaaa1', type: 'shell', info: '', tunnel_peer: '10.0.0.1:4444', target_host: '', via_exploit: '', chat_session_id: null } as never
 
 describe('Active Sessions errors', () => {
   test('an empty list with an error says the list could not load, not "No Reverse Shells"', () => {
@@ -57,6 +58,34 @@ describe('Active Sessions errors', () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(
       'Failed to kill session (agent_error · HTTP 502 · upstream HTTP 500)', 'Session not killed',
     ))
+  })
+
+  test('a kill nobody answered in time is "not confirmed", not "not killed" (S16b review round 4)', async () => {
+    for (const noAnswer of [
+      new ApiError({ reason: 'Session 7: no answer in time; the kill may still complete', status: 502, code: 'agent_error', upstreamStatus: 504 }),
+      new ApiError({ reason: 'Session 7: no answer in time; the kill may still complete', status: 504, code: 'agent_timeout' }),
+    ]) {
+      toast.error.mockClear()
+      const { unmount } = render(<ActiveSessions {...base} sessions={[session]} onKillSession={vi.fn(async () => { throw noAnswer })} />)
+      fireEvent.click(screen.getByTitle(/kill/i))
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith(noAnswer.message, 'Kill not confirmed'))
+      unmount()
+    }
+  })
+
+  test('a kill the console was too busy to run stays "Session not killed"', async () => {
+    const busy = new ApiError({ reason: 'Session 7 was not killed: the Kali console is busy with another command, try again', status: 200, code: 'console_busy' })
+    render(<ActiveSessions {...base} sessions={[session]} onKillSession={vi.fn(async () => { throw busy })} />)
+    fireEvent.click(screen.getByTitle(/kill/i))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(busy.message, 'Session not killed'))
+  })
+
+  test('a job stop nobody answered in time is "not confirmed" too', async () => {
+    const noAnswer = new ApiError({ reason: 'Job 0: no answer in time; the stop may still complete', status: 502, code: 'agent_error', upstreamStatus: 504 })
+    const job = { id: 0, sandbox: 'aaaaa1', name: 'Exploit: multi/handler', payload: 'p', port: 4444 } as never
+    render(<ActiveSessions {...base} sessions={[session]} jobs={[job]} onKillJob={vi.fn(async () => { throw noAnswer })} />)
+    fireEvent.click(screen.getByTitle('Stop job'))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(noAnswer.message, 'Stop not confirmed'))
   })
 })
 

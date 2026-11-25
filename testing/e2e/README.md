@@ -54,3 +54,87 @@ is reachable.
   They run on synthetic accounts and resources written straight into the database by
   `webapp/scripts/e2e-tradecraft-seed.mjs` (removed by `e2e-tradecraft-cleanup.mjs`): no agent
   and no site is reached. Each file's header has its command.
+
+## Per-user Kali sandboxes
+
+`tests/perUserSandbox.spec.ts` (fixtures in `tests/perUserSandboxFixtures.ts`) clicks through
+the app as two members and the admin and checks that every Kali path still works from the UI
+and runs in the person's own sandbox: first use and the drawer's starting line, an engagement
+with a plan wave, a Fireteam and the Traffic tab, a shared project, shell sessions across
+people, the terminal (also under act-as), access loss, the everyday screens and the emergency
+stop (group A); the idle stop (B); the "Not enough memory" modal (C); per-person tunnels (D);
+each person's reverse-shell port in the Sessions panel, the terminal, the status route and
+Operations, and a member stopping her own handler job (E, a pool of two ports and no hold).
+Each test finds where its command ran from the marker it left in a container's `/tmp`
+(`docker exec ... test -e`, read only); those checks are soft and say `ISOLATION`.
+
+Always run it through the wrapper, which takes the shared heavy lock, starts the running
+stack's `recon-orchestrator` with each group's variables in its own shell (never `.env`),
+replaying every other input the orchestrator was created with, and puts it back as it was on
+exit, even after a failure or a signal. Before its first change it writes the originals to
+`.git/redamon-g1-e2e-orchestrator.env` (0600, secrets as hashes), so a run killed outright is
+put back by the next one. It fails before doing anything when Docker, `npx`, `curl`, the
+orchestrator, the agent or the webapp is missing (`G1_E2E_ALLOW_SKIP=1` skips instead):
+
+```bash
+bash testing/e2e/scripts/per-user-sandbox-e2e.sh              # groups A-E
+bash testing/e2e/scripts/per-user-sandbox-e2e.sh --groups A,D # some groups only
+bash testing/e2e/scripts/per-user-sandbox-e2e.sh --list       # list the tests; touches nothing
+bash testing/e2e/scripts/per-user-sandbox-e2e.sh --dry-run    # what each group would recreate
+bash testing/e2e/scripts/per-user-sandbox-e2e.sh --check-lock # take the lock as a run would, then exit
+```
+
+It stops and removes no sandbox and no nuclei templates volume: the sandboxes a run starts
+are its test persons' own and stop when idle, as anyone's. Test 4 stops Bob's and Alice's
+at its end, since a Metasploit handler's background job carries no chat id and the agent's
+hold watcher would otherwise keep that sandbox for 8 hours.
+
+Group E runs with no hold (`KALI_SANDBOX_PORT_HOLD_HOURS=0`), so it reserves no pool port. The
+agent-driven half of the reverse-port proof, `bash tests/kali_reverse_ports_live.sh` (E1-E9, E11,
+E12 through Agent in the Loop; see that script), does use 24-hour holds: a completed run removes
+them in its last phase, but an aborted one leaves its pool ports reserved for the test persons
+for up to 24 hours, or until the next completed run removes them. They block only those ports
+(`FU_P7_POOL_BASE`, default 40190-40193) and only while a pool that contains them is configured.
+
+It needs the stack up, Docker, `python3` and `node`, and the accounts of
+`tests/kali_sandbox_seed_live.py` (`g1-alice@e2e.local`, `g1-bob@e2e.local`, projects `g1-PA`,
+`g1-PB`, `g1-PS`), which the spec seeds again itself; `G1_STATE` names the seed's state file. The
+model is `scripts/stub-llm-server.mjs` with the `scripts/stub-llm-scripts/per-user-sandbox-*.json`
+scripts, registered as each owner's provider for the run. The lab is a throwaway busybox
+container on the compose pentest network, joined to a person's sandbox network when a test
+needs it; group D's tunnel edge is a local chisel server. A caller already holding the lock
+(`flock LOCK bash ...`, or a descriptor it passes down) is recognised; `G1_E2E_LOCK_HELD=1` asks
+for that and fails when it is not so. The wait for the lock is bounded by `G1_E2E_LOCK_WAIT_S`.
+Playwright gets none of the wrapper's descriptors, so nothing it starts can keep the lock held.
+
+Each run keeps every group's Playwright output in its own folder,
+`testing/e2e/test-results-g1e2e/<UTC time>-<pid>/group-<G>/` (ignored by git; `G1_E2E_RESULTS_DIR`
+moves it), since Playwright empties its output folder at every start. When the drawer does not
+settle on a connected session, the failure lists what the page did (agent sockets, the type of each
+frame, ticket mints and their answers, failed API reads by path, console errors) and a screenshot
+is saved there. Chromium on the docker host aborts every request in flight when a host interface
+gains an address, as a new container's does: the spec waits after starting each of its own labs
+and edges until the host side has settled, so they are never that trigger, and nothing else is
+waited for. A failure that starts `PRODUCT, not the test:` names a known defect, not the spec: the
+drawer (`useAgentWebSocket.ts`: a ticket mint that fails in the browser, or a stale mint binding
+the new socket to the old session) or the page's one read of its session or project after such
+an abort (`AuthProvider.tsx`, `ProjectProvider.tsx`). On exit, and at the start of the run after a killed one, the wrapper removes the
+`g1e2e`-labelled labs, edges and networks a test left. Playwright runs under `setpriv
+--pdeathsig TERM` where `setpriv` offers it, so it ends with a wrapper killed outright; it holds
+no lock descriptor, so the run also records its process group beside the originals file and
+the next run first stops a killed run's Playwright that still runs.
+
+A failed API call of Playwright prints its call log, the account's session cookie included.
+The fixtures redact it (`redactSecrets` in `tests/perUserSandboxFixtures.ts`: cookie,
+Authorization and key headers, token values) in what the `list` reporter of
+`playwright.config.ts`, or `-- --reporter=line`, prints. The `html` and `blob` reporters may
+still keep the raw call log in their report, so do not pass them on a machine whose results
+others read.
+
+Test 9 fills the memory pool with a Naabu partial recon of the lab (every port at 50/s, `g1-PA`'s
+root put in scope so the typed address is scanned, and an RoE exclusion of a documentation address
+so Naabu is handed addresses only, never the placeholder name; all restored after, and the scan's
+log must show no name). Its refusals count only while
+that scan holds its reservation in the governor's ledger (`/api/system/stats`), checked before and
+after Bob's warm-up and around his message; when it does not, the test fails with `SETUP` and the
+scan's log, never as a pass or as a product failure.

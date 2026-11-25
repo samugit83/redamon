@@ -140,6 +140,18 @@ export async function sharedToolAccess(
   return { allowed: true, via: 'compat' }
 }
 
+/**
+ * Whether the account holds the tool now, read fresh, without counting a use of the escape hatch:
+ * for the paths that end what a tool left running once it is lost (a person's tunnel after
+ * platform:tunnels goes, G-03), where no person asks to use it. A missing or inactive account holds
+ * nothing.
+ */
+export async function sharedToolHeldBy(userId: string, tool: SharedTool): Promise<boolean> {
+  const principal = await loadPrincipal(userId, { fresh: true })
+  if (!principal || principal.status !== 'active') return false
+  return (await sharedToolAccess(principal, tool, { record: false })).allowed
+}
+
 /** Tests only: forgets the cached cutoff and the compat audit times. */
 export function resetSharedToolsForTests(): void {
   if (process.env.NODE_ENV === 'production') {

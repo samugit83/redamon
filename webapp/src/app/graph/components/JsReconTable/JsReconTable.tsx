@@ -36,24 +36,167 @@ interface JsReconTableProps {
   onDataLoaded?: (data: JsReconData | null) => void
 }
 
+// The rows GET /api/js-recon/[projectId]/download sends, typed as this table reads them.
+interface JsReconRowBase {
+  nodeId?: unknown
+  id?: string
+  updatedAt?: unknown
+}
+
+interface JsReconSecret extends JsReconRowBase {
+  severity: string
+  name: string
+  alternate_names?: string[] | null
+  redacted_value?: string | null
+  matched_text?: string | null
+  secret_value?: string | null
+  paired_secret?: string | null
+  category?: string | null
+  source_url?: string
+  line_number?: number | null
+  context?: string | null
+  raw_context?: string | null
+  public_client_key?: boolean
+  detection_method?: string | null
+  validation?: { status?: string; [field: string]: unknown }
+  confidence?: string | number | null
+  validator_ref?: string | null
+}
+
+interface JsReconEndpoint extends JsReconRowBase {
+  severity?: string
+  method?: string
+  path: string
+  full_url?: string
+  type?: string
+  category?: string
+  base_url?: string
+  source_js?: string
+  parameters?: string[]
+  line_number?: number | null
+}
+
+interface JsReconDependency extends JsReconRowBase {
+  severity: string
+  finding_type?: string
+  package_name: string
+  scope?: string | null
+  npm_exists?: boolean | null
+  confidence?: string | number | null
+  title?: string
+  detail?: string
+  recommendation?: string | null
+  source_urls?: string[]
+}
+
+interface JsReconSourceMap extends JsReconRowBase {
+  severity?: string
+  finding_type?: string
+  js_url: string
+  map_url?: string
+  accessible?: boolean | null
+  discovery_method?: string | null
+  files_count?: number | null
+  source_files?: string[]
+  secrets_in_source?: number | null
+  /** What the map's sources expose; only exported, as the scan stored it. */
+  secrets?: unknown[]
+}
+
+interface JsReconDomSink extends JsReconRowBase {
+  severity: string
+  finding_type?: string
+  type: string
+  pattern?: string
+  description?: string
+  source_url?: string
+  line?: number | null
+  confidence?: string | number | null
+}
+
+interface JsReconFramework extends JsReconRowBase {
+  name: string
+  version?: string | null
+  severity?: string
+  finding_type?: string
+  source_url?: string
+  confidence?: string | number | null
+}
+
+interface JsReconDevComment extends JsReconRowBase {
+  severity: string
+  type: string
+  content?: string
+  source_url?: string
+  line?: number | null
+  confidence?: string | number | null
+}
+
+interface JsReconCloudAsset extends JsReconRowBase {
+  provider?: string
+  type?: string
+  url: string
+  source_url?: string
+}
+
+interface JsReconEmail extends JsReconRowBase {
+  email: string
+  category?: string
+  source_url?: string
+  context?: string
+}
+
+interface JsReconIp extends JsReconRowBase {
+  ip: string
+  type?: string
+  source_url?: string
+  context?: string
+}
+
+interface JsReconDevReference extends JsReconRowBase {
+  type?: string
+  value: string
+  source_url?: string
+  line?: number | null
+  context?: string
+}
+
+interface JsReconObjectReference extends JsReconRowBase {
+  type?: string
+  value: string
+  source_url?: string
+  context?: string
+  potential_idor?: boolean
+}
+
+interface JsReconExternalDomain extends JsReconRowBase {
+  domain: string
+  source?: string
+  urls?: string[]
+  times_seen?: number
+}
+
 interface JsReconData {
   scan_metadata?: { scan_timestamp?: string; js_files_analyzed?: number; duration_seconds?: number }
-  secrets?: any[]
-  endpoints?: any[]
-  dependencies?: any[]
-  source_maps?: any[]
-  dom_sinks?: any[]
-  frameworks?: any[]
-  dev_comments?: any[]
-  cloud_assets?: any[]
-  emails?: any[]
-  ip_addresses?: any[]
-  dev_references?: any[]
-  object_references?: any[]
+  secrets?: JsReconSecret[]
+  endpoints?: JsReconEndpoint[]
+  dependencies?: JsReconDependency[]
+  source_maps?: JsReconSourceMap[]
+  dom_sinks?: JsReconDomSink[]
+  frameworks?: JsReconFramework[]
+  dev_comments?: JsReconDevComment[]
+  cloud_assets?: JsReconCloudAsset[]
+  emails?: JsReconEmail[]
+  ip_addresses?: JsReconIp[]
+  dev_references?: JsReconDevReference[]
+  object_references?: JsReconObjectReference[]
   discovered_subdomains?: string[]
-  external_domains?: any[]
-  summary?: Record<string, any>
+  external_domains?: JsReconExternalDomain[]
+  summary?: { total_secrets?: number; total_endpoints?: number; total_findings?: number; validated_keys?: { live: number } }
 }
+
+/** A row of one of the four sub-tabs that have a single row shape. */
+type JsReconTabRow = JsReconSecret | JsReconEndpoint | JsReconDependency | JsReconSourceMap
 
 const SUB_TABS = [
   { id: 'secrets', label: 'Secrets' },
@@ -123,7 +266,7 @@ const TAB_FILTER_COLUMNS: Record<string, RedZoneFilterColumn[]> = {
 const NO_COLUMNS: RedZoneFilterColumn[] = []
 
 /** Rows for one tab, or [] for the tabs that stack several row shapes. */
-function tabRows(data: JsReconData | null, tab: string): any[] {
+function tabRows(data: JsReconData | null, tab: string): JsReconTabRow[] {
   if (!data) return []
   if (tab === 'secrets') return data.secrets || []
   if (tab === 'endpoints') return data.endpoints || []
@@ -134,16 +277,20 @@ function tabRows(data: JsReconData | null, tab: string): any[] {
 
 interface JsReconSheet {
   name: string
-  rows: any[]
+  rows: readonly object[]
   columns: string[]
 }
 
-function getCol(row: any, col: string): unknown {
-  return col.includes('.') ? col.split('.').reduce((o: any, k) => o?.[k], row) : row[col]
+type Fields = Record<string, unknown>
+
+function getCol(row: unknown, col: string): unknown {
+  return col.includes('.')
+    ? col.split('.').reduce<unknown>((o, k) => (o as Fields | null | undefined)?.[k], row)
+    : (row as Fields)[col]
 }
 
 /** The stored names, not their display form, so an export greps like the graph. */
-function withJoinedAlternateNames(row: any): any {
+function withJoinedAlternateNames(row: JsReconSecret): object {
   return Array.isArray(row?.alternate_names) ? { ...row, alternate_names: row.alternate_names.join('; ') } : row
 }
 
@@ -177,7 +324,7 @@ function buildJsReconSheets(data: JsReconData): JsReconSheet[] {
 export async function exportJsReconCsv(data: JsReconData) {
   const sheets = buildJsReconSheets(data).filter(s => s.rows.length > 0)
 
-  function* dictRows(sheet: { rows: any[]; columns: string[] }): Iterable<Record<string, unknown>> {
+  function* dictRows(sheet: JsReconSheet): Iterable<Record<string, unknown>> {
     for (const r of sheet.rows) {
       const row: Record<string, unknown> = {}
       for (const col of sheet.columns) row[col] = getCol(r, col)
@@ -213,7 +360,7 @@ export async function exportJsReconCsv(data: JsReconData) {
 export async function exportJsReconJson(data: JsReconData) {
   const sheets = buildJsReconSheets(data).filter(s => s.rows.length > 0)
 
-  function* dictRows(sheet: { rows: any[]; columns: string[] }): Iterable<Record<string, unknown>> {
+  function* dictRows(sheet: JsReconSheet): Iterable<Record<string, unknown>> {
     for (const r of sheet.rows) {
       const row: Record<string, unknown> = {}
       for (const col of sheet.columns) row[col] = getCol(r, col) ?? null
@@ -275,7 +422,7 @@ const TONE_BADGE: Record<ValidationTone, string> = {
   none: styles.badgeUnvalidated,
 }
 
-function valBadge(status: string) {
+function valBadge(status: string | undefined) {
   if (!status) return <span className={`${styles.badge} ${styles.badgeUnvalidated}`}>n/a</span>
   return (
     <span className={`${styles.badge} ${TONE_BADGE[validationTone(status)]}`}>{validationLabel(status)}</span>
@@ -285,7 +432,7 @@ const SEVERITY_PRIORITY: Record<string, number> = {
   critical: 0, high: 1, medium: 2, low: 3, info: 4,
 }
 
-function sortSecrets(rows: any[]): any[] {
+function sortSecrets(rows: readonly JsReconSecret[]): JsReconSecret[] {
   return [...rows].sort((a, b) => {
     const va = validationRank(a.validation?.status)
     const vb = validationRank(b.validation?.status)
@@ -313,7 +460,7 @@ export const JsReconTable = memo(function JsReconTable({
       const res = await fetch(`/api/js-recon/${projectId}/download${fresh ? '?fresh=1' : ''}`)
       if (res.status === 404) { setError('No JS Recon data. Run a recon scan with JS Recon enabled.'); return }
       if (!res.ok) throw await readApiError(res, 'Failed to load JS Recon data')
-      const json = await res.json()
+      const json: JsReconData = await res.json()
       setData(json)
       onDataLoaded?.(json)
     } catch (e) {
@@ -336,7 +483,8 @@ export const JsReconTable = memo(function JsReconTable({
     void fetchData(true)
   }, [muteEpoch, fetchData])
 
-  const tabCounts = useMemo(() => {
+  // Indexed by sub-tab id; empty until the data loads.
+  const tabCounts = useMemo((): Record<string, number> => {
     if (!data) return {}
     return {
       secrets: data.secrets?.length || 0,
@@ -360,7 +508,7 @@ export const JsReconTable = memo(function JsReconTable({
     slug: 'jsRecon',
     sheet: activeTab,
     // `validation.status` is a dotted path into a nested object.
-    accessor: (row: any, columnId: string) => getCol(row, columnId),
+    accessor: (row, columnId) => getCol(row, columnId),
   })
 
   if (!projectId) return <div className={styles.stateContainer}>Select a project.</div>
@@ -380,7 +528,7 @@ export const JsReconTable = memo(function JsReconTable({
             onClick={() => setActiveTab(tab.id)}
           >
             {tab.label}
-            {(tabCounts as any)[tab.id] > 0 && <span className={styles.subTabBadge}>{(tabCounts as any)[tab.id]}</span>}
+            {tabCounts[tab.id] > 0 && <span className={styles.subTabBadge}>{tabCounts[tab.id]}</span>}
           </button>
         ))}
       </div>
@@ -413,19 +561,19 @@ export const JsReconTable = memo(function JsReconTable({
         </div>
       )}
 
-      {/* Content */}
+      {/* Content: filteredRows are a subset of tabRows(data, activeTab), so each table gets its own list's rows. */}
       <div className={styles.tableWrapper}>
-        {activeTab === 'secrets' && <SecretsTable rows={filteredRows} search={search} limit={limit} sortDir={sortDir} onToggleSort={toggleSort} />}
-        {activeTab === 'endpoints' && <EndpointsTable rows={filteredRows} search={search} limit={limit} sortDir={sortDir} onToggleSort={toggleSort} />}
-        {activeTab === 'dependencies' && <DepsTable rows={filteredRows} search={search} limit={limit} sortDir={sortDir} onToggleSort={toggleSort} />}
-        {activeTab === 'sourcemaps' && <SourceMapsTable rows={filteredRows} search={search} limit={limit} sortDir={sortDir} onToggleSort={toggleSort} />}
+        {activeTab === 'secrets' && <SecretsTable rows={filteredRows as JsReconSecret[]} search={search} limit={limit} sortDir={sortDir} onToggleSort={toggleSort} />}
+        {activeTab === 'endpoints' && <EndpointsTable rows={filteredRows as JsReconEndpoint[]} search={search} limit={limit} sortDir={sortDir} onToggleSort={toggleSort} />}
+        {activeTab === 'dependencies' && <DepsTable rows={filteredRows as JsReconDependency[]} search={search} limit={limit} sortDir={sortDir} onToggleSort={toggleSort} />}
+        {activeTab === 'sourcemaps' && <SourceMapsTable rows={filteredRows as JsReconSourceMap[]} search={search} limit={limit} sortDir={sortDir} onToggleSort={toggleSort} />}
         {activeTab === 'security' && <SecurityTable data={data} search={search} limit={limit} sortDir={sortDir} onToggleSort={toggleSort} />}
         {activeTab === 'surface' && <SurfaceTable data={data} search={search} limit={limit} sortDir={sortDir} onToggleSort={toggleSort} />}
       </div>
 
       {/* Pagination */}
       {(() => {
-        const totalForTab = (tabCounts as any)[activeTab] || 0
+        const totalForTab = tabCounts[activeTab] || 0
         if (limit < totalForTab) return (
           <div className={styles.pagination}>
             <button className={styles.loadMoreBtn} onClick={() => setLimit(l => l + PAGE_SIZE)}>
@@ -443,12 +591,13 @@ export const JsReconTable = memo(function JsReconTable({
 // Sub-table components
 // ============================================================
 
-function filterRows(rows: readonly any[], search: string): any[] {
+function filterRows<T extends object>(rows: readonly T[], search: string): T[] {
   if (!search) return [...rows]
   const s = search.toLowerCase()
   return rows.filter(r => {
     // Search ALL string/number values in the object (universal search)
-    for (const v of Object.values(r)) {
+    const values: unknown[] = Object.values(r)
+    for (const v of values) {
       if (v == null) continue
       if (typeof v === 'object' && !Array.isArray(v)) {
         // Check one level deep (e.g., validation.status)
@@ -463,7 +612,15 @@ function filterRows(rows: readonly any[], search: string): any[] {
   })
 }
 
-function SecretsTable({ rows, search, limit, sortDir, onToggleSort }: { rows: readonly any[]; search: string; limit: number; sortDir: SortDir; onToggleSort: () => void }) {
+interface SubTableProps<T> {
+  rows: readonly T[]
+  search: string
+  limit: number
+  sortDir: SortDir
+  onToggleSort: () => void
+}
+
+function SecretsTable({ rows, search, limit, sortDir, onToggleSort }: SubTableProps<JsReconSecret>) {
   const filtered = sortByUpdatedAt(sortSecrets(filterRows(rows, search)), sortDir).slice(0, limit)
   if (!filtered.length) return <div className={styles.stateContainer}>No secrets found.</div>
   return (
@@ -500,7 +657,7 @@ function SecretsTable({ rows, search, limit, sortDir, onToggleSort }: { rows: re
   )
 }
 
-function EndpointsTable({ rows, search, limit, sortDir, onToggleSort }: { rows: readonly any[]; search: string; limit: number; sortDir: SortDir; onToggleSort: () => void }) {
+function EndpointsTable({ rows, search, limit, sortDir, onToggleSort }: SubTableProps<JsReconEndpoint>) {
   const filtered = filterRows(rows, search).slice(0, limit)
   if (!filtered.length) return <div className={styles.stateContainer}>No endpoints extracted.</div>
   return (
@@ -525,7 +682,7 @@ function EndpointsTable({ rows, search, limit, sortDir, onToggleSort }: { rows: 
   )
 }
 
-function DepsTable({ rows, search, limit, sortDir, onToggleSort }: { rows: readonly any[]; search: string; limit: number; sortDir: SortDir; onToggleSort: () => void }) {
+function DepsTable({ rows, search, limit, sortDir, onToggleSort }: SubTableProps<JsReconDependency>) {
   const filtered = filterRows(rows, search).slice(0, limit)
   if (!filtered.length) return <div className={styles.stateContainer}>No dependency confusion findings.</div>
   return (
@@ -551,7 +708,7 @@ function DepsTable({ rows, search, limit, sortDir, onToggleSort }: { rows: reado
   )
 }
 
-function SourceMapsTable({ rows, search, limit, sortDir, onToggleSort }: { rows: readonly any[]; search: string; limit: number; sortDir: SortDir; onToggleSort: () => void }) {
+function SourceMapsTable({ rows, search, limit, sortDir, onToggleSort }: SubTableProps<JsReconSourceMap>) {
   const filtered = filterRows(rows, search).slice(0, limit)
   if (!filtered.length) return <div className={styles.stateContainer}>No source maps discovered.</div>
   return (

@@ -35,10 +35,15 @@ type Load =
 export function useProjectTradecraft(projectId: string | null): { load: Load; reload: () => void } {
   const [load, setLoad] = useState<Load>({ kind: 'loading' })
   const [token, setToken] = useState(0)
+  // A new project or a reload shows loading until its read answers; no project keeps what is shown.
+  const [loadedFor, setLoadedFor] = useState({ projectId, token })
+  if (loadedFor.projectId !== projectId || loadedFor.token !== token) {
+    setLoadedFor({ projectId, token })
+    if (projectId) setLoad({ kind: 'loading' })
+  }
   useEffect(() => {
     if (!projectId) return
     let live = true
-    setLoad({ kind: 'loading' })
     fetchJson<ProjectTradecraftView>(`/api/projects/${encodeURIComponent(projectId)}/tradecraft`, undefined, "Couldn't load the project's tradecraft resources")
       .then(view => { if (live) setLoad({ kind: 'ready', view }) })
       .catch(e => {

@@ -296,7 +296,7 @@ _RUN_GATES: dict = {}
 
 #: Audiences whose credential is honoured only while the run it names is open. A
 #: terminal's graph credential sits in its shell's environment, which every root
-#: process of the shared sandbox can read, so it must die with the terminal rather
+#: process of its sandbox can read, so it must die with the terminal rather
 #: than live out its 12 hours.
 LIVE_RUN_AUDIENCES = frozenset({"graph"})
 #: aud -> check(claims) -> bool, set by the process that holds those runs (api.py:

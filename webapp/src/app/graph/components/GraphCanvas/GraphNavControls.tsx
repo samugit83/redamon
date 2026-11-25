@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, type ReactNode } from 'react'
 import { Move, RotateCcw, ZoomIn, ZoomOut, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Crosshair } from 'lucide-react'
 import styles from './GraphNavControls.module.css'
 
@@ -17,6 +17,32 @@ const ROTATE_STEP = 0.03
 const PAN_STEP_3D = 15
 const REPEAT_INTERVAL = 50
 const ICON_SIZE = 12
+
+interface RepeatButtonProps {
+  action: () => void
+  startRepeat: (action: () => void) => void
+  stopRepeat: () => void
+  title: string
+  children: ReactNode
+}
+
+/** A button that runs its action on press and repeats it while held. */
+function RepeatButton({ action, startRepeat, stopRepeat, title, children }: RepeatButtonProps) {
+  return (
+    <button
+      type="button"
+      className={styles.btn}
+      onMouseDown={() => startRepeat(action)}
+      onMouseUp={stopRepeat}
+      onMouseLeave={stopRepeat}
+      onTouchStart={() => startRepeat(action)}
+      onTouchEnd={stopRepeat}
+      title={title}
+    >
+      {children}
+    </button>
+  )
+}
 
 export function GraphNavControls({ graphRef, is3D }: GraphNavControlsProps) {
   const [mode, setMode] = useState<'translate' | 'rotate'>('translate')
@@ -148,15 +174,7 @@ export function GraphNavControls({ graphRef, is3D }: GraphNavControlsProps) {
     }
   }, [graphRef, is3D, notifyCameraChange])
 
-  const onDown = useCallback((action: () => void) => {
-    return {
-      onMouseDown: () => startRepeat(action),
-      onMouseUp: stopRepeat,
-      onMouseLeave: stopRepeat,
-      onTouchStart: () => startRepeat(action),
-      onTouchEnd: stopRepeat,
-    }
-  }, [startRepeat, stopRepeat])
+  const repeat = { startRepeat, stopRepeat }
 
   return (
     <div className={styles.controls}>
@@ -171,9 +189,9 @@ export function GraphNavControls({ graphRef, is3D }: GraphNavControlsProps) {
           >
             <Move size={ICON_SIZE} />
           </button>
-          <button type="button" className={styles.btn} {...onDown(() => dpad(0, 1))} title={mode === 'rotate' ? 'Tilt up' : 'Pan up'}>
+          <RepeatButton {...repeat} action={() => dpad(0, 1)} title={mode === 'rotate' ? 'Tilt up' : 'Pan up'}>
             <ChevronUp size={ICON_SIZE} />
-          </button>
+          </RepeatButton>
           <button
             type="button"
             className={`${styles.btn} ${mode === 'rotate' ? styles.btnActive : ''}`}
@@ -185,50 +203,50 @@ export function GraphNavControls({ graphRef, is3D }: GraphNavControlsProps) {
         </div>
       ) : (
         <div className={styles.row}>
-          <button type="button" className={styles.btn} {...onDown(() => zoom(-1))} title="Zoom in">
+          <RepeatButton {...repeat} action={() => zoom(-1)} title="Zoom in">
             <ZoomIn size={ICON_SIZE} />
-          </button>
-          <button type="button" className={styles.btn} {...onDown(() => dpad(0, 1))} title="Pan up">
+          </RepeatButton>
+          <RepeatButton {...repeat} action={() => dpad(0, 1)} title="Pan up">
             <ChevronUp size={ICON_SIZE} />
-          </button>
-          <button type="button" className={styles.btn} {...onDown(() => zoom(1))} title="Zoom out">
+          </RepeatButton>
+          <RepeatButton {...repeat} action={() => zoom(1)} title="Zoom out">
             <ZoomOut size={ICON_SIZE} />
-          </button>
+          </RepeatButton>
         </div>
       )}
 
       {/* Row 2: left, center (reset), right */}
       <div className={styles.row}>
-        <button type="button" className={styles.btn} {...onDown(() => dpad(-1, 0))} title={is3D && mode === 'rotate' ? 'Orbit left' : 'Pan left'}>
+        <RepeatButton {...repeat} action={() => dpad(-1, 0)} title={is3D && mode === 'rotate' ? 'Orbit left' : 'Pan left'}>
           <ChevronLeft size={ICON_SIZE} />
-        </button>
+        </RepeatButton>
         <button type="button" className={styles.centerBtn} onClick={resetView} title="Fit all nodes">
           <Crosshair size={ICON_SIZE} />
         </button>
-        <button type="button" className={styles.btn} {...onDown(() => dpad(1, 0))} title={is3D && mode === 'rotate' ? 'Orbit right' : 'Pan right'}>
+        <RepeatButton {...repeat} action={() => dpad(1, 0)} title={is3D && mode === 'rotate' ? 'Orbit right' : 'Pan right'}>
           <ChevronRight size={ICON_SIZE} />
-        </button>
+        </RepeatButton>
       </div>
 
       {/* Row 3: zoom in, down, zoom out (3D) or just down (2D) */}
       {is3D ? (
         <div className={styles.row}>
-          <button type="button" className={styles.btn} {...onDown(() => zoom(-1))} title="Zoom in">
+          <RepeatButton {...repeat} action={() => zoom(-1)} title="Zoom in">
             <ZoomIn size={ICON_SIZE} />
-          </button>
-          <button type="button" className={styles.btn} {...onDown(() => dpad(0, -1))} title={mode === 'rotate' ? 'Tilt down' : 'Pan down'}>
+          </RepeatButton>
+          <RepeatButton {...repeat} action={() => dpad(0, -1)} title={mode === 'rotate' ? 'Tilt down' : 'Pan down'}>
             <ChevronDown size={ICON_SIZE} />
-          </button>
-          <button type="button" className={styles.btn} {...onDown(() => zoom(1))} title="Zoom out">
+          </RepeatButton>
+          <RepeatButton {...repeat} action={() => zoom(1)} title="Zoom out">
             <ZoomOut size={ICON_SIZE} />
-          </button>
+          </RepeatButton>
         </div>
       ) : (
         <div className={styles.row}>
           <div className={styles.spacer} />
-          <button type="button" className={styles.btn} {...onDown(() => dpad(0, -1))} title="Pan down">
+          <RepeatButton {...repeat} action={() => dpad(0, -1)} title="Pan down">
             <ChevronDown size={ICON_SIZE} />
-          </button>
+          </RepeatButton>
           <div className={styles.spacer} />
         </div>
       )}

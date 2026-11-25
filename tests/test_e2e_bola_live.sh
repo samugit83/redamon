@@ -20,13 +20,13 @@
 #   - shell sessions (F-01): a new member's list holds nothing of anyone else's and a
 #     session or job outside it is 404 before the console; L sees what an admin sees
 #   - tunnel read (F-04): the credentials answer the internal key only, L included
-#   - tunnel write (F-05): a new member's change is 403 tunnels_admin_only; L's passes the
-#     tunnel check (the request then fails the GitHub Enterprise host check, so nothing is
-#     written or pushed to the sandbox). With RBAC_IDENTITY_ENABLED on (read from the webapp
-#     container) the tunnel is an instance setting (step 2.4): the user-settings route answers
-#     both 409 moved_to_instance_settings, and the writer is /api/admin/instance-settings, which
-#     refuses B (403) and lets L through to its field check (400 invalid_field: nothing written,
-#     so the live instance's tunnel is never changed)
+#   - tunnel write (F-05): a tunnel is its person's own user settings row, run in their own Kali
+#     sandbox, whatever RBAC_IDENTITY_ENABLED says (read from the webapp container). A new
+#     member's change is 403 tunnels_admin_only; L's passes the tunnel check (the request then
+#     fails the GitHub Enterprise host check, so nothing is written or pushed to L's sandbox).
+#     With the identity switch on, /api/admin/instance-settings still gates the unused, read-only
+#     instance tunnel: it refuses B (403) and lets L through to its field check (400
+#     invalid_field: nothing written, so the instance row is never changed)
 #   - template overwrite (F-07): A's template cannot be replaced or deleted by B, nor by L
 #     (no grant opens every template)
 #   - emergency stop scope (F-06): a press by a new member or by L stops only their own
@@ -41,7 +41,8 @@
 # tests/rbac_kali_terminal_live.sh); the escape hatch never applies to these accounts.
 #
 # Requires the stack up (webapp on :3000). Seeds + cleans up its own fixtures, before
-# and after the run; the fixture scripts are fed to the webapp container on stdin, so
+# and after the run, their sandboxes and output folders first (the orchestrator's
+# account_deleted stop); the fixture scripts are fed to the webapp container on stdin, so
 # they work against an image built before they changed. Response bodies are never printed.
 #
 # Run: bash tests/test_e2e_bola_live.sh
@@ -53,7 +54,30 @@ TMP="$(mktemp -d)"
 fixture_node() { # script: run a fixture script inside the webapp container, read from stdin
   (cd "$ROOT" && docker compose exec -T -w /app webapp node --input-type=module -) < "$ROOT/webapp/scripts/$1"
 }
-trap 'rm -rf "$TMP"; fixture_node e2e-bola-cleanup.mjs >/dev/null 2>&1 || true' EXIT
+env_value() { # KEY: from the environment, else the repo-root .env; never printed
+  if [ -n "${!1:-}" ]; then printf '%s' "${!1}"; return; fi
+  grep -m1 "^$1=" "$ROOT/.env" 2>/dev/null | cut -d= -f2- | sed "s/^[\"']//; s/[\"']\$//"
+}
+# The orchestrator's API, called as the webapp calls it. The key reaches curl on stdin. Prints
+# the answer's body, then its HTTP status on a line of its own.
+orch_call() { # method path [json-body]
+  local key port args=(-s -m 300 -K - -X "$1" -H 'Content-Type: application/json' -w '\n%{http_code}')
+  [ -n "${3:-}" ] && args+=(--data-binary "$3")
+  key="$(env_value ORCHESTRATOR_API_KEY)"
+  port="$(env_value RECON_ORCH_PORT | grep -xE '[0-9]+' || echo 8010)"
+  printf 'header = "X-Orchestrator-Key: %s"\n' "${key:-changeme}" | curl "${args[@]}" "http://127.0.0.1:$port$2"
+}
+# The fixture cleanup deletes the accounts by SQL, which the orchestrator never hears of: their
+# sandboxes (A's chat ticket mint warms A's) and output folders go first, as an account deletion
+# takes them (the one stop reason that also deletes the folders).
+retire_fixture_sandboxes() {
+  local u
+  for u in $(cd "$ROOT" && docker compose exec -T postgres psql -U redamon -d redamon -qtA -c \
+      "SELECT id FROM users WHERE email IN ('bola-a@e2e.local', 'bola-b@e2e.local', 'bola-admin@e2e.local', 'bola-legacy@e2e.local')" 2>/dev/null); do
+    [[ "$u" =~ ^[A-Za-z0-9_-]+$ ]] && orch_call POST "/sandboxes/$u/stop" '{"reason":"account_deleted"}' >/dev/null 2>&1
+  done
+}
+trap 'rm -rf "$TMP"; retire_fixture_sandboxes; fixture_node e2e-bola-cleanup.mjs >/dev/null 2>&1 || true' EXIT
 
 PASS=0; FAIL=0
 ok()   { echo "  PASS: $1"; PASS=$((PASS+1)); }
@@ -109,6 +133,7 @@ echo "== Sharing in force (switch and instance policy): $SHARING =="
 
 echo "== Removing an earlier run's fixtures =="
 # A fresh account every run: the escape hatch covers only accounts older than the upgrade.
+retire_fixture_sandboxes
 fixture_node e2e-bola-cleanup.mjs | sed 's/^/  /'
 [ "${PIPESTATUS[0]}" -eq 0 ] || { echo "cleanup failed"; exit 1; }
 
@@ -274,6 +299,14 @@ upload() { # jar template-id [overwrite] -> http code; uploads x.yaml into $TPL_
   curl "${args[@]}" "$BASE/api/nuclei-templates"
 }
 SESSION_COUNTS="[len(b.get(k) or []) for k in ('sessions', 'jobs', 'non_msf_sessions')]"
+# A drive names its target as the pair (sandbox instance, number), `?sandbox=` required: without it
+# the route answers 400 before any lookup (sessionDrive.ts). Each kill names a well-formed pair no
+# console holds, so it reaches the lookup in the caller's view and is refused there: the lookup's
+# 404, and no drive audit row (one is written before anything is forwarded to the console).
+kill_probe() { # desc jar sessions|jobs
+  check_body "$1" 404 "$(req "$2" POST "/api/agent/$3/999999/kill?sandbox=000000")" \
+    'has:"error":"Not found"' lacks:sandbox_required lacks:invalid_sandbox
+}
 
 echo "== F-01 shell sessions are per project (HD-01, HD-02) =="
 c="$(req "$TMP/a.jar" GET /api/agent/sessions)"; counts="$(json "$SESSION_COUNTS")"
@@ -282,8 +315,8 @@ if [ "$c" = 200 ] && [ "$counts" = "[0, 0, 0]" ]; then
 else
   bad "new member A's session list (expected 200 and [0, 0, 0] sessions/jobs/listeners, got $c ${counts:-unparsed})"
 fi
-check_body "new member A kills a session outside its view -> 404 before the console" 404 "$(req "$TMP/a.jar" POST /api/agent/sessions/999999/kill)"
-check_body "new member A kills a job -> 404 before the console"                     404 "$(req "$TMP/a.jar" POST /api/agent/jobs/999999/kill)"
+kill_probe "new member A kills a session outside its view -> 404 at the lookup, before the console" "$TMP/a.jar" sessions
+kill_probe "new member A kills a job -> 404 at the lookup, before the console"                     "$TMP/a.jar" jobs
 # The legacy shell_sessions grant opens every session and job: L's list is the admin's.
 # The agent may refresh its list between the two reads, so a mismatch is read again once.
 same=0
@@ -295,18 +328,25 @@ for _ in 1 2; do
 done
 if [ "$same" = 1 ]; then ok "legacy holder L's session list is the admin's (every session, job and listener: $lcounts)"
 else bad "legacy holder L's session list (got $lc ${lcounts:-unparsed}, the admin's $ac ${acounts:-unparsed})"; fi
-check_body "legacy holder L kills a session the console does not hold -> 404" 404 "$(req "$TMP/l.jar" POST /api/agent/sessions/999999/kill)"
+kill_probe "legacy holder L kills a session the console does not hold -> 404 at the lookup" "$TMP/l.jar" sessions
+DRIVES="$(cd "$ROOT" && docker compose exec -T postgres psql -U redamon -d redamon -qtA -c \
+  "SELECT count(*) FROM audit_log WHERE action IN ('agent.session_kill', 'agent.job_kill') AND actor_id IN ('$A_ID', '$L_ID')" 2>/dev/null | tr -d '[:space:]')"
+check "the refused kills reached no console (no drive audit row of A or L)" 0 "$DRIVES"
 
-echo "== F-04 / F-05 the tunnel is the admins' (HD-05, HD-06) =="
+echo "== F-04 / F-05 a tunnel is its person's own, opened only with platform:tunnels (HD-05, HD-06) =="
 TUNNEL_CHANGE='{"chiselServerUrl":"http://127.0.0.1:9","githubEnterpriseHost":"127.0.0.1"}'
 check_body "new member A reads the tunnel credentials -> 404"                  404 "$(req "$TMP/a.jar" GET /api/global/tunnel-config)"
 check_body "legacy holder L reads the tunnel credentials -> 404 (internal key only)" 404 "$(req "$TMP/l.jar" GET /api/global/tunnel-config)"
+# A person's own tunnel, whatever the identity switch: never moved to the instance settings.
+check_body "new member B changes its own tunnel -> 403 tunnels_admin_only"     403 \
+  "$(req "$TMP/b.jar" PUT "/api/users/$B_ID/settings" "$TUNNEL_CHANGE")" has:tunnels_admin_only lacks:moved_to_instance_settings
+check_body "legacy holder L passes the tunnel check (then refused by the GitHub Enterprise host check)" 400 \
+  "$(req "$TMP/l.jar" PUT "/api/users/$L_ID/settings" "$TUNNEL_CHANGE")" "has:GitHub Enterprise Host" lacks:tunnels_admin_only \
+  lacks:moved_to_instance_settings
+check_body "B's settings: tunnel controls not offered, nothing written"        200 "$(req "$TMP/b.jar" GET "/api/users/$B_ID/settings")" \
+  'has:"canManageTunnels":false' 'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
 if [ "$IDENTITY" = on ]; then
-  check_body "new member B changes the tunnel in its own settings -> 409 moved_to_instance_settings" 409 \
-    "$(req "$TMP/b.jar" PUT "/api/users/$B_ID/settings" "$TUNNEL_CHANGE")" has:moved_to_instance_settings has:chiselServerUrl
-  check_body "legacy holder L changes the tunnel in its own settings -> 409 moved_to_instance_settings" 409 \
-    "$(req "$TMP/l.jar" PUT "/api/users/$L_ID/settings" "$TUNNEL_CHANGE")" has:moved_to_instance_settings has:chiselServerUrl
-  # The live instance's tunnel is never really changed: a tunnel field that is not text is
+  # The instance's own tunnel is never really changed: a tunnel field that is not text is
   # refused after the access check, so B's 403 and L's 400 tell the two apart.
   INSTANCE_TUNNEL_PROBE='{"tunnelsEnabled":true,"chiselServerUrl":42}'
   lc="$(req "$TMP/l.jar" GET /api/admin/instance-settings)"; tunnel_before="$(json "(b['tunnelsEnabled'], b['chiselServerUrl'])")"
@@ -322,19 +362,12 @@ if [ "$IDENTITY" = on ]; then
   else
     bad "the instance tunnel after the refused changes (first read $lc; switch or chisel URL changed, or unreadable)"
   fi
-  check_body "B's settings: tunnel controls not offered, nothing written"        200 "$(req "$TMP/b.jar" GET "/api/users/$B_ID/settings")" \
-    'has:"canManageTunnels":false' 'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
-  check_body "L's settings: the tunnel controls live in the instance settings, nothing written" 200 \
-    "$(req "$TMP/l.jar" GET "/api/users/$L_ID/settings")" 'has:"canManageTunnels":false' 'has:"sharedSettingsAt":"instance"' \
-    'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
+  check_body "L's settings: its own tunnel's controls offered, the capture ones in the instance settings, nothing written" 200 \
+    "$(req "$TMP/l.jar" GET "/api/users/$L_ID/settings")" 'has:"canManageTunnels":true' 'has:"tunnelScope":"own_sandbox"' \
+    'has:"sharedSettingsAt":"instance"' 'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
 else
-  check_body "new member B changes the tunnel -> 403 tunnels_admin_only"         403 "$(req "$TMP/b.jar" PUT "/api/users/$B_ID/settings" "$TUNNEL_CHANGE")" has:tunnels_admin_only
-  check_body "legacy holder L passes the tunnel check (then refused by the GitHub Enterprise host check)" 400 \
-    "$(req "$TMP/l.jar" PUT "/api/users/$L_ID/settings" "$TUNNEL_CHANGE")" "has:GitHub Enterprise Host" lacks:tunnels_admin_only
-  check_body "B's settings: tunnel controls not offered, nothing written"        200 "$(req "$TMP/b.jar" GET "/api/users/$B_ID/settings")" \
-    'has:"canManageTunnels":false' 'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
-  check_body "L's settings: tunnel controls offered, nothing written"            200 "$(req "$TMP/l.jar" GET "/api/users/$L_ID/settings")" \
-    'has:"canManageTunnels":true' 'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
+  check_body "L's settings: its own tunnel's controls offered, nothing written"  200 "$(req "$TMP/l.jar" GET "/api/users/$L_ID/settings")" \
+    'has:"canManageTunnels":true' 'has:"tunnelScope":"own_sandbox"' 'lacks:"chiselServerUrl":"http://127.0.0.1:9"'
 fi
 
 echo "== F-07 a Nuclei template is its owner's (HD-08) =="

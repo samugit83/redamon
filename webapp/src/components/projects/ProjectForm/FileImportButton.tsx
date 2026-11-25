@@ -114,7 +114,7 @@ export function FileImportButton({
         </ul>
       </div>
       <div className={styles.fileImportTooltipFooter}>
-        Lines starting with <code>#</code> or <code>//</code> are ignored. Duplicates are removed.
+        Lines starting with <code>#</code> or <code>{'//'}</code> are ignored. Duplicates are removed.
       </div>
     </div>
   )

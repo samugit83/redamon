@@ -7,6 +7,15 @@ import { requirePermission } from '@/lib/authz/guards'
 import { conversationRunRefusal } from '@/lib/authz/conversationRun'
 import { requireConversationRead } from '@/lib/authz/conversationAccess'
 
+/** A member as the agent posts it; `tools` is the current name of the `skills` column. */
+interface FireteamMemberInput {
+  memberIdKey: string
+  name: string
+  task?: string
+  tools?: string[]
+  skills?: string[]
+}
+
 // POST /api/conversations/by-session/[sessionId]/fireteams
 // Create a new Fireteam row and its FireteamMember rows. Called by the agent with
 // X-Internal-Key (carve-out, only on a conversation of the run's own person and
@@ -71,7 +80,7 @@ export async function POST(
         planRationale: planRationale ?? '',
         status: 'running',
         members: {
-          create: members.map((m: any) => ({
+          create: members.map((m: FireteamMemberInput) => ({
             memberIdKey: m.memberIdKey,
             name: m.name,
             task: m.task ?? '',

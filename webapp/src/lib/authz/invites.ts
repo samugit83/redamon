@@ -34,6 +34,7 @@ import { now } from './clock'
 import { invalidatePrincipal } from './principal'
 import { INSTANCE_SETTINGS_ROW } from './root'
 import { checkInitialSets, InitialSetGone, initialSetGoneResponse, writeInitialSets } from './initialSets'
+import { EXPIRED_COOKIE } from '@/lib/expiredCookie'
 
 export type LinkKind = 'invite' | 'reset'
 
@@ -389,7 +390,7 @@ export function clearInviteCookie(response: NextResponse, request: NextRequest):
     sameSite: 'lax',
     secure: isSecureRequest(request),
     path: INVITE_COOKIE_PATH,
-    maxAge: 0,
+    ...EXPIRED_COOKIE,
   })
 }
 

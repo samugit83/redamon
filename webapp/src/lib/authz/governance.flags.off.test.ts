@@ -33,9 +33,7 @@
  * to Prisma untouched, with this switch off or on (the test at the end; lib/auditForward.test.ts).
  *
  * Step 6.7 adds the Instance page (/admin/instance), which sits under /admin and so does not exist with
- * the switch off. Global Settings' Tunneling tab then keeps its controls for whoever may change the
- * tunnel, with no link to the console (components/settings/InstanceTunnelSection.tsx, a reader in
- * GOVERNANCE_READERS; the test at the end, and InstanceTunnelSection.test.tsx).
+ * the switch off.
  *
  * Step 6.3 adds the permission sets and admin profiles pages (/admin/permission-sets,
  * /admin/admin-profiles). They sit under /admin, so with the switch off they do not exist and read
@@ -91,9 +89,8 @@
  * exist. The members' memory meter (/api/system/stats), their scan activity (/api/system/jobs) and the
  * emergency stop (/api/agent/emergency-stop-all) read no switch and stay as they were.
  *
- * The traffic page links its Settings to the Instance page's TrafficMind panel with the switch on (UI-04,
- * after 6.7). Off, the button opens the TrafficMind dialog in place, as before (app/traffic/page.tsx, a
- * reader in GOVERNANCE_READERS; app/traffic/page.test.tsx).
+ * The traffic page's Settings opens the TrafficMind dialog in place with the switch off or on: the
+ * Instance page has no TrafficMind panel, so app/traffic/page.tsx reads no switch (app/traffic/page.test.tsx).
  *
  * Run: npx vitest run --no-file-parallelism src/lib/authz/governance.flags.off.test.ts
  */
@@ -203,6 +200,7 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
       'src/app/api/admin/instance-settings/route.ts',
       'src/app/api/admin/operations/agent-runs/stop/route.ts',
       'src/app/api/admin/operations/route.ts',
+      'src/app/api/admin/operations/sandboxes/stop/route.ts',
       'src/app/api/admin/projects/[id]/route.ts',
       'src/app/api/admin/projects/route.ts',
       'src/app/api/admin/shares/[projectId]/[userId]/route.ts',
@@ -213,11 +211,9 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.1)', () => {
       'src/app/api/users/[id]/sessions/route.ts',
       'src/app/plugins/[pluginId]/[[...screen]]/page.tsx',
       'src/app/settings/users/layout.tsx',
-      'src/app/traffic/page.tsx',
       'src/components/layout/GlobalHeader/GlobalHeader.tsx',
       'src/components/plugins/PluginDetailsDrawer.tsx',
       'src/components/settings/InstanceLlmProviders.tsx',
-      'src/components/settings/InstanceTunnelSection.tsx',
       'src/lib/authz/auditRetention.ts',
       'src/lib/authz/deviceSessions.ts',
       'src/lib/authz/expirySweep.ts',
@@ -311,23 +307,6 @@ describe('audit forwarding is its own setting (step 6.12): AUDIT_FORWARD, defaul
     expect(forwarded()).toBe(1)
     info.mockRestore()
     vi.doUnmock('@/lib/prisma')
-  })
-})
-
-describe('RBAC_GOVERNANCE_ENABLED off (step 6.7): the Tunneling tab keeps its controls', () => {
-  test('whoever may change the tunnel gets the controls in Global Settings, and no link to the Instance page', async () => {
-    const { ToastProvider } = await import('@/components/ui/Toast/Toast')
-    const { InstanceTunnelSection } = await import('@/components/settings/InstanceTunnelSection')
-    fetchMock.mockImplementation(async () => new Response(JSON.stringify({
-      tunnelsEnabled: false, ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '', canManageTunnels: true,
-    })))
-    for (const flags of [FLAGS_ON, { ...FLAGS_ON, governance: false, sharing: true }]) {
-      render(createElement(AuthContext.Provider, { value: fakeAuth(flags, ['platform:tunnels']) },
-        createElement(ToastProvider, null, createElement(InstanceTunnelSection))))
-      expect(await screen.findByRole('button', { name: 'Save tunnel settings' })).toBeInTheDocument()
-      expect(screen.queryByRole('link', { name: 'Open the tunnel settings' })).toBeNull()
-      cleanup()
-    }
   })
 })
 
@@ -611,5 +590,37 @@ describe('RBAC_GOVERNANCE_ENABLED off (step 6.5): the operations view does not e
     expect(() => AdminLayout({ children: createElement(OperationsPage) })).toThrow('NEXT_NOT_FOUND')
     expect(nav.notFound).toHaveBeenCalledTimes(1)
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  // Group 1 (WI-S16-6): the operator's stop of one person's Kali sandboxes belongs to the same view, so
+  // with the switch off it does not exist either: 404 before the session, the database, the agent or the
+  // orchestrator is read, and no sandbox stops.
+  test('POST /api/admin/operations/sandboxes/stop answers 404 and reads neither the session, the database, the agent nor the orchestrator', async () => {
+    const touched = vi.fn()
+    vi.resetModules()
+    vi.doMock('@/lib/prisma', () => {
+      const db = new Proxy({}, { get: (_t, name) => { touched(`prisma.${String(name)}`); return {} } })
+      return { default: db, prisma: db }
+    })
+    vi.doMock('@/lib/session', () => ({
+      requireSession: vi.fn(async () => { touched('session'); return { userId: 'ops-1', role: 'admin' } }),
+      getSession: vi.fn(async () => { touched('session'); return { userId: 'ops-1', role: 'admin' } }),
+    }))
+    vi.doMock('@/lib/agentFetch', () => ({ agentFetch: vi.fn(async () => { touched('agent'); return new Response('{}') }), AgentUnreachableError: Error }))
+    vi.doMock('@/lib/orchestrator', () => ({ orchestratorFetch: vi.fn(async () => { touched('orchestrator'); return new Response('{}') }) }))
+    const { POST: stopSandbox } = await import('@/app/api/admin/operations/sandboxes/stop/route')
+    for (const on of ['', 'true']) {
+      vi.stubEnv('RBAC_IDENTITY_ENABLED', on)
+      vi.stubEnv('RBAC_PERMISSIONS_ENABLED', on)
+      vi.stubEnv('RBAC_GOVERNANCE_ENABLED', '')
+      expect((await stopSandbox(new Request('http://redamon.test/api/admin/operations/sandboxes/stop', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: 'm-1' }),
+      }) as never)).status).toBe(404)
+    }
+    expect(touched).not.toHaveBeenCalled()
+    vi.doUnmock('@/lib/prisma')
+    vi.doUnmock('@/lib/session')
+    vi.doUnmock('@/lib/agentFetch')
+    vi.doUnmock('@/lib/orchestrator')
   })
 })

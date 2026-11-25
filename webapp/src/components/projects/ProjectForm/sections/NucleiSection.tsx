@@ -513,7 +513,7 @@ export function NucleiSection({ data, updateField, onRun }: NucleiSectionProps) 
                   <p className={styles.fieldHint}>
                     Templates you upload are yours: other members cannot see, replace or delete them.
                     Instance templates are shared with every member and only an administrator changes them.
-                    Check templates to include in this project's scans.
+                    Check templates to include in this project&apos;s scans.
                   </p>
                 </div>
                 <input

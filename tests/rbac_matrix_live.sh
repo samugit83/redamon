@@ -59,7 +59,8 @@
 #           which reads off while the permissions switch is off, as flags.ts chains it; it
 #           needs neither sharing nor a policy, so nothing more is read),
 #           origin:<url> (the Origin header
-#           the row sends instead of the webapp's own, e.g. a page of another site)
+#           the row sends instead of the webapp's own, e.g. a page of another site);
+#           a sandbox: tag is a LINT error (the Kali sandbox has one mode)
 #   path, body and expect take ${KEY} from the seed output (KEY=VALUE lines).
 #
 # Rows never start a scan or an agent run. A row that must prove "allowed" without
@@ -135,6 +136,11 @@ for f in "${FILES[@]}"; do
       lint_errors=$((lint_errors + 1)); continue
     fi
     SEEN_ID[$id]="$(basename "$f"):$n"
+    # A row written for one of the two Kali sandbox modes would now run in the only one.
+    if [[ " ${cols[7]} " =~ \ (sandbox:[^ ]*)\  ]]; then
+      echo "LINT $(basename "$f"):$n $id carries ${BASH_REMATCH[1]}: the Kali sandbox has one mode now; drop the tag (and the row, if it was written for the shared one)" >&2
+      lint_errors=$((lint_errors + 1)); continue
+    fi
     if [ -n "$ROW_FILTER" ] && ! [[ "$id" =~ $ROW_FILTER ]]; then continue; fi
     ROWS+=("$line")
   done < "$f"

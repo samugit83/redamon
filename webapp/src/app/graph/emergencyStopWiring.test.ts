@@ -59,3 +59,17 @@ describe('the emergency stop scope on the graph page', () => {
     expect(body).toMatch(/setEmergencyStopScope\(/)
   })
 })
+
+describe('the Kali sandboxes in the press (gaps G-02, G-19)', () => {
+  test('the route\'s sandbox outcome is read before an agent error, and a failed stop offers a retry', () => {
+    const body = handler('handleEmergencyPauseAll')
+    expect(body).toContain('res.clone().json()')
+    expect(body).toContain('sandboxStopSummary(')
+    expect(body).toMatch(/label: 'Retry'/)
+  })
+
+  test('the toolbar enables PAUSE ALL for Kali work alone', () => {
+    expect(toolbarElement()).toContain('isKaliActive={isKaliActive}')
+    expect(pageSrc).toMatch(/const isKaliActive = ownSandbox\.running \|\| activeSessions\.totalCount > 0 \|\| activeSessions\.jobs\.length > 0/)
+  })
+})

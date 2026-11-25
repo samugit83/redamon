@@ -36,6 +36,12 @@
 #   - governance:on|off the same for RBAC_GOVERNANCE_ENABLED (step 6.13), which
 #     reads off while the permissions switch is off (flags.ts: governance requires
 #     permissions, not sharing) and reads no policy;
+#   - a sandbox: tag (group 1: the Kali sandbox had a shared and a per-user mode
+#     until S20) is a LINT error in any row, a superseded one too: nothing runs and
+#     nothing is asked of the stack, so a row written for the shared mode never runs,
+#     or skips, silently in the only one; the runner never asks the orchestrator for
+#     a mode; the committed p2 tunnel rows pass S17's hand-checked answers, fail the
+#     shared tunnel's old answers, and the gone tunnel sync route answers 401 / 404;
 #   - the committed rows of the S3 red (the terminal ticket's level refusal, the
 #     overseeing admin's delete and its sharing:off 404 twin) pass the hand-checked
 #     answers and fail the answer of each regression;
@@ -110,6 +116,15 @@ printf '%s\n' \
   $'y-wswitch-capped\t5.14\tanon\tGET\t/api/y/wswitch-capped\t-\t200\tsharing:on sharingwrite:off sharingwriteswitch:on' \
   $'y-wswitch-only\t5.14\tanon\tGET\t/api/y/wswitch-only\t-\t200\tsharingwriteswitch:on' \
   > "$T/tests/fixtures/rbac_matrix/y.tsv"
+printf '%s\n' \
+  $'m-plain\tg1\tanon\tGET\t/api/m/plain\t-\t200\treq:I9' \
+  $'m-shared\tg1\tanon\tGET\t/api/m/shared\t-\t200\treq:I9 sandbox:shared' \
+  $'m-per-user\tg1\tanon\tGET\t/api/m/per-user\t-\t200\tsandbox:per_user' \
+  $'m-id-off-per-user\tg1\tanon\tGET\t/api/m/id-off-per-user\t-\t200\tidentity:off sandbox:per_user' \
+  $'m-superseded\tg1\tanon\tGET\t/api/m/superseded\t-\t200\tsuperseded-by:p2 sandbox:shared' \
+  > "$T/tests/fixtures/rbac_matrix/m.tsv"
+printf '%s\n' $'n-plain\tg1\tanon\tGET\t/api/n/plain\t-\t200\treq:I9' $'n-sandboxed\tg1\tanon\tGET\t/api/n/sandboxed\t-\t200\treq:I9-sandbox:x' \
+  > "$T/tests/fixtures/rbac_matrix/n.tsv"
 
 # docker: the webapp's switches come from FAKE_* through the runner's own in-container
 # command (run here by sh), the seed prints the keys the runner requires, every call is logged.
@@ -144,9 +159,12 @@ case "$*" in
       RBAC_SHARING_ENABLED="${FAKE_SHARING-}" RBAC_SHARING_WRITE_ENABLED="${FAKE_SHARING_WRITE-}" \
       RBAC_GOVERNANCE_ENABLED="${FAKE_GOVERNANCE-}" RBAC_AUTHZ_CACHE_MS="${FAKE_CACHE_MS-}" sh -c "$script" ;;
   *" node "*)
-    if grep -q SEED; then
+    script="$(cat)"
+    if grep -q SEED <<<"$script"; then
       printf 'PA_ID=pa\nPB_ID=pb\nPSHARED_ID=ps\nPA_TMP1_ID=pt1\nMEMBER_A_ID=ma\nMEMBER_B_ID=mb\nADMIN_A_ID=aa\nRBAC_PASSWORD=pw\n'
       printf 'VIEWER_ID=vw\nVIEWER_EMAIL=rbac-viewer@e2e.local\nVIEWER_TMP_ID=vt\nVIEWER_TMP_EMAIL=rbac-viewer-tmp@e2e.local\n'
+    elif grep -q /sandboxes <<<"$script"; then
+      echo "orchestrator-read" >> "$STUB_LOG"
     fi ;;
   *) echo "unexpected docker call" >&2; exit 1 ;;
 esac
@@ -191,6 +209,7 @@ requests() { grep '^request ' <<<"$LOG" | sed 's/^request //' | tr '\n' ' '; }
 reads()    { grep -c '^switches-read$' <<<"$LOG"; }
 policy_reads() { grep -c '^policy-read$' <<<"$LOG"; }
 write_policy_reads() { grep -c '^write-policy-read$' <<<"$LOG"; }
+orchestrator_reads() { grep -c '^orchestrator-read$' <<<"$LOG"; }
 
 # =============================================================================
 section "identity on, permissions on"
@@ -816,6 +835,93 @@ else
     "needs Docker and the local postgres:16-alpine image (the stack's own); never pulled here"
 fi
 
+section "a sandbox: tag is a LINT error (group 1, S20: the Kali sandbox has one mode)"
+run true true '' m
+eq "exit 2 (malformed rows: nothing runs)" "$RC" "2"
+has "names the shared row and its tag" "m.tsv:2 m-shared carries sandbox:shared" "$OUT"
+has "the per-user row too" "m.tsv:3 m-per-user carries sandbox:per_user" "$OUT"
+has "and the one a switch tag would skip" "m.tsv:4 m-id-off-per-user carries sandbox:per_user" "$OUT"
+has "and a superseded row" "m.tsv:5 m-superseded carries sandbox:shared" "$OUT"
+has "and says nothing ran" "== 4 malformed row(s); nothing was run ==" "$OUT"
+eq "no request reached the webapp" "$(requests)" ""
+eq "the switches were not read" "$(reads)" "0"
+run true true '^m-plain$' m
+eq "a row filter does not hide a tagged row of the file: still exit 2" "$RC" "2"
+eq "nothing requested" "$(requests)" ""
+run true true '' n
+eq "a tag that only contains sandbox: is no sandbox tag: exit 0" "$RC" "0"
+eq "both rows run" "$(verdict n-plain) $(verdict n-sandboxed)" "PASS PASS"
+eq "the runner never asks the orchestrator for a mode" "$(orchestrator_reads)" "0"
+
+section "p2.tsv as committed: the tunnel rows (S17's answers; the shared tunnel's are gone)"
+# The answers of S17's route code (webapp/src/app/api/users/[id]/settings/route.ts and
+# webapp/src/app/api/admin/instance-settings/route.ts), identity switch on. Each row passes its
+# answer and fails the shared tunnel's old answer (M-b: the four rows written for it failed).
+cp "$REPO_ROOT/tests/fixtures/rbac_matrix/p2.tsv" "$T/tests/fixtures/rbac_matrix/"
+MOVED='The tunnel and TrafficMind settings are instance settings: change them in the Tunneling section or the TrafficMind settings, not in your own settings.'
+OWN='Turning on a tunnel from your own Kali sandbox, or changing its settings, takes the Tunnels permission. Turning your tunnel off does not.'
+ADMIN_ONLY='The tunnel is shared by the whole instance: only an administrator, or the member who configured it, can change it.'
+printf '{"error":"%s","code":"moved_to_instance_settings","fields":["chiselServerUrl"]}' "$MOVED" > "$W/body.moved_chisel"
+printf '{"error":"%s","code":"moved_to_instance_settings","fields":["tunnelsEnabled"]}' "$MOVED" > "$W/body.moved_enable"
+printf '{"error":"%s","code":"tunnels_admin_only","fields":["chiselServerUrl"]}' "$OWN" > "$W/body.own_chisel"
+printf '{"error":"%s","code":"tunnels_admin_only","fields":["tunnelsEnabled"]}' "$OWN" > "$W/body.own_enable"
+printf '{"error":"%s","code":"tunnels_admin_only","fields":["chiselServerUrl"]}' "$ADMIN_ONLY" > "$W/body.admin_only_chisel"
+printf '{"error":"%s","code":"tunnels_admin_only","fields":["tunnelsEnabled"]}' "$ADMIN_ONLY" > "$W/body.admin_only_enable"
+printf '%s' '{"error":"GitHub Enterprise Host must be a hostname such as ghe.example.com (no scheme, port or path)"}' > "$W/body.ghe"
+printf '%s' '{"tunnelsEnabled":false,"chiselServerUrl":"","rotationConfigs":{},"canManageTunnels":false,"sharedSettingsAt":"instance"}' > "$W/body.hint_shared"
+printf '%s' '{"tunnelsEnabled":false,"chiselServerUrl":"","rotationConfigs":{},"canManageTunnels":true,"tunnelScope":"own_sandbox","sharedSettingsAt":"instance"}' > "$W/body.hint_per_user"
+printf '%s' '{"error":"Tunnels are per person: each person turns on their own, with their own credentials, in Global Settings, and it runs in their own Kali sandbox. The instance tunnel is not used.","code":"tunnels_per_person","fields":["chiselServerUrl"]}' > "$W/body.per_person"
+printf '%s' '{"error":"Only Root can change the instance security policy.","code":"root_only"}' > "$W/body.root_only"
+printf '%s' '{"error":"Unauthorized"}' > "$W/body.unauthorized"
+printf '%s' '<!DOCTYPE html><html><body>404: This page could not be found.</body></html>' > "$W/body.not_found"
+answer_row() { # row-id status body -> OUT
+  FAKE_BODY="$W/body.$3" FAKE_STATUS="$2"; export FAKE_BODY FAKE_STATUS
+  run true true "^$1\$" p2 5000
+  unset FAKE_BODY FAKE_STATUS
+}
+answer_row p2-g1-own-tunnel-hint-admin 200 hint_per_user
+eq "p2.tsv lints clean (no sandbox: tag left)" "$(grep -c '^LINT ' <<<"$OUT")" "0"
+eq "so its rows run" "$RC" "0"
+for gone in p2-instance-moved-tunnel-change-member p2-instance-moved-tunnel-enable-member \
+            p2-instance-moved-tunnel-change-admin p2-instance-moved-hint-admin; do
+  eq "the shared tunnel's row $gone is gone" "$(awk -F'\t' -v id="$gone" '$1 == id' "$REPO_ROOT/tests/fixtures/rbac_matrix/p2.tsv")" ""
+done
+while read -r row code body old_code old_body; do
+  answer_row "$row" "$code" "$body"
+  eq "$row passes S17's answer" "$(verdict "$row")" "PASS"
+  answer_row "$row" "$old_code" "$old_body"
+  eq "the shared tunnel's old answer fails $row" "$(verdict "$row")" "FAIL"
+done <<'ROWS'
+p2-g1-own-tunnel-change-member 403 own_chisel 409 moved_chisel
+p2-g1-own-tunnel-enable-member 403 own_enable 409 moved_enable
+p2-g1-own-tunnel-change-admin 400 ghe 409 moved_chisel
+p2-g1-own-tunnel-hint-admin 200 hint_per_user 200 hint_shared
+ROWS
+answer_row p2-g1-own-tunnel-change-member 403 admin_only_chisel
+eq "mutation: the instance tunnel's refusal (not the own sandbox's) fails the member's change row" \
+  "$(verdict p2-g1-own-tunnel-change-member)" "FAIL"
+answer_row p2-g1-own-tunnel-enable-member 403 admin_only_enable
+eq "mutation: the same for the member's enable row" "$(verdict p2-g1-own-tunnel-enable-member)" "FAIL"
+answer_row p2-g1-instance-tunnel-per-person-admin 409 per_person
+eq "the instance tunnel group refuses a change, 409 tunnels_per_person" \
+  "$(verdict p2-g1-instance-tunnel-per-person-admin)" "PASS"
+answer_row p2-g1-instance-tunnel-per-person-admin 403 root_only
+eq "mutation: the change passing the tunnel group (stopped later at Root's policy) fails the row" \
+  "$(verdict p2-g1-instance-tunnel-per-person-admin)" "FAIL"
+answer_row p2-g1-instance-tunnel-per-person-admin 200 hint_per_user
+eq "mutation: a route that writes the change (200) fails the row" "$(verdict p2-g1-instance-tunnel-per-person-admin)" "FAIL"
+answer_row p2-g1-instance-tunnel-per-person-admin 409 moved_chisel
+eq "mutation: a 409 that is not the per-person refusal fails the row" "$(verdict p2-g1-instance-tunnel-per-person-admin)" "FAIL"
+eq "the row's body keeps a second stop at Root's policy for a route that lets the change through" \
+  "$(awk -F'\t' '$1 == "p2-g1-instance-tunnel-per-person-admin" {print $6}' "$REPO_ROOT/tests/fixtures/rbac_matrix/p2.tsv")" \
+  '{"chiselServerUrl":"http://127.0.0.1:9","passwordMinLength":71}'
+answer_row p2-tunnel-sync-no-bearer 401 unauthorized
+eq "the gone sync route: an anonymous POST is the middleware's 401" "$(verdict p2-tunnel-sync-no-bearer)" "PASS"
+answer_row p2-tunnel-sync-session-no-bearer 404 not_found
+eq "the gone sync route: a signed-in POST finds no route (404)" "$(verdict p2-tunnel-sync-session-no-bearer)" "PASS"
+answer_row p2-tunnel-sync-session-no-bearer 401 unauthorized
+eq "mutation: the deleted route's own bearer refusal (401) fails the signed-in row" "$(verdict p2-tunnel-sync-session-no-bearer)" "FAIL"
+
 section "the runner documents the tag"
 HEADER="$(sed -n '1,/^set -uo pipefail/p' "$RUNNER")"
 has "permissions:on | permissions:off in the row format" "permissions:on | permissions:off" "$HEADER"
@@ -831,6 +937,8 @@ has "sharingwriteswitch:on | sharingwriteswitch:off in the row format" "sharingw
 has "and the two refusals it splits" "\`write_sharing_off\` with the switch off and \`above_max_level\`" "$HEADER"
 has "governance:on | governance:off in the row format" "governance:on | governance:off" "$HEADER"
 has "and its switch" "RBAC_GOVERNANCE_ENABLED" "$HEADER"
+has "a sandbox: tag is a LINT error" "a sandbox: tag is a LINT error" "$HEADER"
+eq "and no mode is read from the orchestrator" "$(grep -c 'sandboxes/mode' <<<"$HEADER")" "0"
 
 echo
 echo "-----------------------------------------"

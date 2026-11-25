@@ -2,7 +2,10 @@
 Docker container lifecycle management for recon processes
 """
 import asyncio
+import collections.abc
 import functools
+import inspect
+import ipaddress
 import json
 import logging
 import threading
@@ -15,7 +18,7 @@ import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Iterable, Optional
 
 import docker
 from docker.errors import NotFound, APIError
@@ -23,6 +26,7 @@ from docker.errors import NotFound, APIError
 import resource_governor as rg
 from admission_ledger import ReservationLedger, AdmissionError
 from ip_denylist import classify_host
+from sandbox_contract import GUEST_SYSCTLS, RESERVATION_PREFIX, SUBNET_POOL
 
 # The TruffleHog source registry lives with the scanner and is mounted in
 # (compose: ./scanners/trufflehog_scan:/app/trufflehog_scan). Imported through a
@@ -51,6 +55,12 @@ logger = logging.getLogger(__name__)
 
 # ANSI escape code pattern for stripping terminal colors from logs
 ANSI_ESCAPE = re.compile(r'\x1b\[[0-9;]*m|\033\[[0-9;]*m')
+
+
+def _discard(container, *, force: bool = False) -> None:
+    """Remove a scan container together with its anonymous volumes. The recon image declares
+    VOLUME /data and /var/run/docker.sock, so a plain remove left two volumes behind per run."""
+    container.remove(force=force, v=True)
 
 
 def _env_unset_if_blank(name: str, default: str) -> str:
@@ -456,6 +466,22 @@ def _env_size(name: str, default: str) -> str:
     return raw if raw else default
 
 
+def _with_sandbox_pool(blocked_ips: str) -> str:
+    """The capture proxy's always-on denylist with the per-user Kali sandbox pool
+    appended (TD-24). The proxy joins every sandbox network, so without the pool
+    one person's sandbox could have it carry a request to another's. Operator
+    entries are kept as given and in order; the pool is never added twice."""
+    entries = [e.strip() for e in (blocked_ips or "").split(",") if e.strip()]
+    pool = ipaddress.ip_network(SUBNET_POOL)
+    for entry in entries:
+        try:
+            if ipaddress.ip_network(entry, strict=False) == pool:
+                return ",".join(entries)
+        except ValueError:
+            continue
+    return ",".join(entries + [SUBNET_POOL])
+
+
 def _positive_int(value) -> Optional[int]:
     """`value` as a positive int, or None when absent, blank, malformed or not positive."""
     if isinstance(value, bool):
@@ -546,6 +572,10 @@ class ContainerManager:
         # Set by api.py after construction: the on-demand Ollama judge manager
         # (Step 1). The AI attack lifecycle ref-counts a judge lease through it.
         self.local_llm_manager = None
+        # Set by api.py to the sandbox manager's attach_capture_proxy_everywhere:
+        # a proxy this class (re)starts is a new container, on no per-user Kali
+        # sandbox network yet. May return an awaitable.
+        self.on_capture_proxy_started = lambda: None
         # Set by api.py after construction: the AUTO-DETECTED host path of graph_db
         # (from the orchestrator's own /app/graph_db mount). Empty means it could
         # not be detected -- see _graph_db_mount for what happens then.
@@ -713,6 +743,28 @@ class ContainerManager:
                     f"pool {self.ledger.scan_pool() // (1024**2)} MB)")
         return key
 
+    def extra_reservation_keys(self) -> Iterable[str]:
+        """Reservation keys owned outside this class (per-user Kali sandboxes): the
+        sandbox manager answers for them, so the 30 s reaper never frees a live one.
+        The orchestrator replaces this on the instance with the sandbox manager's
+        reservation_keys once that manager runs; until then no one holds such a key."""
+        return set()
+
+    def _sandbox_reservation_keys(self) -> set:
+        """The hook's answer, cut to sandbox keys: it vouches for sandboxes only,
+        so a scan key in it never keeps a finished scan's bytes. An answer that is
+        not a collection of keys raises (the caller then keeps every sandbox key):
+        a bare string would be read as its characters, an async hook as a
+        coroutine that keeps nothing."""
+        answer = self.extra_reservation_keys()
+        if inspect.isawaitable(answer):
+            if inspect.iscoroutine(answer):
+                answer.close()
+            raise TypeError("the reservation hook must be synchronous")
+        if isinstance(answer, (str, bytes)) or not isinstance(answer, collections.abc.Iterable):
+            raise TypeError("the reservation hook must return a collection of keys")
+        return {k for k in answer if isinstance(k, str) and k.startswith(RESERVATION_PREFIX)}
+
     def _active_scan_keys(self) -> set:
         """All reservation keys whose scan is genuinely still RUNNING/STARTING.
         Used by reconcile() to release reservations for finished/dead scans without
@@ -757,6 +809,14 @@ class ContainerManager:
         # until the sandbox is stopped/reaped, or the reaper would free live bytes.
         for job_id in self.codefix_sandboxes:
             keys.add(self._scan_key("codefix", job_id))
+        try:
+            keys |= self._sandbox_reservation_keys()
+        except Exception as e:  # noqa: BLE001
+            # Keep every sandbox reservation the hook could not vouch for (over-count,
+            # never under-count) and still let the reaper free finished scans' bytes.
+            logger.warning(f"[governor] extra reservation keys unavailable, keeping every "
+                           f"sandbox reservation this pass: {type(e).__name__}")
+            keys |= self.ledger.sandbox_keys()
         return keys
 
     def active_scan_projects(self) -> set:
@@ -1161,7 +1221,7 @@ class ContainerManager:
                         # Auto-cleanup: remove finished container
                         self._remove_trufflehog_stages(self._run_id_of(container))
                         try:
-                            container.remove()
+                            _discard(container)
                             logger.info(f"Auto-removed finished container for project {project_id}")
                         except Exception as e:
                             logger.warning(f"Failed to auto-remove container: {e}")
@@ -1270,7 +1330,7 @@ class ContainerManager:
         # By id, not by name: the name may already belong to a newer container.
         if leftover is not None:
             try:
-                leftover.remove(force=True)
+                _discard(leftover, force=True)
                 logger.info(f"Removed old container {container_name}")
             except NotFound:
                 pass
@@ -1384,8 +1444,8 @@ class ContainerManager:
                     # Mount /tmp for Docker-in-Docker temp files (avoids spaces in paths)
                     "/tmp/redamon": {"bind": "/tmp/redamon", "mode": "rw"},
                     # JS Recon shared volumes with webapp
-                    "redamon_js_recon_uploads": {"bind": "/data/js-recon-uploads", "mode": "ro"},
-                    "redamon_js_recon_custom": {"bind": "/data/js-recon-custom", "mode": "ro"},
+                    self._compose_object("js_recon_uploads"): {"bind": "/data/js-recon-uploads", "mode": "ro"},
+                    self._compose_object("js_recon_custom"): {"bind": "/data/js-recon-custom", "mode": "ro"},
                     # Official nuclei-templates volume (read-only) for the AI tag
                     # selector to read TEMPLATES-STATS.json. Populated by
                     # ensure_templates_volume() before any nuclei pass.
@@ -1485,7 +1545,7 @@ class ContainerManager:
         # Best-effort: a leftover container with this name blocks the run.
         try:
             old = self.client.containers.get(name)
-            old.remove(force=True)
+            _discard(old, force=True)
         except NotFound:
             pass
         except APIError as e:
@@ -1571,7 +1631,7 @@ class ContainerManager:
         if entry:
             try:
                 container = self.client.containers.get(entry["container_id"])
-                container.remove(force=True)
+                _discard(container, force=True)
                 logger.info(f"[codefix] removed sandbox for job {job_id}")
             except NotFound:
                 pass
@@ -1699,7 +1759,7 @@ class ContainerManager:
                 # A frozen process cannot take the kill a forced remove sends.
                 if container.status == "paused":
                     container.unpause()
-                container.remove(force=True)
+                _discard(container, force=True)
                 removed += 1
                 logger.info(f"Removed tool container {container.name} of run {run_id}")
             except NotFound:
@@ -1952,10 +2012,22 @@ class ContainerManager:
     # =======================================================================
     CAPTURE_PROXY_NAME = "redamon-capture-proxy"
     TRAFFIC_INGEST_NAME = "redamon-traffic-ingest"
-    # Compose network names: `redamon` is explicitly named "redamon-network";
-    # `pentest-net` has no explicit name so Compose derives "redamon_pentest-net".
-    _CAPTURE_PROXY_NETWORK = "redamon_pentest-net"
+    # `redamon` is explicitly named "redamon-network"; `pentest-net` has no
+    # explicit name, so compose names it "<project>_pentest-net" after the stack's
+    # compose project (api.py sets compose_project from the orchestrator's own
+    # labels). A clone under another project name has no "redamon_pentest-net", or
+    # worse, another stack's. The js_recon volumes are named the same way.
+    _PENTEST_NETWORK_KEY = "pentest-net"
+    _DEFAULT_COMPOSE_PROJECT = "redamon"
     _CAPTURE_INGEST_NETWORK = "redamon-network"
+    compose_project: Optional[str] = None
+
+    def _compose_object(self, key: str) -> str:
+        """The name compose gives a network or volume of this stack declared with no `name:`."""
+        return f"{self.compose_project or self._DEFAULT_COMPOSE_PROJECT}_{key}"
+
+    def _capture_proxy_network(self) -> str:
+        return self._compose_object(self._PENTEST_NETWORK_KEY)
 
     def _capture_image(self) -> str:
         return os.environ.get("CAPTURE_PROXY_IMAGE", "redamon-capture-proxy:latest")
@@ -2020,7 +2092,7 @@ class ContainerManager:
 
     def _remove_container_if_exists(self, name: str) -> None:
         try:
-            self.client.containers.get(name).remove(force=True)
+            _discard(self.client.containers.get(name), force=True)
         except NotFound:
             pass
         except APIError as e:
@@ -2080,7 +2152,7 @@ class ContainerManager:
         image = self._capture_image()  # trusted env only, never from `config`
         port = int(config.get("port") or self._capture_port())
         redact = self._bool_env(config.get("redactSecrets"), os.environ.get("CAPTURE_PROXY_REDACT_SECRETS", "true"))
-        blocked_ips = config.get("blockedIps") or os.environ.get("CAPTURE_BLOCKED_IPS", "")
+        blocked_ips = _with_sandbox_pool(config.get("blockedIps") or os.environ.get("CAPTURE_BLOCKED_IPS", ""))
         # NOTE: the egress-guard toggles + body-storage policy are NO LONGER injected
         # as proxy env. They are the DB single-source-of-truth (Global Settings >
         # TrafficMind), materialised to the shared /spool/.capture-config.json by
@@ -2105,10 +2177,16 @@ class ContainerManager:
             name=self.CAPTURE_PROXY_NAME,
             detach=True,
             command=["mitmdump", "--quiet", "--set", "confdir=/ca",
-                     "--set", "connection_strategy=lazy",  # so the IP pin applies (§20.5)
+                     # lazy: nothing is dialed for a request the guard refuses; the
+                     # IP pin itself is set in server_connect on every dial (§20.5).
+                     "--set", "connection_strategy=lazy",
                      "--set", "stream_large_bodies=5m",
+                     # The egress guard runs on HTTP requests only: after a CONNECT, a
+                     # stream that is not HTTP would be relayed raw to any address, a
+                     # per-user Kali sandbox's included (the proxy is on every one).
+                     "--set", "rawtcp=false",
                      "--listen-port", str(port), "-s", "/app/capture_addon.py"],
-            network=self._CAPTURE_PROXY_NETWORK,
+            network=self._capture_proxy_network(),
             # Loopback publish so host-net recon containers reach 127.0.0.1:<port>.
             ports={f"{port}/tcp": ("127.0.0.1", port)},
             environment={
@@ -2127,8 +2205,12 @@ class ContainerManager:
             pids_limit=256,
             restart_policy={"Name": "unless-stopped"},
             labels={"redamon.capture": "proxy"},
+            # It joins every per-user Kali sandbox network: no forwarding between
+            # them (TD-23). The sandbox manager attaches no proxy without it.
+            sysctls=dict(GUEST_SYSCTLS),
         )
         self._capture_started_port = port
+        await self._capture_proxy_started()
 
         # --- Ingest: redamon-network, scoped INSERT-only role + verify keys ---
         self.client.containers.run(
@@ -2172,13 +2254,28 @@ class ContainerManager:
         logger.info(f"[capture] started proxy + ingest (port {port})")
         return await self.capture_proxy_status()
 
+    async def _capture_proxy_started(self) -> None:
+        """Hand a freshly started proxy to the sandbox manager, which attaches it to
+        every live per-user sandbox network (TD-25). Never fails the capture
+        toggle: the sandbox idle check attaches it within a minute anyway."""
+        hook = getattr(self, "on_capture_proxy_started", None)
+        if hook is None:
+            return
+        try:
+            result = hook()
+            if inspect.isawaitable(result):
+                await result
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[capture] attaching the proxy to the Kali sandbox networks failed: "
+                           f"{type(e).__name__}; the sandbox idle check retries")
+
     async def stop_capture_proxy(self) -> dict:
         """Stop + remove the capture proxy and ingest (toggle off)."""
         for name in (self.CAPTURE_PROXY_NAME, self.TRAFFIC_INGEST_NAME):
             try:
                 c = self.client.containers.get(name)
                 c.stop(timeout=10)
-                c.remove()
+                _discard(c)
             except NotFound:
                 pass
             except Exception as e:
@@ -2556,7 +2653,7 @@ class ContainerManager:
                     state.completed_at = datetime.now(timezone.utc)
                 self._remove_trufflehog_stages(state.run_id)
                 try:
-                    container.remove()
+                    _discard(container)
                     logger.info(f"Auto-removed partial recon container for {state.project_id}/{state.run_id}")
                 except Exception as e:
                     logger.warning(f"Failed to auto-remove partial container: {e}")
@@ -2771,8 +2868,8 @@ class ContainerManager:
                     self.sca_intel_volume: {"bind": "/sca-intel", "mode": "ro"},
                     "/tmp/redamon": {"bind": "/tmp/redamon", "mode": "rw"},
                     # JS Recon shared volumes with webapp (uploaded files + custom patterns)
-                    "redamon_js_recon_uploads": {"bind": "/data/js-recon-uploads", "mode": "ro"},
-                    "redamon_js_recon_custom": {"bind": "/data/js-recon-custom", "mode": "ro"},
+                    self._compose_object("js_recon_uploads"): {"bind": "/data/js-recon-uploads", "mode": "ro"},
+                    self._compose_object("js_recon_custom"): {"bind": "/data/js-recon-custom", "mode": "ro"},
                     # Official nuclei-templates volume (read-only) for the AI tag
                     # selector to read TEMPLATES-STATS.json.
                     "nuclei-templates": {"bind": "/opt/nuclei-templates-official", "mode": "ro"},
@@ -2966,7 +3063,7 @@ class ContainerManager:
                 # Job ended on its own -> free the shared judge lease.
                 self._release_llm(state)
                 try:
-                    container.remove()
+                    _discard(container)
                     logger.info(f"Auto-removed AI attack container for {state.project_id}/{state.run_id}")
                 except Exception as e:
                     logger.warning(f"Failed to auto-remove AI attack container: {e}")
@@ -3158,7 +3255,7 @@ class ContainerManager:
                 def _kill(cid: str):
                     container = self.client.containers.get(cid)
                     container.stop(timeout=timeout)
-                    container.remove()
+                    _discard(container)
                 try:
                     await asyncio.to_thread(_kill, state.container_id)
                     state.status = AiAttackSurfaceStatus.IDLE
@@ -3338,7 +3435,7 @@ class ContainerManager:
                             state.completed_at = datetime.now(timezone.utc)
 
                         try:
-                            container.remove()
+                            _discard(container)
                             logger.info(f"Auto-removed finished GVM container for project {project_id}")
                         except Exception as e:
                             logger.warning(f"Failed to auto-remove GVM container: {e}")
@@ -3402,7 +3499,7 @@ class ContainerManager:
         container_name = self._get_gvm_container_name(project_id)
         try:
             old_container = self.client.containers.get(container_name)
-            old_container.remove(force=True)
+            _discard(old_container, force=True)
             logger.info(f"Removed old GVM container {container_name}")
         except NotFound:
             pass
@@ -3579,7 +3676,7 @@ class ContainerManager:
                 # each target is the only copy of what it found.
                 if claim.ingest:
                     self._ingest_gvm_after_stop(state, container)
-                container.remove()
+                _discard(container)
             try:
                 # Off the event loop: the stop waits out the grace period and the
                 # backstop may write a whole run.
@@ -3824,7 +3921,7 @@ class ContainerManager:
                         self._ingest_github_hunt(state)
 
                         try:
-                            container.remove()
+                            _discard(container)
                             logger.info(f"Auto-removed finished GitHub hunt container for project {project_id}")
                         except Exception as e:
                             logger.warning(f"Failed to auto-remove GitHub hunt container: {e}")
@@ -3883,7 +3980,7 @@ class ContainerManager:
         container_name = self._get_github_hunt_container_name(project_id)
         try:
             old_container = self.client.containers.get(container_name)
-            old_container.remove(force=True)
+            _discard(old_container, force=True)
             logger.info(f"Removed old GitHub hunt container {container_name}")
         except NotFound:
             pass
@@ -4028,7 +4125,7 @@ class ContainerManager:
                 # last chance to keep the run's findings.
                 if ingest:
                     self._ingest_github_hunt(state)
-                container.remove()
+                _discard(container)
                 state.status = GithubHuntStatus.IDLE
                 state.completed_at = datetime.now(timezone.utc)
                 logger.info(f"Stopped GitHub hunt container for project {project_id}")
@@ -4398,7 +4495,7 @@ class ContainerManager:
                         self._ingest_trufflehog(state)
 
                         try:
-                            container.remove()
+                            _discard(container)
                             state.container_removed = True
                             logger.info(
                                 f"Auto-removed finished TruffleHog container for {project_id}/{source}")
@@ -4541,7 +4638,7 @@ class ContainerManager:
         finally:
             if container is not None:
                 try:
-                    container.remove(force=True)
+                    _discard(container, force=True)
                 except APIError:
                     pass
 
@@ -4644,7 +4741,7 @@ class ContainerManager:
         finally:
             if container is not None:
                 try:
-                    container.remove(force=True)
+                    _discard(container, force=True)
                 except APIError:
                     pass
 
@@ -4843,7 +4940,7 @@ exit $RC
             self._osv_db_refresh_lock.release()
             if container is not None:
                 try:
-                    container.remove(force=True)
+                    _discard(container, force=True)
                 except APIError:
                     pass
 
@@ -4999,7 +5096,7 @@ exit $RC
             self._sca_intel_refresh_lock.release()
             if container is not None:
                 try:
-                    container.remove(force=True)
+                    _discard(container, force=True)
                 except APIError:
                     pass
 
@@ -5059,7 +5156,7 @@ exit $RC
         container_name = self._get_supply_chain_container_name(project_id)
         try:
             old = self.client.containers.get(container_name)
-            old.remove(force=True)
+            _discard(old, force=True)
         except NotFound:
             pass
 
@@ -5182,7 +5279,7 @@ exit $RC
                             state.error = _exit_reason_of(container)
                         state.completed_at = datetime.now(timezone.utc)
                         try:
-                            container.remove()
+                            _discard(container)
                         except Exception as e:
                             logger.warning(f"Failed to auto-remove Supply-Chain container: {e}")
                 except NotFound:
@@ -5231,7 +5328,7 @@ exit $RC
                 if container.status == "paused":
                     container.unpause()
                 container.stop(timeout=timeout)
-                container.remove()
+                _discard(container)
             except NotFound:
                 pass
             except Exception as e:
@@ -5440,7 +5537,7 @@ exit $RC
 
         container_name = self._get_trufflehog_container_name(project_id, source)
         try:
-            self.client.containers.get(container_name).remove(force=True)
+            _discard(self.client.containers.get(container_name), force=True)
             logger.info(f"Removed old TruffleHog container {container_name}")
         except NotFound:
             pass
@@ -5777,7 +5874,7 @@ exit $RC
                     if container.status == "paused":
                         container.unpause()
                     container.stop(timeout=timeout)
-                    container.remove()
+                    _discard(container)
                 try:
                     await asyncio.to_thread(_kill, state.container_id)
                     state.status = TrufflehogStatus.IDLE

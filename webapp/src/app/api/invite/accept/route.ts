@@ -23,6 +23,7 @@ import {
   privateJson,
   withInviteErrors,
 } from '@/lib/authz/invites'
+import { EXPIRED_COOKIE } from '@/lib/expiredCookie'
 
 /**
  * POST /api/invite/accept {password} (step 2.9, ID-14, ID-15): the person the invite cookie's
@@ -73,6 +74,6 @@ export const POST = withInviteErrors('invite accept', 'Could not set the passwor
   setLoginCookie(res, request, token, maxAge)
   clearInviteCookie(res, request)
   // A previous admin session's act-as cookie means nothing for this account.
-  if (request.cookies.get(ACT_AS_COOKIE_NAME)) res.cookies.set(ACT_AS_COOKIE_NAME, '', { path: '/', maxAge: 0 })
+  if (request.cookies.get(ACT_AS_COOKIE_NAME)) res.cookies.set(ACT_AS_COOKIE_NAME, '', { path: '/', ...EXPIRED_COOKIE })
   return res
 })

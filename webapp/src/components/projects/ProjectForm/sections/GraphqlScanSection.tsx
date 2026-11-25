@@ -19,8 +19,8 @@ interface GraphqlScanSectionProps {
 
 export function GraphqlScanSection({ data, updateField, projectId, mode, onRun }: GraphqlScanSectionProps) {
   const [isOpen, setIsOpen] = useState(true)
-  const enabled = (data as any).graphqlSecurityEnabled ?? false
-  const authType = (data as any).graphqlAuthType ?? ''
+  const enabled = data.graphqlSecurityEnabled ?? false
+  const authType = data.graphqlAuthType ?? ''
 
   return (
     <div className={`${styles.section} ${styles.formSkin}`}>
@@ -46,7 +46,7 @@ export function GraphqlScanSection({ data, updateField, projectId, mode, onRun }
           <div onClick={(e) => e.stopPropagation()}>
             <Toggle
               checked={enabled}
-              onChange={(checked) => updateField('graphqlSecurityEnabled' as any, checked)}
+              onChange={(checked) => updateField('graphqlSecurityEnabled', checked)}
             />
           </div>
           <ChevronDown
@@ -76,8 +76,8 @@ export function GraphqlScanSection({ data, updateField, projectId, mode, onRun }
                     <p className={styles.toggleDescription}>Probe <code>__schema</code> to detect exposed introspection (passive, low traffic).</p>
                   </div>
                   <Toggle
-                    checked={(data as any).graphqlIntrospectionTest ?? true}
-                    onChange={(checked) => updateField('graphqlIntrospectionTest' as any, checked)}
+                    checked={data.graphqlIntrospectionTest ?? true}
+                    onChange={(checked) => updateField('graphqlIntrospectionTest', checked)}
                   />
                 </div>
                 <div className={styles.toggleRow}>
@@ -86,8 +86,8 @@ export function GraphqlScanSection({ data, updateField, projectId, mode, onRun }
                     <p className={styles.toggleDescription}>Reject invalid / self-signed TLS certs on target endpoints.</p>
                   </div>
                   <Toggle
-                    checked={(data as any).graphqlVerifySsl ?? true}
-                    onChange={(checked) => updateField('graphqlVerifySsl' as any, checked)}
+                    checked={data.graphqlVerifySsl ?? true}
+                    onChange={(checked) => updateField('graphqlVerifySsl', checked)}
                   />
                 </div>
               </div>
@@ -101,8 +101,8 @@ export function GraphqlScanSection({ data, updateField, projectId, mode, onRun }
                     <input
                       type="number"
                       className="textInput"
-                      value={(data as any).graphqlTimeout ?? 30}
-                      onChange={(e) => updateField('graphqlTimeout' as any, parseInt(e.target.value) || 30)}
+                      value={data.graphqlTimeout ?? 30}
+                      onChange={(e) => updateField('graphqlTimeout', parseInt(e.target.value) || 30)}
                       min={1}
                       max={600}
                     />
@@ -113,11 +113,11 @@ export function GraphqlScanSection({ data, updateField, projectId, mode, onRun }
                     <input
                       type="number"
                       className="textInput"
-                      value={(data as any).graphqlRateLimit ?? 10}
+                      value={data.graphqlRateLimit ?? 10}
                       onChange={(e) => {
                         // Not `|| 10`: 0 is a real value here (unlimited, per the hint).
                         const n = parseInt(e.target.value)
-                        updateField('graphqlRateLimit' as any, Number.isNaN(n) ? 10 : n)
+                        updateField('graphqlRateLimit', Number.isNaN(n) ? 10 : n)
                       }}
                       min={0}
                       max={100}
@@ -131,8 +131,8 @@ export function GraphqlScanSection({ data, updateField, projectId, mode, onRun }
                     <input
                       type="number"
                       className="textInput"
-                      value={(data as any).graphqlConcurrency ?? 5}
-                      onChange={(e) => updateField('graphqlConcurrency' as any, parseInt(e.target.value) || 5)}
+                      value={data.graphqlConcurrency ?? 5}
+                      onChange={(e) => updateField('graphqlConcurrency', parseInt(e.target.value) || 5)}
                       min={1}
                       max={20}
                     />
@@ -143,8 +143,8 @@ export function GraphqlScanSection({ data, updateField, projectId, mode, onRun }
                     <input
                       type="number"
                       className="textInput"
-                      value={(data as any).graphqlDepthLimit ?? 10}
-                      onChange={(e) => updateField('graphqlDepthLimit' as any, parseInt(e.target.value) || 10)}
+                      value={data.graphqlDepthLimit ?? 10}
+                      onChange={(e) => updateField('graphqlDepthLimit', parseInt(e.target.value) || 10)}
                       min={1}
                       max={50}
                     />
@@ -157,8 +157,8 @@ export function GraphqlScanSection({ data, updateField, projectId, mode, onRun }
                     <input
                       type="number"
                       className="textInput"
-                      value={(data as any).graphqlRetryCount ?? 3}
-                      onChange={(e) => updateField('graphqlRetryCount' as any, parseInt(e.target.value) || 3)}
+                      value={data.graphqlRetryCount ?? 3}
+                      onChange={(e) => updateField('graphqlRetryCount', parseInt(e.target.value) || 3)}
                       min={0}
                       max={10}
                     />
@@ -170,8 +170,8 @@ export function GraphqlScanSection({ data, updateField, projectId, mode, onRun }
                       type="number"
                       step="0.1"
                       className="textInput"
-                      value={(data as any).graphqlRetryBackoff ?? 2.0}
-                      onChange={(e) => updateField('graphqlRetryBackoff' as any, parseFloat(e.target.value) || 2.0)}
+                      value={data.graphqlRetryBackoff ?? 2.0}
+                      onChange={(e) => updateField('graphqlRetryBackoff', parseFloat(e.target.value) || 2.0)}
                       min={0}
                     />
                     <span className={styles.fieldHint}>Exponential backoff base between retries</span>
@@ -188,8 +188,8 @@ export function GraphqlScanSection({ data, updateField, projectId, mode, onRun }
                     className="textInput"
                     rows={3}
                     placeholder="https://api.target.com/graphql, https://api.target.com/v1/graphql"
-                    value={(data as any).graphqlEndpoints ?? ''}
-                    onChange={(e) => updateField('graphqlEndpoints' as any, e.target.value)}
+                    value={data.graphqlEndpoints ?? ''}
+                    onChange={(e) => updateField('graphqlEndpoints', e.target.value)}
                   />
                   <span className={styles.fieldHint}>
                     Comma-separated GraphQL endpoint URLs. Leave empty to auto-discover from crawled BaseURLs/Endpoints (recommended).
@@ -206,7 +206,7 @@ export function GraphqlScanSection({ data, updateField, projectId, mode, onRun }
                     <select
                       className="textInput"
                       value={authType}
-                      onChange={(e) => updateField('graphqlAuthType' as any, e.target.value)}
+                      onChange={(e) => updateField('graphqlAuthType', e.target.value)}
                     >
                       <option value="">None</option>
                       <option value="bearer">Bearer Token</option>
@@ -222,8 +222,8 @@ export function GraphqlScanSection({ data, updateField, projectId, mode, onRun }
                       <input
                         type="password"
                         className="textInput"
-                        value={(data as any).graphqlAuthValue ?? ''}
-                        onChange={(e) => updateField('graphqlAuthValue' as any, e.target.value)}
+                        value={data.graphqlAuthValue ?? ''}
+                        onChange={(e) => updateField('graphqlAuthValue', e.target.value)}
                         placeholder={
                           authType === 'bearer' ? 'eyJhbGci...' :
                           authType === 'basic' ? 'user:password' :
@@ -245,8 +245,8 @@ export function GraphqlScanSection({ data, updateField, projectId, mode, onRun }
                       <input
                         type="text"
                         className="textInput"
-                        value={(data as any).graphqlAuthHeader ?? ''}
-                        onChange={(e) => updateField('graphqlAuthHeader' as any, e.target.value)}
+                        value={data.graphqlAuthHeader ?? ''}
+                        onChange={(e) => updateField('graphqlAuthHeader', e.target.value)}
                         placeholder="X-Api-Key"
                       />
                       <span className={styles.fieldHint}>Header name for the custom auth value above</span>
@@ -272,7 +272,7 @@ interface GraphqlCopSubSectionProps {
 
 function GraphqlCopSubSection({ data, updateField }: GraphqlCopSubSectionProps) {
   const [expanded, setExpanded] = useState(false)
-  const copEnabled = (data as any).graphqlCopEnabled ?? false
+  const copEnabled = data.graphqlCopEnabled ?? false
 
   return (
     <div className={styles.subSection}>
@@ -310,7 +310,7 @@ function GraphqlCopSubSection({ data, updateField }: GraphqlCopSubSectionProps) 
             </div>
             <Toggle
               checked={copEnabled}
-              onChange={(checked) => updateField('graphqlCopEnabled' as any, checked)}
+              onChange={(checked) => updateField('graphqlCopEnabled', checked)}
             />
           </div>
 
@@ -322,8 +322,8 @@ function GraphqlCopSubSection({ data, updateField }: GraphqlCopSubSectionProps) 
                   <input
                     type="number"
                     className="textInput"
-                    value={(data as any).graphqlCopTimeout ?? 120}
-                    onChange={(e) => updateField('graphqlCopTimeout' as any, parseInt(e.target.value) || 120)}
+                    value={data.graphqlCopTimeout ?? 120}
+                    onChange={(e) => updateField('graphqlCopTimeout', parseInt(e.target.value) || 120)}
                     min={10}
                     max={600}
                   />
@@ -337,8 +337,8 @@ function GraphqlCopSubSection({ data, updateField }: GraphqlCopSubSectionProps) 
                   <p className={styles.toggleDescription}>Run checks even if endpoint doesn&apos;t look GraphQL-like (graphql-cop&apos;s <code>-f</code> flag).</p>
                 </div>
                 <Toggle
-                  checked={(data as any).graphqlCopForceScan ?? false}
-                  onChange={(checked) => updateField('graphqlCopForceScan' as any, checked)}
+                  checked={data.graphqlCopForceScan ?? false}
+                  onChange={(checked) => updateField('graphqlCopForceScan', checked)}
                 />
               </div>
               <div className={styles.toggleRow}>
@@ -347,8 +347,8 @@ function GraphqlCopSubSection({ data, updateField }: GraphqlCopSubSectionProps) 
                   <p className={styles.toggleDescription}>Add <code>X-GraphQL-Cop-Test</code> header per request (graphql-cop&apos;s <code>-d</code> flag).</p>
                 </div>
                 <Toggle
-                  checked={(data as any).graphqlCopDebug ?? false}
-                  onChange={(checked) => updateField('graphqlCopDebug' as any, checked)}
+                  checked={data.graphqlCopDebug ?? false}
+                  onChange={(checked) => updateField('graphqlCopDebug', checked)}
                 />
               </div>
 
@@ -369,8 +369,8 @@ function GraphqlCopSubSection({ data, updateField }: GraphqlCopSubSectionProps) 
                   <p className={styles.toggleDescription}>&quot;Did you mean X?&quot; errors leak schema fields even with introspection off.</p>
                 </div>
                 <Toggle
-                  checked={(data as any).graphqlCopTestFieldSuggestions ?? true}
-                  onChange={(checked) => updateField('graphqlCopTestFieldSuggestions' as any, checked)}
+                  checked={data.graphqlCopTestFieldSuggestions ?? true}
+                  onChange={(checked) => updateField('graphqlCopTestFieldSuggestions', checked)}
                 />
               </div>
               <div className={styles.toggleRow}>
@@ -379,8 +379,8 @@ function GraphqlCopSubSection({ data, updateField }: GraphqlCopSubSectionProps) 
                   <p className={styles.toggleDescription}>Off by default - native scanner above already tests this. Enable for dedup validation.</p>
                 </div>
                 <Toggle
-                  checked={(data as any).graphqlCopTestIntrospection ?? false}
-                  onChange={(checked) => updateField('graphqlCopTestIntrospection' as any, checked)}
+                  checked={data.graphqlCopTestIntrospection ?? false}
+                  onChange={(checked) => updateField('graphqlCopTestIntrospection', checked)}
                 />
               </div>
               <div className={styles.toggleRow}>
@@ -389,8 +389,8 @@ function GraphqlCopSubSection({ data, updateField }: GraphqlCopSubSectionProps) 
                   <p className={styles.toggleDescription}>Detect exposed GraphiQL/Playground UI.</p>
                 </div>
                 <Toggle
-                  checked={(data as any).graphqlCopTestGraphiql ?? true}
-                  onChange={(checked) => updateField('graphqlCopTestGraphiql' as any, checked)}
+                  checked={data.graphqlCopTestGraphiql ?? true}
+                  onChange={(checked) => updateField('graphqlCopTestGraphiql', checked)}
                 />
               </div>
               <div className={styles.toggleRow}>
@@ -399,8 +399,8 @@ function GraphqlCopSubSection({ data, updateField }: GraphqlCopSubSectionProps) 
                   <p className={styles.toggleDescription}>Queries allowed via GET enable CSRF attacks.</p>
                 </div>
                 <Toggle
-                  checked={(data as any).graphqlCopTestGetMethod ?? true}
-                  onChange={(checked) => updateField('graphqlCopTestGetMethod' as any, checked)}
+                  checked={data.graphqlCopTestGetMethod ?? true}
+                  onChange={(checked) => updateField('graphqlCopTestGetMethod', checked)}
                 />
               </div>
               <div className={styles.toggleRow}>
@@ -409,8 +409,8 @@ function GraphqlCopSubSection({ data, updateField }: GraphqlCopSubSectionProps) 
                   <p className={styles.toggleDescription}>Mutations executable via GET requests.</p>
                 </div>
                 <Toggle
-                  checked={(data as any).graphqlCopTestGetMutation ?? true}
-                  onChange={(checked) => updateField('graphqlCopTestGetMutation' as any, checked)}
+                  checked={data.graphqlCopTestGetMutation ?? true}
+                  onChange={(checked) => updateField('graphqlCopTestGetMutation', checked)}
                 />
               </div>
               <div className={styles.toggleRow}>
@@ -419,8 +419,8 @@ function GraphqlCopSubSection({ data, updateField }: GraphqlCopSubSectionProps) 
                   <p className={styles.toggleDescription}>GraphQL accepts <code>application/x-www-form-urlencoded</code> POSTs.</p>
                 </div>
                 <Toggle
-                  checked={(data as any).graphqlCopTestPostCsrf ?? true}
-                  onChange={(checked) => updateField('graphqlCopTestPostCsrf' as any, checked)}
+                  checked={data.graphqlCopTestPostCsrf ?? true}
+                  onChange={(checked) => updateField('graphqlCopTestPostCsrf', checked)}
                 />
               </div>
               <div className={styles.toggleRow}>
@@ -429,8 +429,8 @@ function GraphqlCopSubSection({ data, updateField }: GraphqlCopSubSectionProps) 
                   <p className={styles.toggleDescription}>Apollo tracing extension disclosure.</p>
                 </div>
                 <Toggle
-                  checked={(data as any).graphqlCopTestTraceMode ?? true}
-                  onChange={(checked) => updateField('graphqlCopTestTraceMode' as any, checked)}
+                  checked={data.graphqlCopTestTraceMode ?? true}
+                  onChange={(checked) => updateField('graphqlCopTestTraceMode', checked)}
                 />
               </div>
               <div className={styles.toggleRow}>
@@ -439,8 +439,8 @@ function GraphqlCopSubSection({ data, updateField }: GraphqlCopSubSectionProps) 
                   <p className={styles.toggleDescription}>Exception stack traces returned to client.</p>
                 </div>
                 <Toggle
-                  checked={(data as any).graphqlCopTestUnhandledError ?? true}
-                  onChange={(checked) => updateField('graphqlCopTestUnhandledError' as any, checked)}
+                  checked={data.graphqlCopTestUnhandledError ?? true}
+                  onChange={(checked) => updateField('graphqlCopTestUnhandledError', checked)}
                 />
               </div>
 
@@ -458,8 +458,8 @@ function GraphqlCopSubSection({ data, updateField }: GraphqlCopSubSectionProps) 
                   <p className={styles.toggleDescription}>Sends 101 aliases in one query to bypass rate limits.</p>
                 </div>
                 <Toggle
-                  checked={(data as any).graphqlCopTestAliasOverloading ?? true}
-                  onChange={(checked) => updateField('graphqlCopTestAliasOverloading' as any, checked)}
+                  checked={data.graphqlCopTestAliasOverloading ?? true}
+                  onChange={(checked) => updateField('graphqlCopTestAliasOverloading', checked)}
                 />
               </div>
               <div className={styles.toggleRow}>
@@ -468,8 +468,8 @@ function GraphqlCopSubSection({ data, updateField }: GraphqlCopSubSectionProps) 
                   <p className={styles.toggleDescription}>Sends 10+ queries batched in one POST.</p>
                 </div>
                 <Toggle
-                  checked={(data as any).graphqlCopTestBatchQuery ?? true}
-                  onChange={(checked) => updateField('graphqlCopTestBatchQuery' as any, checked)}
+                  checked={data.graphqlCopTestBatchQuery ?? true}
+                  onChange={(checked) => updateField('graphqlCopTestBatchQuery', checked)}
                 />
               </div>
               <div className={styles.toggleRow}>
@@ -478,8 +478,8 @@ function GraphqlCopSubSection({ data, updateField }: GraphqlCopSubSectionProps) 
                   <p className={styles.toggleDescription}>Sends 10+ repeated directives to exhaust parsing.</p>
                 </div>
                 <Toggle
-                  checked={(data as any).graphqlCopTestDirectiveOverloading ?? true}
-                  onChange={(checked) => updateField('graphqlCopTestDirectiveOverloading' as any, checked)}
+                  checked={data.graphqlCopTestDirectiveOverloading ?? true}
+                  onChange={(checked) => updateField('graphqlCopTestDirectiveOverloading', checked)}
                 />
               </div>
               <div className={styles.toggleRow}>
@@ -488,8 +488,8 @@ function GraphqlCopSubSection({ data, updateField }: GraphqlCopSubSectionProps) 
                   <p className={styles.toggleDescription}>Deeply nested introspection to trigger recursion DoS.</p>
                 </div>
                 <Toggle
-                  checked={(data as any).graphqlCopTestCircularIntrospection ?? true}
-                  onChange={(checked) => updateField('graphqlCopTestCircularIntrospection' as any, checked)}
+                  checked={data.graphqlCopTestCircularIntrospection ?? true}
+                  onChange={(checked) => updateField('graphqlCopTestCircularIntrospection', checked)}
                 />
               </div>
             </>

@@ -11,15 +11,23 @@ process it starts, and stopping a session asks the sandbox to kill them.
 The tag goes only to a tool that advertises RUN_ARG in its schema, on a system
 server: a sandbox started before this change never sees an argument it would
 reject, and no user MCP server learns a session id.
+
+A run's calls go to its person's sandbox (group 1), so the executor notes each
+sandbox a run used (`note_run_sandbox`) and stopping the run asks those, each with its
+own bearer; a run key is never sent to another person's sandbox, and a run that used
+none asks nothing.
 """
 import asyncio
 import logging
-import os
 import re
-from typing import Iterable, Optional, Set
+import weakref
+from collections import OrderedDict
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
+import sandbox_contract as contract
+import sandbox_router
 from agent_context import current_log_session_id, current_session_id
-from kali_auth import kali_auth_headers, note_kali_refusal
+from kali_auth import note_kali_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +35,17 @@ RUN_ARG = "_redamon_run_key"
 RUN_TAGGED_SERVERS = frozenset({"network_recon", "nmap", "nuclei", "playwright"})
 STOP_PATH = "/redamon/runs/stop"
 STOP_TIMEOUT_S = 10.0
+#: Each sandbox the emergency stop asks gets this long; one that does not answer is named.
+FANOUT_TIMEOUT_S = contract.FANOUT_TIMEOUT_S
+RUNS_MAX = 4096
 
 _RUN_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 # Stop requests in flight; held so the event loop does not drop them mid-request.
 _pending: Set[asyncio.Task] = set()
+
+#: run key -> the per-user handles its calls used (weak: a released, dropped handle goes).
+_run_sandboxes: "OrderedDict[str, weakref.WeakSet]" = OrderedDict()
 
 
 def current_run_key() -> str:
@@ -69,30 +83,66 @@ class RunTagInterceptor:
         return await handler(request.override(args=args))
 
 
-def stop_url() -> str:
-    base = os.environ.get("MCP_NETWORK_RECON_URL", "http://host.docker.internal:8000/sse")
-    base = base[:-len("/sse")] if base.endswith("/sse") else base.rstrip("/")
-    return base + STOP_PATH
+def note_run_sandbox(run_key: str, handle) -> None:
+    """Record that run `run_key` called the sandbox of `handle` (the executor calls it on
+    every routed call)."""
+    if not _RUN_KEY_RE.match(run_key or "") or handle is None:
+        return
+    held = _run_sandboxes.get(run_key)
+    if held is None:
+        held = _run_sandboxes[run_key] = weakref.WeakSet()
+        while len(_run_sandboxes) > RUNS_MAX:
+            _run_sandboxes.popitem(last=False)
+    held.add(handle)
 
 
-async def stop_sandbox_run(run_key: str) -> Optional[int]:
-    """Ask the sandbox to kill run `run_key`'s processes; how many it signalled.
+def _run_handles(run_key: str) -> list:
+    """The run's handles, one per sandbox instance."""
+    by_instance = {}
+    for handle in list(_run_sandboxes.get(run_key, ())):
+        by_instance.setdefault(handle.key, handle)
+    if not by_instance:
+        _run_sandboxes.pop(run_key, None)
+    return list(by_instance.values())
 
-    Never raises: a stop must finish in the agent whatever the sandbox answers.
-    """
-    if not _RUN_KEY_RE.match(run_key or ""):
-        return None
+
+Target = Tuple[str, str, dict]   # (what, url, headers)
+
+
+def _stop_targets(run_key: str) -> List[Target]:
+    """Where to send the stop of `run_key`: each sandbox the run used, with its own
+    bearer; nowhere when the run called no sandbox."""
+    targets = []
+    for handle in _run_handles(run_key):
+        try:
+            targets.append((handle.instance, sandbox_router.url_for(handle, "network_recon", STOP_PATH),
+                            sandbox_router.headers_for(handle)))
+        except Exception as exc:  # noqa: BLE001 - one bad handle never stops the others
+            logger.warning(f"[stop] no stop address for a sandbox of run {run_key}: {type(exc).__name__}")
+    return targets
+
+
+#: The stop's answer is `{"signalled": n}`; anything larger is not the sandbox's server.
+STOP_ANSWER_MAX_BYTES = 64 * 1024
+
+
+async def _post_stop(url: str, headers: dict, run_key: str, timeout: float) -> Optional[int]:
+    """One stop request; how many processes the sandbox signalled, None on any failure.
+    Never raises. The answer is read under a cap and the deadline, compression refused:
+    the sandbox's root decides what it answers, and the stop runs in the shared agent."""
     import httpx
+    from sandbox_http import read_answer
 
     try:
-        async with httpx.AsyncClient(timeout=STOP_TIMEOUT_S) as client:
-            resp = await client.post(stop_url(), json={"run": run_key}, headers=kali_auth_headers())
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await read_answer(client, "POST", url, headers=headers, json={"run": run_key},
+                                     max_bytes=STOP_ANSWER_MAX_BYTES, deadline_s=timeout)
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[stop] sandbox processes of run {run_key} not stopped: {type(exc).__name__}")
         return None
-    if resp.status_code != 200:
-        note_kali_refusal(resp.status_code, "the run stop")
-        logger.warning(f"[stop] sandbox refused the stop of run {run_key}: HTTP {resp.status_code}")
+    if resp.status != 200:
+        note_kali_refusal(resp.status, "the run stop")
+        logger.warning(f"[stop] sandbox refused the stop of run {run_key}: HTTP {resp.status}")
         return None
     try:
         signalled = int(resp.json().get("signalled", 0))
@@ -103,11 +153,81 @@ async def stop_sandbox_run(run_key: str) -> Optional[int]:
     return signalled
 
 
-def schedule_sandbox_stop(run_key: str) -> Optional[asyncio.Task]:
-    """Start `stop_sandbox_run` without making the caller wait for the sandbox."""
+async def _stop_at(targets: List[Target], run_key: str) -> Optional[int]:
+    if not targets:
+        return None
+    answers = await asyncio.gather(*(_post_stop(url, headers, run_key, STOP_TIMEOUT_S)
+                                     for _what, url, headers in targets))
+    counted = [a for a in answers if a is not None]
+    return sum(counted) if counted else None
+
+
+async def stop_sandbox_run(run_key: str) -> Optional[int]:
+    """Ask the sandbox (each sandbox the run used) to kill run `run_key`'s processes;
+    how many were signalled, None when none answered or there was none to ask.
+
+    Never raises: a stop must finish in the agent whatever the sandbox answers.
+    """
     if not _RUN_KEY_RE.match(run_key or ""):
         return None
-    task = asyncio.get_running_loop().create_task(stop_sandbox_run(run_key))
+    return await _stop_at(_stop_targets(run_key), run_key)
+
+
+def schedule_sandbox_stop(run_key: str) -> Optional[asyncio.Task]:
+    """Start `stop_sandbox_run` without making the caller wait for the sandbox. The
+    sandboxes are read now: the caller is cancelling the run, whose handles go when its
+    scope closes."""
+    if not _RUN_KEY_RE.match(run_key or ""):
+        return None
+    targets = _stop_targets(run_key)
+    task = asyncio.get_running_loop().create_task(_stop_at(targets, run_key))
     _pending.add(task)
     task.add_done_callback(_pending.discard)
     return task
+
+
+async def stop_all_runs() -> Dict[str, object]:
+    """The emergency stop's half in the sandboxes: every running sandbox is asked at
+    once to kill the agent's runs known to use it, each sandbox bounded by
+    FANOUT_TIMEOUT_S, so a hung one never holds the stop (the webapp stops the
+    containers themselves). Call it before cancelling the runs: a run's handles go when
+    its scope closes.
+
+    Answers ``{"sandboxes", "asked", "answered", "unavailable": [instance]}``."""
+    result: Dict[str, object] = {"sandboxes": 0, "asked": 0, "answered": 0, "unavailable": []}
+    try:
+        running = await sandbox_router.running_sandboxes()
+    except sandbox_router.SandboxUnavailable as exc:
+        logger.warning(f"[stop] the sandbox list could not be read: {exc.reason}")
+        result["error"] = "sandbox_list_unavailable"
+        return result
+    runs_by_instance: Dict[tuple, List[str]] = {}
+    for run_key in list(_run_sandboxes):
+        for handle in _run_handles(run_key):
+            runs_by_instance.setdefault(handle.key, []).append(run_key)
+    result["sandboxes"] = len(running)
+
+    async def ask(handle, run_keys) -> bool:
+        url = sandbox_router.url_for(handle, "network_recon", STOP_PATH)
+        headers = sandbox_router.headers_for(handle)
+        try:
+            answers = await asyncio.wait_for(
+                asyncio.gather(*(_post_stop(url, headers, key, FANOUT_TIMEOUT_S) for key in run_keys)),
+                timeout=FANOUT_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            return False
+        return all(a is not None for a in answers)
+
+    asked = [(h, runs_by_instance[h.key]) for h in running if runs_by_instance.get(h.key)]
+    outcomes = await asyncio.gather(*(ask(h, keys) for h, keys in asked), return_exceptions=True)
+    result["asked"] = len(asked)
+    result["answered"] = sum(1 for o in outcomes if o is True)
+    result["unavailable"] = [h.instance for (h, _keys), o in zip(asked, outcomes) if o is not True]
+    if result["unavailable"]:
+        logger.warning(f"[stop] {len(result['unavailable'])} sandbox(es) did not answer the stop")
+    return result
+
+
+def _reset() -> None:
+    """Tests: forget every run's sandboxes."""
+    _run_sandboxes.clear()

@@ -136,6 +136,7 @@ export function useApiUsageReport(args: UseApiUsageReportArgs) {
   }, [url])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: refresh() sets meta only once the read answers
     if (active && url) void refresh()
   }, [active, url, refresh])
 
@@ -158,17 +159,16 @@ export function useApiUsageReport(args: UseApiUsageReportArgs) {
     }
   }, [remoteRun, refresh])
 
-  // The run the modal was waiting on finished elsewhere: show its report.
-  useEffect(() => {
-    if (view === 'running' && !posting && meta && !meta.running) {
-      if (meta.report) {
-        setShown({ report: meta.report, saved: true })
-        setView('report')
-      } else {
-        setView('closed')
-      }
+  // The run the modal was waiting on finished elsewhere: show its report. Set while
+  // rendering, so the modal never shows a finished run as running.
+  if (view === 'running' && !posting && meta && !meta.running) {
+    if (meta.report) {
+      setShown({ report: meta.report, saved: true })
+      setView('report')
+    } else {
+      setView('closed')
     }
-  }, [view, posting, meta])
+  }
 
   const openReport = useCallback(() => {
     if (meta?.running) {

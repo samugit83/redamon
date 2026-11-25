@@ -71,6 +71,7 @@ export function QuotaUsage({ userId, own, classes = {} }: {
     }
   }, [userId])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: load() also serves Retry, so it starts from the loading state
   useEffect(() => { load() }, [load])
 
   if (view.kind === 'hidden') return null

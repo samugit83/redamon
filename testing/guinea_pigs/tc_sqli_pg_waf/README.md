@@ -11,6 +11,11 @@ attempt.
                   WAF layer + distributor sign-in
 ```
 
+A person's Kali sandbox is not on `pentest-net`: connect the app container to that
+person's sandbox network first, and address it there by its container name or its
+address on that network: the `pentest-net` address is not routed from a sandbox
+([Reaching a lab from a Kali sandbox](../README.md#reaching-a-lab-from-a-kali-sandbox)).
+
 ## What is vulnerable
 
 | Endpoint | Behaviour |

@@ -1,11 +1,20 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
-import type { Conversation } from '@/hooks/useConversations'
+import { useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
+import type { Conversation, ConversationWithMessages } from '@/hooks/useConversations'
 import { ApiError } from '@/lib/apiError'
-import type { TodoItem } from '@/lib/websocket-types'
+import type {
+  TodoItem,
+  ApprovalRequestPayload,
+  QuestionRequestPayload,
+  ToolConfirmationRequestPayload,
+  ToolConfirmationTool,
+  FireteamMemberAwaitingConfirmationPayload,
+} from '@/lib/websocket-types'
 import type { ChatItem, Message, FileDownloadItem, Phase } from '../types'
-import type { ThinkingItem, ToolExecutionItem, PlanWaveItem, DeepThinkItem, FireteamItem } from '../AgentTimeline'
+import type {
+  ThinkingItem, ToolExecutionItem, PlanWaveItem, DeepThinkItem, FireteamItem, FireteamMemberPanel, FireteamMemberStatus,
+} from '../AgentTimeline'
 import type { ActiveSkill } from './useSendHandlers'
-import { foldLatsRestoreMarkers } from './latsChatState'
+import { foldLatsRestoreMarkers, type LatsRestoreEvent } from './latsChatState'
 import { reconcileTimeline } from './timelineReconcile'
 import { settleRunningTools } from './toolCardState'
 import { saveProjectSession, getProjectSession } from '../sessionMemory'
@@ -18,9 +27,137 @@ export interface ReadOnlyConversationView {
   authorDeleted: boolean
 }
 
+/**
+ * The `data` of a persisted ChatMessage: the payload the agent streamed for the
+ * row's event type. A row carries only its own event's fields, and one saved by
+ * an older agent can lack newer ones, so every field is optional.
+ */
+interface PersistedEventData {
+  tool_name?: string
+  tool_args?: Record<string, unknown>
+  wave_id?: string | null
+  step_id?: string
+  step_index?: number
+  success?: boolean
+  duration_ms?: number
+  raw_output?: string
+  output_summary?: string
+  output_excerpt?: string
+  actionable_findings?: string[]
+  recommended_next_steps?: string[]
+  content?: string
+  phase?: string
+  isGuidance?: boolean
+  isReport?: boolean
+  task_complete?: boolean
+  response_tier?: Message['responseTier']
+  error?: string | null
+  message?: string
+  final_phase?: string
+  action?: string
+  thought?: string
+  reasoning?: string
+  input_tokens?: number
+  output_tokens?: number
+  productivity_score?: number | null
+  productivity_tier?: string | null
+  stall?: number | null
+  answeredBy?: ThinkingItem['answeredBy']
+  filepath?: string
+  filename?: string
+  description?: string
+  source?: string
+  projectId?: string
+  todo_list?: TodoItem[]
+  attack_path_type?: string
+  current_phase?: string
+  iteration_count?: number
+  iteration?: number
+  from_phase?: string
+  to_phase?: string
+  reason?: string
+  planned_actions?: string[]
+  risks?: string[]
+  decision?: string
+  modification?: string
+  question?: string
+  context?: string
+  options?: string[]
+  answer?: string
+  mode?: string
+  /** Tool calls on a confirmation row, tool names on a plan start: read per row type. */
+  tools?: unknown[]
+  plan_rationale?: string
+  tool_count?: number
+  trigger_reason?: string
+  analysis?: string
+  interpretation?: string
+  failed?: number
+  successful?: number
+  total?: number
+  total_steps?: number
+}
+
+/** A persisted ChatMessage row; a fireteam member's rows also name the fireteam and member. */
+type PersistedMessage = Omit<ConversationWithMessages['messages'][number], 'data'> & {
+  data: PersistedEventData
+  fireteamIdKey?: string | null
+  memberIdKey?: string | null
+}
+
+/** A Fireteam row (with its members) as GET /api/conversations/by-session/[sessionId]/fireteams sends it. */
+interface FireteamRow {
+  fireteamIdKey: string
+  iteration: number | null
+  planRationale: string | null
+  status: string | null
+  statusCounts: Record<string, number> | null
+  wallClockSeconds: number | null
+  startedAt: string | null
+  completedAt: string | null
+  members: FireteamMemberRow[] | null
+}
+
+interface FireteamMemberRow {
+  memberIdKey: string
+  name: string
+  task: string | null
+  skills: string[] | null
+  status: FireteamMemberStatus | null
+  startedAt: string | null
+  completedAt: string | null
+  iterationsUsed: number | null
+  tokensUsed: number | null
+  findingsCount: number | null
+  completionReason: string | null
+  errorMessage: string | null
+}
+
+const FIRETEAM_STATUSES: readonly string[] = ['running', 'completed', 'timeout', 'cancelled', 'failed']
+const isFireteamStatus = (s: string): s is FireteamItem['status'] => FIRETEAM_STATUSES.includes(s)
+
+// Restore markers: placeholders a persisted row leaves in the timeline until a
+// post-pass folds them into the cards they belong to.
+interface ToolConfResponseMarker { _toolConfResponse: true; decision?: string }
+interface PlanStartMarker {
+  _planStartLink: true
+  wave_id: string
+  msg_id: string
+  timestamp: Date
+  plan_rationale: string
+  tool_count: number
+}
+interface LatsMarker {
+  _latsEvent: LatsRestoreEvent['_latsEvent']
+  payload: PersistedEventData
+  msg_id: string
+  timestamp: Date
+}
+type RestoreEntry = ChatItem | ToolConfResponseMarker | PlanStartMarker | LatsMarker
+
 interface ConversationRestorationDeps {
   // From useConversations
-  loadConversation: (id: string) => Promise<any>
+  loadConversation: (id: string) => Promise<ConversationWithMessages | null>
   /** False when the delete failed: the chat on screen is then kept. */
   deleteConversation: (id: string) => Promise<boolean | void>
   /** The ApiError when the list could not be read. */
@@ -45,11 +182,11 @@ interface ConversationRestorationDeps {
   shouldAutoScroll: React.MutableRefObject<boolean>
   // From useInteractionState
   setAwaitingApproval: (v: boolean) => void
-  setApprovalRequest: (v: any) => void
+  setApprovalRequest: (v: ApprovalRequestPayload | null) => void
   setAwaitingQuestion: (v: boolean) => void
-  setQuestionRequest: (v: any) => void
+  setQuestionRequest: (v: QuestionRequestPayload | null) => void
   setAwaitingToolConfirmation: (v: boolean) => void
-  setToolConfirmationRequest: (v: any) => void
+  setToolConfirmationRequest: (v: ToolConfirmationRequestPayload | null) => void
   awaitingApprovalRef: React.MutableRefObject<boolean>
   awaitingQuestionRef: React.MutableRefObject<boolean>
   awaitingToolConfirmationRef: React.MutableRefObject<boolean>
@@ -57,7 +194,7 @@ interface ConversationRestorationDeps {
   pendingApprovalWaveId: React.MutableRefObject<string | null>
   // Active skill
   setActiveSkill: (v: ActiveSkill | null) => void
-  updateConvMeta: (updates: Record<string, any>) => Promise<void>
+  updateConvMeta: (updates: Record<string, unknown>) => Promise<void>
   // Main component
   handleNewChat: () => void
 }
@@ -69,12 +206,13 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
     projectId, userId,
     setChatItems, setCurrentPhase, setAttackPathType, setIterationCount,
     setIsLoading, setIsStopped, setIsStopping, setTodoList,
-    isRestoringConversation, shouldAutoScroll,
+    // Ref-suffixed so the React Compiler treats these hook arguments as refs.
+    isRestoringConversation: isRestoringConversationRef, shouldAutoScroll: shouldAutoScrollRef,
     setAwaitingApproval, setApprovalRequest,
     setAwaitingQuestion, setQuestionRequest,
     setAwaitingToolConfirmation, setToolConfirmationRequest,
     awaitingApprovalRef, awaitingQuestionRef, awaitingToolConfirmationRef,
-    pendingApprovalToolId, pendingApprovalWaveId,
+    pendingApprovalToolId: pendingApprovalToolIdRef, pendingApprovalWaveId: pendingApprovalWaveIdRef,
     setActiveSkill, updateConvMeta,
     handleNewChat, notifyError,
   } = deps
@@ -94,7 +232,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
   const pendingResyncConvRef = useRef<Conversation | null>(null)
   // Read by the socket-connect resync, which must see the latest id.
   const conversationIdRef = useRef<string | null>(null)
-  conversationIdRef.current = conversationId
+  useLayoutEffect(() => { conversationIdRef.current = conversationId }, [conversationId])
 
   // Fetch + auto-refresh conversations when history panel opens
   useEffect(() => {
@@ -105,6 +243,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
     }
   }, [showHistory, projectId, userId, fetchConversations])
 
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization -- the omitted deps are the drawer's state setters and refs, passed in and stable; the compiler cannot see that through the hook's parameters
   const handleSelectConversation = useCallback(async (
     conv: Conversation,
     opts?: { resync?: boolean; isRunActive?: () => boolean },
@@ -128,17 +267,20 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
       awaitingApprovalRef.current = false
       awaitingQuestionRef.current = false
       awaitingToolConfirmationRef.current = false
-      pendingApprovalToolId.current = null
-      pendingApprovalWaveId.current = null
+      pendingApprovalToolIdRef.current = null
+      pendingApprovalWaveIdRef.current = null
     }
 
     const full = await loadConversation(conv.id)
     if (!full) return
+    // Each row's data is the payload the agent persisted for its type, read here
+    // unchecked as it always has been.
+    const rows = full.messages as PersistedMessage[]
 
     let lastTodoList: TodoItem[] = []
-    let lastApprovalRequest: any = null
-    let lastQuestionRequest: any = null
-    let lastToolConfirmationRequest: any = null
+    let lastApprovalRequest: ApprovalRequestPayload | null = null
+    let lastQuestionRequest: QuestionRequestPayload | null = null
+    let lastToolConfirmationRequest: ToolConfirmationRequestPayload | null = null
     let lastRenderedPhase: string = ''
     let lastAttackPathType: string = ''
     let hasWorkAfterApproval = false
@@ -165,8 +307,8 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
     // persisted row is a distinct event and must be rendered.
     const startsByStepId = new Map<string, { id: string; createdAt: string }>()
     const startsByNameFIFO = new Map<string, { id: string; createdAt: string }[]>()
-    for (const msg of full.messages) {
-      const d = msg.data as any
+    for (const msg of rows) {
+      const d = msg.data
       if (msg.type === 'tool_start' && !d?.wave_id) {
         const rec = { id: msg.id, createdAt: msg.createdAt }
         if (d?.step_id) startsByStepId.set(d.step_id, rec)
@@ -179,8 +321,8 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
     // tool_finished rows: the tool returned but its analysis (tool_complete)
     // was not persisted yet. Restores a mid-analysis card as finished.
     const finishedByStepId = new Map<string, { success: boolean; duration_ms?: number }>()
-    for (const msg of full.messages) {
-      const d = msg.data as any
+    for (const msg of rows) {
+      const d = msg.data
       if (msg.type === 'tool_finished' && d?.step_id) {
         finishedByStepId.set(d.step_id, { success: !!d.success, duration_ms: d.duration_ms })
       }
@@ -193,16 +335,16 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
       completeToStartTime.set(completeMsgId, new Date(start.createdAt))
     }
     // Pass 1: exact pairing by step_id.
-    for (const msg of full.messages) {
-      const d = msg.data as any
+    for (const msg of rows) {
+      const d = msg.data
       if (msg.type === 'tool_complete' && !d?.wave_id && d?.step_id) {
         const start = startsByStepId.get(d.step_id)
         if (start && !consumedStartIds.has(start.id)) pairStart(msg.id, start)
       }
     }
     // Pass 2: per-name FIFO for completes still unpaired (legacy or step_id miss).
-    for (const msg of full.messages) {
-      const d = msg.data as any
+    for (const msg of rows) {
+      const d = msg.data
       if (msg.type === 'tool_complete' && !d?.wave_id && !completeToStartTime.has(msg.id)) {
         const name = d?.tool_name || ''
         const start = (startsByNameFIFO.get(name) || []).find(s => !consumedStartIds.has(s.id))
@@ -210,8 +352,8 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
       }
     }
 
-    const restored: ChatItem[] = full.messages.map((msg: { id: string; type: string; data: unknown; createdAt: string }) => {
-      const data = msg.data as any
+    const entries: RestoreEntry[] = rows.map((msg): RestoreEntry | null => {
+      const data = msg.data
 
       if (msg.type === 'thinking' || msg.type === 'tool_start' || msg.type === 'tool_complete') {
         if (lastApprovalRequest) hasWorkAfterApproval = true
@@ -356,7 +498,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
         }
         return null
       } else if (msg.type === 'approval_request') {
-        lastApprovalRequest = data
+        lastApprovalRequest = data as ApprovalRequestPayload
         hasWorkAfterApproval = false
         const parts = [`**Phase Transition Request:** ${data.from_phase || '?'} → ${data.to_phase || '?'}`]
         if (data.reason) parts.push(`\n**Reason:** ${data.reason}`)
@@ -386,7 +528,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
           timestamp: new Date(msg.createdAt),
         } as Message
       } else if (msg.type === 'question_request') {
-        lastQuestionRequest = data
+        lastQuestionRequest = data as QuestionRequestPayload
         hasWorkAfterQuestion = false
         const qParts = [`**Agent Question:** ${data.question || ''}`]
         if (data.context) qParts.push(`\n> ${data.context}`)
@@ -410,10 +552,11 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
           timestamp: new Date(msg.createdAt),
         } as Message
       } else if (msg.type === 'tool_confirmation_request') {
-        lastToolConfirmationRequest = data
+        const request = data as ToolConfirmationRequestPayload
+        lastToolConfirmationRequest = request
         hasWorkAfterToolConfirmation = false
-        const confMode = data.mode || 'single'
-        const confTools = data.tools || []
+        const confMode = request.mode || 'single'
+        const confTools = request.tools || []
         if (confMode === 'plan') {
           return {
             type: 'plan_wave',
@@ -422,7 +565,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
             wave_id: '',
             plan_rationale: data.reasoning || '',
             tool_count: confTools.length,
-            tools: confTools.map((t: any, idx: number) => ({
+            tools: confTools.map((t, idx) => ({
               type: 'tool_execution' as const,
               id: `${msg.id}-tool-${idx}`,
               timestamp: new Date(msg.createdAt),
@@ -434,7 +577,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
             status: 'pending_approval',
           } as PlanWaveItem
         }
-        const tool = confTools[0] || {}
+        const tool: Partial<ToolConfirmationTool> = confTools[0] || {}
         return {
           type: 'tool_execution',
           id: msg.id,
@@ -447,9 +590,9 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
       } else if (msg.type === 'tool_confirmation_response') {
         lastToolConfirmationRequest = null
         hasWorkAfterToolConfirmation = true
-        return { _toolConfResponse: true, decision: data.decision } as any
+        return { _toolConfResponse: true, decision: data.decision }
       } else if (msg.type === 'plan_start') {
-        return { _planStartLink: true, wave_id: data.wave_id || '', msg_id: msg.id, timestamp: new Date(msg.createdAt), plan_rationale: data.plan_rationale || '', tool_count: data.tool_count || 0 } as any
+        return { _planStartLink: true, wave_id: data.wave_id || '', msg_id: msg.id, timestamp: new Date(msg.createdAt), plan_rationale: data.plan_rationale || '', tool_count: data.tool_count || 0 }
       } else if (msg.type === 'deep_think') {
         return {
           type: 'deep_think',
@@ -462,35 +605,37 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
         } as DeepThinkItem
       } else if (msg.type === 'lats_start' || msg.type === 'lats_tree_update' || msg.type === 'lats_complete') {
         // Marker; folded into one LatsSearchItem per search_id in a post-pass.
-        return { _latsEvent: msg.type, payload: data, msg_id: msg.id, timestamp: new Date(msg.createdAt) } as any
+        return { _latsEvent: msg.type, payload: data, msg_id: msg.id, timestamp: new Date(msg.createdAt) }
       } else if (msg.type === 'plan_complete') {
         return null
       }
       return null
-    }).filter((item: ChatItem | null): item is ChatItem => item !== null)
+    }).filter((item): item is RestoreEntry => item !== null)
 
     // Post-pass: apply tool_confirmation_response decisions
     {
       const markers: number[] = []
-      for (let i = 0; i < restored.length; i++) {
-        const item = restored[i] as any
-        if (item._toolConfResponse) {
+      for (let i = 0; i < entries.length; i++) {
+        const item = entries[i]
+        if ('_toolConfResponse' in item) {
           markers.push(i)
           for (let j = i - 1; j >= 0; j--) {
-            const prev = restored[j] as any
-            if (prev.status === 'pending_approval' && (prev.type === 'tool_execution' || prev.type === 'plan_wave')) {
+            const prev = entries[j]
+            if ('type' in prev && (prev.type === 'tool_execution' || prev.type === 'plan_wave') && prev.status === 'pending_approval') {
               if (item.decision === 'approve') {
                 if (prev.type === 'plan_wave') {
-                  restored[j] = { ...prev, status: 'running', tools: [] }
+                  entries[j] = { ...prev, status: 'running', tools: [] }
                 } else {
-                  restored.splice(j, 1)
+                  entries.splice(j, 1)
                   for (let m = 0; m < markers.length; m++) {
                     if (markers[m] > j) markers[m]--
                   }
                   i--
                 }
               } else {
-                restored[j] = { ...prev, status: 'error', final_output: 'Rejected by user' }
+                // Via a variable: a rejected plan wave keeps the final_output PlanWaveItem does not declare.
+                const rejected = { ...prev, status: 'error' as const, final_output: 'Rejected by user' }
+                entries[j] = rejected
               }
               break
             }
@@ -498,22 +643,22 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
         }
       }
       for (let k = markers.length - 1; k >= 0; k--) {
-        restored.splice(markers[k], 1)
+        entries.splice(markers[k], 1)
       }
     }
 
     // Post-pass: link plan_start markers to existing PlanWaveItems
     {
       const planStartMarkers: number[] = []
-      for (let i = 0; i < restored.length; i++) {
-        const item = restored[i] as any
-        if (item._planStartLink) {
+      for (let i = 0; i < entries.length; i++) {
+        const item = entries[i]
+        if ('_planStartLink' in item) {
           planStartMarkers.push(i)
           let linked = false
           for (let j = i - 1; j >= 0; j--) {
-            const prev = restored[j] as any
-            if (prev.type === 'plan_wave' && prev.wave_id === '') {
-              restored[j] = {
+            const prev = entries[j]
+            if ('type' in prev && prev.type === 'plan_wave' && prev.wave_id === '') {
+              entries[j] = {
                 ...prev,
                 wave_id: item.wave_id,
                 plan_rationale: item.plan_rationale || prev.plan_rationale,
@@ -525,7 +670,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
             }
           }
           if (!linked) {
-            restored[i] = {
+            entries[i] = {
               type: 'plan_wave',
               id: item.msg_id,
               timestamp: item.timestamp,
@@ -540,42 +685,33 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
         }
       }
       for (let k = planStartMarkers.length - 1; k >= 0; k--) {
-        if ((restored[planStartMarkers[k]] as any)._planStartLink) {
-          restored.splice(planStartMarkers[k], 1)
+        if ('_planStartLink' in entries[planStartMarkers[k]]) {
+          entries.splice(planStartMarkers[k], 1)
         }
       }
     }
 
     // Post-pass: fold LATS event markers into one card per search_id (with
     // history[]), placed at the first event's position + timestamp (§18.2, C1).
-    {
-      const folded = foldLatsRestoreMarkers(restored)
-      // foldLatsRestoreMarkers returns the SAME array reference when there are
-      // no LATS markers (the common case). Guard against it: clearing `restored`
-      // would also clear `folded` (same array) and leave the whole timeline
-      // empty - this is what blanked the chat when restoring any non-LATS
-      // conversation. Only rewrite when folding actually produced a new array.
-      if (folded !== restored) {
-        restored.length = 0
-        restored.push(...folded)
-      }
-    }
+    // The markers left are LATS ones, which the fold takes inside a ChatItem[]
+    // and removes; with none it returns `entries` itself.
+    const restored: ChatItem[] = foldLatsRestoreMarkers(entries as ChatItem[])
 
     // Post-pass: nest wave tool_complete items
     const waveToolStartTimes = new Map<string, Date>()
-    for (const msg of full.messages) {
-      if (msg.type === 'tool_start' && (msg.data as any)?.wave_id) {
-        const d = msg.data as any
+    for (const msg of rows) {
+      if (msg.type === 'tool_start' && msg.data?.wave_id) {
+        const d = msg.data
         const si = d.step_index ?? ''
         waveToolStartTimes.set(`${d.wave_id}:${d.tool_name}:${si}`, new Date(msg.createdAt))
       }
     }
 
-    const waveToolCompletes = full.messages.filter(
-      (m: any) => m.type === 'tool_complete' && (m.data as any)?.wave_id
+    const waveToolCompletes = rows.filter(
+      (m) => m.type === 'tool_complete' && m.data?.wave_id
     )
     for (const msg of waveToolCompletes) {
-      const data = msg.data as any
+      const data = msg.data
       const waveIdx = restored.findIndex(
         item => item.type === 'plan_wave' && (item as PlanWaveItem).wave_id === data.wave_id
       )
@@ -605,9 +741,9 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
     }
 
     // Apply plan_complete statuses
-    const planCompletes = full.messages.filter((m: any) => m.type === 'plan_complete')
+    const planCompletes = rows.filter((m) => m.type === 'plan_complete')
     for (const msg of planCompletes) {
-      const data = msg.data as any
+      const data = msg.data
       const waveIdx = restored.findIndex(
         item => item.type === 'plan_wave' && (item as PlanWaveItem).wave_id === data.wave_id
       )
@@ -615,15 +751,15 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
         const wave = restored[waveIdx] as PlanWaveItem
         let status: PlanWaveItem['status'] = 'success'
         if (data.failed === data.total_steps) status = 'error'
-        else if (data.failed > 0) status = 'partial'
+        else if ((data.failed ?? 0) > 0) status = 'partial'
         restored[waveIdx] = { ...wave, status }
       }
     }
 
     // Apply plan_analysis data
-    const planAnalyses = full.messages.filter((m: any) => m.type === 'plan_analysis')
+    const planAnalyses = rows.filter((m) => m.type === 'plan_analysis')
     for (const msg of planAnalyses) {
-      const data = msg.data as any
+      const data = msg.data
       const waveIdx = restored.findIndex(
         (item: ChatItem) => 'type' in item && item.type === 'plan_wave' && (item as PlanWaveItem).wave_id === data.wave_id
       )
@@ -646,14 +782,14 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
     try {
       const ftRes = await fetch(`/api/conversations/by-session/${conv.sessionId}/fireteams`)
       if (ftRes.ok) {
-        const { fireteams } = await ftRes.json()
+        const { fireteams }: { fireteams?: FireteamRow[] } = await ftRes.json()
         if (Array.isArray(fireteams) && fireteams.length > 0) {
           for (const f of fireteams) {
             const startedAt = f.startedAt ? new Date(f.startedAt) : new Date()
             const completedAt = f.completedAt ? new Date(f.completedAt) : undefined
-            const waveStatus: FireteamItem['status'] = ((): any => {
+            const waveStatus: FireteamItem['status'] = ((): FireteamItem['status'] => {
               const s = f.status || 'running'
-              return ['running', 'completed', 'timeout', 'cancelled', 'failed'].includes(s) ? s : 'completed'
+              return isFireteamStatus(s) ? s : 'completed'
             })()
             // If the wave is terminal, any DB-recorded member that's still
             // `running` is stale (the per-member PATCH may have failed, or
@@ -678,7 +814,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
               status: waveStatus,
               status_counts: f.statusCounts ?? undefined,
               wall_clock_seconds: f.wallClockSeconds ?? undefined,
-              members: (f.members ?? []).map((m: any) => {
+              members: (f.members ?? []).map((m) => {
                 const rawStatus = m.status
                 const memberStatus = isTerminal
                   && (rawStatus === 'running' || rawStatus === 'needs_confirmation' || !rawStatus)
@@ -704,9 +840,9 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
                   completion_reason: m.completionReason
                     ?? (memberStatus !== rawStatus ? `wave_${waveStatus}` : undefined),
                   error_message: m.errorMessage ?? undefined,
-                }
+                } as FireteamMemberPanel
               }),
-            } as any)
+            })
           }
         }
       }
@@ -725,20 +861,24 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
     try {
       const ftIndex = new Map<string, number>()
       for (let i = 0; i < restored.length; i++) {
-        const it = restored[i] as any
+        const it = restored[i]
         if (it && it.type === 'fireteam') ftIndex.set(it.fireteam_id, i)
       }
-      const mutate = (ftId: string | null | undefined, mId: string | null | undefined, fn: (m: any) => any) => {
+      const mutate = (
+        ftId: string | null | undefined,
+        mId: string | null | undefined,
+        fn: (m: FireteamMemberPanel) => FireteamMemberPanel,
+      ) => {
         if (!ftId || !mId) return
         const idx = ftIndex.get(ftId)
         if (idx === undefined) return
-        const ft = restored[idx] as any
-        const mIdx = ft.members.findIndex((m: any) => m.member_id === mId)
+        const ft = restored[idx] as FireteamItem
+        const mIdx = ft.members.findIndex((m) => m.member_id === mId)
         if (mIdx < 0) return
         ft.members[mIdx] = fn(ft.members[mIdx])
       }
 
-      for (const msg of full.messages as any[]) {
+      for (const msg of rows) {
         const ftId = msg.fireteamIdKey
         const mId = msg.memberIdKey
         if (!ftId || !mId) continue
@@ -779,7 +919,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
           }
           case 'fireteam_plan_complete': {
             mutate(ftId, mId, m => {
-              const idx = m.planWaves.findIndex((w: any) => w.wave_id === d.wave_id)
+              const idx = m.planWaves.findIndex((w) => w.wave_id === d.wave_id)
               if (idx < 0) return m
               const failed = d.failed ?? 0
               const successful = d.successful ?? 0
@@ -806,7 +946,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
             }
             mutate(ftId, mId, m => {
               if (d.wave_id) {
-                const idx = m.planWaves.findIndex((w: any) => w.wave_id === d.wave_id)
+                const idx = m.planWaves.findIndex((w) => w.wave_id === d.wave_id)
                 if (idx >= 0) {
                   const nextWaves = m.planWaves.slice()
                   nextWaves[idx] = { ...nextWaves[idx], tools: [...nextWaves[idx].tools, newTool] }
@@ -819,7 +959,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
           }
           case 'fireteam_tool_complete': {
             mutate(ftId, mId, m => {
-              const patch = (t: any) => ({
+              const patch = (t: ToolExecutionItem): ToolExecutionItem => ({
                 ...t,
                 status: d.success ? 'success' : 'error',
                 duration: d.duration_ms,
@@ -827,7 +967,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
               })
               // Nested in plan wave?
               if (d.wave_id) {
-                const wi = m.planWaves.findIndex((w: any) => w.wave_id === d.wave_id)
+                const wi = m.planWaves.findIndex((w) => w.wave_id === d.wave_id)
                 if (wi >= 0) {
                   const wave = m.planWaves[wi]
                   for (let ti = wave.tools.length - 1; ti >= 0; ti--) {
@@ -859,6 +999,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
             // Once resumed post-decision, the subsequent tool_start events
             // replace the card with real tool cards.
             const pendingId = `ft-restore-await-${msg.id}`
+            const request = d as FireteamMemberAwaitingConfirmationPayload
             mutate(ftId, mId, m => ({
               ...m,
               status: 'needs_confirmation',
@@ -869,9 +1010,9 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
                   id: pendingId,
                   timestamp: ts,
                   wave_id: '',
-                  plan_rationale: d.reasoning || '',
-                  tool_count: (d.tools || []).length,
-                  tools: (d.tools || []).map((t: any, idx: number) => ({
+                  plan_rationale: request.reasoning || '',
+                  tool_count: (request.tools || []).length,
+                  tools: (request.tools || []).map((t, idx) => ({
                     type: 'tool_execution' as const,
                     id: `${pendingId}-${idx}`,
                     timestamp: ts,
@@ -902,7 +1043,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
     // pass, switching chats and returning to a cancelled wave still shows
     // tools spinning inside dead specialists.
     for (let i = 0; i < restored.length; i++) {
-      const it = restored[i] as any
+      const it = restored[i]
       if (!it || it.type !== 'fireteam') continue
       const status = it.status
       if (status === 'running') continue
@@ -911,8 +1052,8 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
         : status === 'timeout' ? 'Wave timeout'
         : status === 'failed' ? 'Wave failed'
         : null
-      const cascadedMembers = (it.members || []).map((m: any) => {
-        const flipTool = (t: any) => (
+      const cascadedMembers = (it.members || []).map((m) => {
+        const flipTool = (t: ToolExecutionItem): ToolExecutionItem => (
           t.status === 'running' || t.status === 'pending_approval'
             ? {
                 ...t,
@@ -923,7 +1064,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
             : t
         )
         const nextTools = (m.tools || []).map(flipTool)
-        const nextWaves = (m.planWaves || []).map((w: any) => {
+        const nextWaves = (m.planWaves || []).map((w): PlanWaveItem => {
           if (w.status !== 'running' && w.status !== 'pending_approval') return w
           return {
             ...w,
@@ -938,7 +1079,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
     }
 
     // Sort by timestamp
-    restored.sort((a: any, b: any) => {
+    restored.sort((a, b) => {
       const ta = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime()
       const tb = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime()
       return ta - tb
@@ -973,7 +1114,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
       pendingResyncConvRef.current = null
       // handleNewChat moves the socket to a fresh session id, on which the drawer clears the chat
       // (useSessionChangeReset) unless a restore set this: that clear wiped the timeline set below.
-      isRestoringConversation.current = true
+      isRestoringConversationRef.current = true
       handleNewChat()
       setChatItems(settleRunningTools(restored))
       setCurrentPhase((conv.currentPhase || 'informational') as Phase)
@@ -984,7 +1125,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
       setIsStopped(false)
       const access = full.access ?? conv.access
       setReadOnlyView({ conversationId: conv.id, by: access?.by ?? null, authorDeleted: access?.authorDeleted === true })
-      shouldAutoScroll.current = true
+      shouldAutoScrollRef.current = true
       setShowHistory(false)
       return
     }
@@ -1003,7 +1144,7 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
     setIsLoading(conv.agentRunning)
     setIsStopped(false)
     setTodoList(lastTodoList)
-    shouldAutoScroll.current = true
+    shouldAutoScrollRef.current = true
     setShowHistory(false)
 
     // Arm a one-shot resync for a running session: the initial read above may be
@@ -1052,21 +1193,23 @@ export function useConversationRestoration(deps: ConversationRestorationDeps) {
       setAwaitingToolConfirmation(true)
       setToolConfirmationRequest(lastToolConfirmationRequest)
       awaitingToolConfirmationRef.current = true
-      const pendingTool = restored.findLast?.((item: any) => item.type === 'tool_execution' && item.status === 'pending_approval')
-      const pendingWave = restored.findLast?.((item: any) => item.type === 'plan_wave' && item.status === 'pending_approval')
+      const pendingTool = restored.findLast?.((item) => item.type === 'tool_execution' && item.status === 'pending_approval')
+      const pendingWave = restored.findLast?.((item) => item.type === 'plan_wave' && item.status === 'pending_approval')
       if (pendingWave) {
-        pendingApprovalWaveId.current = (pendingWave as any).id
+        pendingApprovalWaveIdRef.current = pendingWave.id
       } else if (pendingTool) {
-        pendingApprovalToolId.current = (pendingTool as any).id
+        pendingApprovalToolIdRef.current = pendingTool.id
       }
     } else {
       setAwaitingToolConfirmation(false)
       setToolConfirmationRequest(null)
     }
 
-    isRestoringConversation.current = true
+    isRestoringConversationRef.current = true
     onSwitchSession?.(conv.sessionId)
-  }, [loadConversation, onSwitchSession, userId, setActiveSkill, updateConvMeta, handleNewChat])
+    // projectId: the hook outlives a project switch, and a stale one saved a conversation as
+    // the PREVIOUS project's session, so coming back opened a new chat instead of it.
+  }, [loadConversation, onSwitchSession, projectId, userId, setActiveSkill, updateConvMeta, handleNewChat])
 
   // Called when the agent socket (re)connects. If we just restored a running
   // session, re-read it now that the backend has flushed its persist queue and

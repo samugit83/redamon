@@ -11,7 +11,7 @@ import type {
 } from '../types'
 import type { SessionsData } from '@/lib/websocket-types'
 import { fetchJson } from '@/lib/apiError'
-import { useSessionsAccess } from '@/hooks/useActiveSessions'
+import { STALE_ROW_MAX_MS, useSessionsAccess, useSessionsViewerKey, withKeptRows } from '@/hooks/useActiveSessions'
 
 export function useGraphOverview(projectId: string | null) {
   return useQuery({
@@ -69,9 +69,20 @@ export function usePipelineStatus(projectId: string | null) {
 
 export function useActiveSessions() {
   const access = useSessionsAccess()
+  const queryClient = useQueryClient()
+  // Keyed by the viewer: an act-as switch starts a fresh entry, so no row of the other account is kept.
+  const viewer = useSessionsViewerKey()
   return useQuery({
-    queryKey: ['insights', 'sessions'],
-    queryFn: () => fetchJson<SessionsData>('/api/agent/sessions', undefined, 'Failed to load agent sessions'),
+    queryKey: ['insights', 'sessions', viewer],
+    queryFn: async ({ queryKey }) => {
+      const answer = await fetchJson<SessionsData>('/api/agent/sessions', undefined, 'Failed to load agent sessions')
+      // A sandbox that did not answer keeps its last rows, as in the Sessions panel (useActiveSessions);
+      // an entry read longer ago than that (the page was away, a failed refetch) keeps nothing.
+      const now = Date.now()
+      const before = queryClient.getQueryState<SessionsData>(queryKey)
+      const recent = before?.data && now - before.dataUpdatedAt < STALE_ROW_MAX_MS ? before.data : undefined
+      return withKeptRows(recent, answer, now)
+    },
     enabled: access === 'allowed',
     staleTime: 10_000,
     refetchInterval: 15_000,

@@ -27,8 +27,8 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
@@ -167,8 +167,15 @@ class CveIntel:
     the graceful degradation the score model is written to expect.
     """
 
-    def __init__(self, pdcp_api_key: str = ""):
+    def __init__(self, pdcp_api_key: str = "", *, actor_user_id: str = "",
+                 real_actor_user_id: str | None = None, project_id: str | None = None):
         self.pdcp_api_key = pdcp_api_key or ""
+        # The call runs in the Kali sandbox of the PERSON the run is for, never the tenant's:
+        # it carries the owner's ProjectDiscovery key (I11). An admin acting as that person
+        # works in the person's act_as view (TD-26).
+        self.actor_user_id = actor_user_id or ""
+        self.real_actor_user_id = real_actor_user_id or None
+        self.project_id = project_id or None
         self.by_cve: dict = {}
         self.refreshed = 0
         self.intel_date: str = ""
@@ -203,52 +210,79 @@ class CveIntel:
         return self.by_cve
 
     async def _fetch(self, cve_ids: list) -> dict:
-        """Call vulnx through the kali-sandbox MCP server, in batches."""
+        """Call vulnx through the network recon MCP server of the person's Kali sandbox, in
+        batches."""
         try:
-            from mcp_registry import BearerAuth, MCPServer
             from langchain_mcp_adapters.client import MultiServerMCPClient  # noqa: F401
         except Exception:                                         # noqa: BLE001
             logger.info("No MCP client available; ranking uses class priors")
             return {}
 
         out: dict = {}
-        for start in range(0, len(cve_ids), BATCH_SIZE):
-            batch = cve_ids[start:start + BATCH_SIZE]
-            raw = await self._call_tool(",".join(batch))
-            if not raw:
-                continue
-            out.update(parse_intel(raw))
+        async with self._sandbox() as handle:
+            if handle is None:
+                return {}
+            for start in range(0, len(cve_ids), BATCH_SIZE):
+                batch = cve_ids[start:start + BATCH_SIZE]
+                raw = await self._call_tool(",".join(batch), handle)
+                if not raw:
+                    continue
+                out.update(parse_intel(raw))
         if out:
             logger.info(f"Refreshed intelligence for {len(out)} CVEs")
         return out
 
-    async def _call_tool(self, ids_argument: str) -> str:
-        """One `cve_intel` call. Never raises; returns "" on any failure."""
+    @asynccontextmanager
+    async def _sandbox(self):
+        """The person's sandbox handle for the refresh (one `triage` lease), or None when it
+        cannot be had: the ranking then uses the class priors, never another sandbox."""
+        import sandbox_router
+
+        person = self.actor_user_id
+        with sandbox_router.for_person(person, acting=bool(self.real_actor_user_id)):
+            try:
+                # The lookup reads no project folder: asking for the project to be mounted
+                # would replace a running sandbox that lacks it (its sessions and tunnels
+                # end with it). The project is still checked: the owner's key goes only to
+                # a sandbox of someone who may use it.
+                handle = await sandbox_router.acquire(person, project_id=None, kind="triage",
+                                                      check_project=self.project_id)
+            except sandbox_router.SandboxUnavailable as e:
+                logger.info(f"No Kali sandbox for cve_intel ({e.reason}); the ranking uses class priors")
+                handle = None
+            except Exception as e:                                # noqa: BLE001
+                logger.warning(f"No Kali sandbox for cve_intel ({e.__class__.__name__}); "
+                               f"the ranking uses class priors")
+                handle = None
+            try:
+                yield handle
+            finally:
+                if handle is not None:
+                    await sandbox_router.release(handle)
+
+    async def _call_tool(self, ids_argument: str, handle=None) -> str:
+        """One `cve_intel` call, in `handle`'s sandbox (the person's own, acquired here when
+        none is given). Never raises; returns "" on any failure."""
         # Belt and braces: the argument is rebuilt from validated ids, so this
         # can only ever be a comma-separated list of CVE ids.
         if not all(CVE_ID_RE.match(part) for part in ids_argument.split(",")):
             logger.error("Refusing a cve_intel argument that is not CVE ids")
             return ""
+        if handle is None:
+            async with self._sandbox() as own:
+                return await self._call_tool(ids_argument, own) if own is not None else ""
+
+        return await self._call_per_user(ids_argument, handle)
+
+    async def _call_per_user(self, ids_argument: str, handle) -> str:
+        """The call through the handle's own client: its instance's address and bearer, so
+        the owner's key reaches only that sandbox."""
+        import sandbox_router
 
         try:
-            from langchain_mcp_adapters.client import MultiServerMCPClient
-
-            url = os.environ.get(
-                "MCP_NETWORK_RECON_URL", "http://host.docker.internal:8000/sse")
-            token = os.environ.get("MCP_AUTH_TOKEN", "")
-            config = {
-                "network_recon": {
-                    "transport": "sse",
-                    "url": url,
-                    **({"headers": {"Authorization": f"Bearer {token}"}}
-                       if token else {}),
-                }
-            }
-            client = MultiServerMCPClient(config)
-            tools = await client.get_tools()
-            tool = next((t for t in tools if t.name == ALLOWED_TOOL), None)
+            tool = await sandbox_router.tool_for(ALLOWED_TOOL, handle)
             if tool is None:
-                logger.info(f"{ALLOWED_TOOL} is not available on the MCP server")
+                logger.info(f"{ALLOWED_TOOL} is not available in the Kali sandbox")
                 return ""
             result = await tool.ainvoke({
                 "args": ids_argument,

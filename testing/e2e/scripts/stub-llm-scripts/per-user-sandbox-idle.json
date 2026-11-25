@@ -1,0 +1,69 @@
+[
+  {
+    "note": "Scope guardrail: allow the placeholder project.",
+    "match": "for a penetration testing scan:",
+    "repeat": true,
+    "content": { "allowed": true, "reason": "Scripted stub: placeholder project, local lab only." }
+  },
+  {
+    "note": "Intent router: informational, where kali_shell is allowed.",
+    "match": "You are classifying a penetration testing request",
+    "repeat": true,
+    "content": {
+      "required_phase": "informational",
+      "attack_path_type": "cve_exploit",
+      "confidence": 0.9,
+      "reasoning": "Scripted stub: start in the informational phase."
+    }
+  },
+  {
+    "note": "Run 1, think 1: a file in the project folder (it must outlive the sandbox) and a marker in /tmp (it must not).",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: write a project file and a /tmp marker.",
+      "reasoning": "Scripted turn 1 of per-user-sandbox-idle.json.",
+      "action": "use_tool",
+      "tool_name": "kali_shell",
+      "tool_args": {
+        "command": "echo G1E2E-{{NONCE}} > /workspace/{{PROJECT_ID}}/g1e2e-{{NONCE}}.txt && echo G1E2E-{{NONCE}} > /tmp/g1e2e-{{NONCE}} && echo WROTE-{{NONCE}}"
+      },
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Run 1, think 2: end the run; the sandbox then goes idle.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: both files are written.",
+      "reasoning": "Scripted turn 2 of per-user-sandbox-idle.json.",
+      "action": "complete",
+      "completion_reason": "Scripted stub run 1 finished.",
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Run 2 (after the idle stop), think 1: read the project file back, say whether /tmp kept the first marker (the `||` keeps the exit code at 0 either way), and leave a second marker so the spec finds the container this run used.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: check what survived the stop.",
+      "reasoning": "Scripted turn 3 of per-user-sandbox-idle.json.",
+      "action": "use_tool",
+      "tool_name": "kali_shell",
+      "tool_args": {
+        "command": "cat /workspace/{{PROJECT_ID}}/g1e2e-{{NONCE}}.txt && (test -e /tmp/g1e2e-{{NONCE}} && echo TMP-KEPT-{{NONCE}} || echo TMP-NEW-{{NONCE}}) && echo G1E2E-{{NONCE}}-again > /tmp/g1e2e-{{NONCE}}-again"
+      },
+      "updated_todo_list": []
+    }
+  },
+  {
+    "note": "Run 2, think 2: end the run.",
+    "match": "what is your next action",
+    "content": {
+      "thought": "Scripted stub: checked.",
+      "reasoning": "Scripted turn 4 of per-user-sandbox-idle.json.",
+      "action": "complete",
+      "completion_reason": "Scripted stub run 2 finished.",
+      "updated_todo_list": []
+    }
+  }
+]

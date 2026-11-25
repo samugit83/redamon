@@ -36,6 +36,7 @@ export function useColumnFilterState(projectId: string | null, scope: string | n
     if (activeScope.current !== scopeKey) {
       activeScope.current = scopeKey
       hydratedScope.current = null
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- restores the editable filters from the preferences cache once per scope, racing the user's edits as the comment above describes
       setFilters({})
     }
     if (isLoading || hydratedScope.current === scopeKey) return

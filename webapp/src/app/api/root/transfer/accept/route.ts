@@ -8,6 +8,7 @@ import { isSecureRequest } from '@/lib/cookieSecurity'
 import { rbacFlags } from '@/lib/authz/flags'
 import { routeNotFound } from '@/lib/authz/accountStatus'
 import { acceptRootTransfer, transferForbidden } from '@/lib/authz/rootTransfer'
+import { EXPIRED_COOKIE } from '@/lib/expiredCookie'
 
 /**
  * POST `{stepUpPassword}`: the admin Root was offered to accepts it, with its own password
@@ -25,7 +26,7 @@ export const POST = withRouteErrors('Could not accept Root', async (request: Nex
   const result = await acceptRootTransfer(request, session, parsed.body.stepUpPassword)
   if (result instanceof NextResponse) return result
   const response = NextResponse.json({ transferred: true, ...result })
-  const expire = { httpOnly: true, sameSite: 'lax' as const, secure: isSecureRequest(request), path: '/', maxAge: 0 }
+  const expire = { httpOnly: true, sameSite: 'lax' as const, secure: isSecureRequest(request), path: '/', ...EXPIRED_COOKIE }
   response.cookies.set(AUTH_COOKIE_NAME, '', expire)
   response.cookies.set(ACT_AS_COOKIE_NAME, '', expire)
   return response

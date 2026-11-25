@@ -75,6 +75,7 @@ export function useMultiPartialReconSSE({
     if (eventSourceRef.current) {
       eventSourceRef.current.close()
       eventSourceRef.current = null
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- SSE subscription: switching runs closes the old stream and marks it disconnected
       setIsConnected(false)
     }
     if (reconnectTimeoutRef.current) {

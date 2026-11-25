@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useId, useState, type FormEvent } from 'react'
+import { useId, useState, type FormEvent } from 'react'
 import { Modal } from '@/components/ui'
 import { IdentityLabel, type AccountType } from './IdentityLabel'
 import styles from './ActAsDialog.module.css'
@@ -66,7 +66,11 @@ export function ActAsDialog({ isOpen, target, maxMinutes, reasonRequired, onConf
   const [error, setError] = useState('')
   const [pending, setPending] = useState(false)
 
-  useEffect(() => {
+  // Closing clears the form, and opening, closing or a new limit puts the duration back to its
+  // default; checked while rendering so a reopened dialog never shows the last one.
+  const [shownFor, setShownFor] = useState({ isOpen, initial })
+  if (shownFor.isOpen !== isOpen || shownFor.initial !== initial) {
+    setShownFor({ isOpen, initial })
     if (!isOpen) {
       setReason('')
       setPassword('')
@@ -74,7 +78,7 @@ export function ActAsDialog({ isOpen, target, maxMinutes, reasonRequired, onConf
       setPending(false)
     }
     setDuration(initial)
-  }, [isOpen, initial])
+  }
 
   async function submit(e?: FormEvent) {
     e?.preventDefault()

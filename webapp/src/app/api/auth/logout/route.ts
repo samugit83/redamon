@@ -10,6 +10,7 @@ import { rbacFlags } from '@/lib/authz/flags'
 import { actsAsOthers, endPresentedActAs } from '@/lib/authz/actAs'
 import { endDeviceSessionAtSignOut, sessionDeviceId } from '@/lib/authz/deviceSessions'
 import { safeErrorCode } from '@/lib/routeErrors'
+import { EXPIRED_COOKIE } from '@/lib/expiredCookie'
 
 export async function POST(request: NextRequest) {
   const meta = getClientMeta(request)
@@ -42,7 +43,7 @@ export async function POST(request: NextRequest) {
     sameSite: 'lax' as const,
     secure: isSecureRequest(request), // S12
     path: '/',
-    maxAge: 0,
+    ...EXPIRED_COOKIE,
   }
   response.cookies.set(AUTH_COOKIE_NAME, '', expire)
   // Also clear any admin impersonation so it can't silently resume on next login.

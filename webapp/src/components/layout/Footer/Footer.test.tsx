@@ -4,6 +4,7 @@
  * screen, and the hook itself also runs outside the toast layer (the theme bridge).
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useEffect } from 'react'
 import { render, screen, cleanup, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ToastProvider } from '@/components/ui/Toast/Toast'
@@ -17,7 +18,8 @@ import { Footer } from './Footer'
 
 let write: ((key: string, value: unknown) => void) | null = null
 function Writer() {
-  write = useUserPreferences().updatePref
+  const { updatePref } = useUserPreferences()
+  useEffect(() => { write = updatePref })
   return null
 }
 

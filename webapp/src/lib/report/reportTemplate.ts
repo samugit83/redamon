@@ -473,8 +473,8 @@ export function generateReportHtml(data: ReportData, narratives: LLMNarratives |
   const generatedAt = formatDate(data.generatedAt)
 
   // RoE fields (optional)
-  const clientName = (project as any).roeClientName || ''
-  const engagementType = (project as any).roeEngagementType || ''
+  const clientName = project.roeClientName || ''
+  const engagementType = project.roeEngagementType || ''
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -726,7 +726,7 @@ function hostnamePolicyLine(mode: string, totals: { recorded: number; scanned: n
 
 export function renderScope(data: ReportData, narrative?: string): string {
   const { project, graphOverview } = data
-  const p = project as any
+  const p = project
   const isIpMode = p.ipMode === true
   const isBatchMode = p.domainBatchMode === true
   const hostnameMode = ipHostnameModeOf(p.ipHostnameMode)

@@ -183,8 +183,8 @@ function condenseForAgent(data: ReturnType<typeof gatherReportData> extends Prom
       name: data.project.name,
       // A batch has no targetDomain; its scope summary names it instead.
       targetDomain: projectTargetLabel(data.project) || data.project.targetDomain,
-      roeEngagementType: (data.project as any).roeEngagementType,
-      roeClientName: (data.project as any).roeClientName,
+      roeEngagementType: data.project.roeEngagementType,
+      roeClientName: data.project.roeClientName,
     },
     metrics: data.metrics,
     graphOverview: {

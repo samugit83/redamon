@@ -17,7 +17,7 @@ const AUTH_COOKIE_NAME = 'redamon-auth'
 // It must NOT be written as '/api/mcp': matching is
 // `pathname === p || pathname.startsWith(p + '/')`, so that entry would make
 // the OUTBOUND plugin-admin routes (/api/mcp/manifest|reload|test) public too.
-const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/auth/logout', '/api/health', '/api/version/check', '/api/global/tunnel-config/sync', '/api/mcp-server']
+const PUBLIC_PATHS = ['/login', '/api/auth/login', '/api/auth/logout', '/api/health', '/api/version/check', '/api/mcp-server']
 
 // Invite links (step 2.9): the page a link opens and its API are sessionless while
 // RBAC_IDENTITY_ENABLED is on; with it off they do not exist and answer as any unknown path
@@ -102,6 +102,10 @@ const INTERNAL_ALLOWLIST: { method: string; pattern: RegExp }[] = [
   { method: 'POST', pattern: /^\/api\/internal\/agent\/authorize-decision$/ },
   // ...and, before each run starts on an open socket, whether another person is writing the project.
   { method: 'POST', pattern: /^\/api\/internal\/agent\/writer-check$/ },
+  { method: 'POST', pattern: /^\/api\/internal\/agent\/sandbox\/ensure$/ },
+  { method: 'POST', pattern: /^\/api\/internal\/agent\/sandbox\/lease$/ },
+  { method: 'POST', pattern: /^\/api\/internal\/agent\/sandbox\/release$/ },
+  { method: 'GET', pattern: /^\/api\/internal\/agent\/sandbox\/list$/ },
   // The daily budget on instance LLM providers (step 6.11): the agent reads a person's limit and use,
   // and reports its counts every minute. The route re-checks the master key.
   { method: 'GET', pattern: /^\/api\/internal\/llm-usage$/ },

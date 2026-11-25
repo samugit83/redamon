@@ -32,6 +32,6 @@ describe('the boot-time review budget clamp', () => {
     const clamp = entry.indexOf('node scripts/clamp-triage-review-budget.mjs')
     expect(push).toBeGreaterThan(-1)
     expect(clamp).toBeGreaterThan(push)
-    expect(entry.indexOf('exec node server.js')).toBeGreaterThan(clamp)
+    expect(entry.indexOf('exec node scripts/serve.cjs')).toBeGreaterThan(clamp)
   })
 })

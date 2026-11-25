@@ -709,7 +709,9 @@ export function FileSystemDrawer({
     setPreviewError(null)
     try {
       const url = `/api/agent/workspace/preview?projectId=${encodeURIComponent(projectId)}&path=${encodeURIComponent(entry.path)}`
-      const data = await fetchJson<Record<string, any>>(url, { cache: 'no-store' }, 'preview failed')
+      const data = await fetchJson<{
+        content: string; isBinary: boolean; truncated: boolean; mime: string; size: number
+      }>(url, { cache: 'no-store' }, 'preview failed')
       setPreviewing({
         path: entry.path,
         content: data.content,

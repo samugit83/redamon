@@ -127,7 +127,9 @@ function UnseenBadge({ count }: { count?: number }) {
 }
 
 export interface TunnelInfo {
+  /** The tunnel process runs; whether it forwards is `status` (src/lib/tunnelDisplay.ts). */
   active: boolean
+  status?: string
   host?: string
   port?: number
   srvPort?: number

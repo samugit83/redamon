@@ -195,7 +195,9 @@ safe_id "${SEED[ADMIN_A_ID]}" || exit 1
 ends() { printf "select count(*) from act_as_audit where admin_id = '%s' and event = 'end' and target_user_id = '%s';\n" "${SEED[ADMIN_A_ID]}" "$1" | db_sql; }
 all_ends() { printf "select count(*) from act_as_audit where admin_id = '%s' and event = 'end';\n" "${SEED[ADMIN_A_ID]}" | db_sql; }
 before_all="$(all_ends)"
-code="$(call "$ADMIN_JAR" POST /api/auth/act-as "{\"targetUserId\":\"${SEED[MEMBER_A_ID]}\"}")"
+# With RBAC_PERMISSIONS_ENABLED on, act-as needs a reason, a duration and the admin's own
+# password (rbac_act_as_live.sh); the switch-off route ignores the extra fields.
+code="$(call "$ADMIN_JAR" POST /api/auth/act-as "$(printf '{"targetUserId":"%s","reason":"rbac live user audit","durationMinutes":5,"stepUpPassword":"%s"}' "${SEED[MEMBER_A_ID]}" "${SEED[RBAC_PASSWORD]}")")"
 ok=0; [ "$code" = 200 ] && ok=1; check "act as rbac-member-a -> $code" "$ok"
 code="$(call "$ADMIN_JAR" DELETE /api/auth/act-as)"
 ok=0; [ "$code" = 200 ] && [ "$(ends "${SEED[MEMBER_A_ID]}")" = 1 ] && ok=1

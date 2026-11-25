@@ -17,6 +17,7 @@ export function GitHubStarBanner({ hasAttackChain }: GitHubStarBannerProps) {
     if (!hasAttackChain) return
     const dismissed = localStorage.getItem(STORAGE_KEY)
     if (!dismissed) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- localStorage exists only after mount, so the server and the first client render both show nothing
       setVisible(true)
     }
   }, [hasAttackChain])

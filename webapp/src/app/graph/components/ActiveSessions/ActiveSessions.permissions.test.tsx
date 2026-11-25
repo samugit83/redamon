@@ -44,7 +44,7 @@ afterEach(() => {
 })
 
 const base = {
-  jobs: [], nonMsfSessions: [], agentBusy: false, isLoading: false, projectId: 'p1',
+  jobs: [], nonMsfSessions: [], busyInstances: [], isLoading: false, projectId: 'p1',
   onInteract: vi.fn(), onKillSession: vi.fn(async () => {}), onKillJob: vi.fn(async () => {}),
 }
 const session = { id: 7, type: 'shell', info: '', tunnel_peer: '10.0.0.1:4444', target_host: '', via_exploit: '', chat_session_id: null } as never

@@ -30,9 +30,15 @@ export function ProjectWriters({ projectId }: { projectId: string | null }) {
   const access = useProjectAccess(projectId)
   const asks = !!projectId && (access?.level === 'owner' || access?.level === 'write')
   const [view, setView] = useState<OtherWritersView | null>(null)
+  // A change of project or of access forgets the last read before the next one answers.
+  const readFor = `${asks}|${projectId ?? ''}`
+  const [shownFor, setShownFor] = useState(readFor)
+  if (shownFor !== readFor) {
+    setShownFor(readFor)
+    setView(null)
+  }
 
   useEffect(() => {
-    setView(null)
     if (!asks || !projectId) return
     let live = true
     const read = async () => {

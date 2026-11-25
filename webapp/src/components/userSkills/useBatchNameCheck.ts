@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import type { NameCheckResult } from '@/lib/userSkills'
 import { ApiError, readApiError, toApiError } from '@/lib/apiError'
 
@@ -24,9 +24,12 @@ export function useBatchNameCheck(
   onOutcome: (outcome: BatchNameCheckOutcome) => void,
 ): { checkNow: () => Promise<NameCheckResult[] | null> } {
   const report = useRef(onOutcome)
-  report.current = onOutcome
   const latest = useRef(entries)
-  latest.current = entries
+  // Updated after each commit, before any effect or handler of that commit reads them.
+  useLayoutEffect(() => {
+    report.current = onOutcome
+    latest.current = entries
+  })
   const controller = useRef<AbortController | null>(null)
   const listKey = JSON.stringify(entries.map((e) => [e.key, e.name]))
 

@@ -7,6 +7,10 @@ import type { FitAddon } from '@xterm/addon-fit'
 import { buildAgentWsUrl } from '@/hooks/agentWsUrl'
 import { describeWsClose, wsUrlForDisplay } from '@/hooks/agentWsClose'
 import { mintWsTicket, type WsTicketResult } from '@/lib/wsTicket'
+import { useSandboxUnavailable } from '@/hooks/useSandboxUnavailable'
+import { readOwnSandboxStatus } from '@/lib/sandbox/ownSandboxStatus'
+import { reversePortLine } from '@/lib/sandbox/reversePort'
+import { TERMINAL_STARTING_BANNER, parseSandboxFrame, sandboxCloseLine } from './sandboxFrames'
 import styles from './KaliTerminal.module.css'
 
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -20,9 +24,6 @@ const PING_INTERVAL_MS = 30000
 function getWsUrl(ticket?: string): string {
   return buildAgentWsUrl('/ws/kali-terminal', ticket)
 }
-
-/** Always on screen: the sandbox, its /workspace and its shell history are one for every project. */
-export const SHARED_ENVIRONMENT_NOTICE = "Shared environment: other projects' files are visible here."
 
 /**
  * The line for a ticket the terminal could not use: the mint's own refusal
@@ -41,9 +42,18 @@ export function ticketFailureLine(minted: WsTicketResult): string | null {
   return null
 }
 
-/** "Disconnected from kali-sandbox (close 1011: Kali sandbox terminal unavailable (ConnectionRefusedError))". */
+/** "Disconnected from your Kali sandbox (close 1011: Kali sandbox terminal unavailable (ConnectionRefusedError))". */
 export function disconnectLine(code: number, reason: string): string {
-  return `Disconnected from kali-sandbox (${describeWsClose(code, reason)})`
+  return `Disconnected from your Kali sandbox (${describeWsClose(code, reason)})`
+}
+
+/**
+ * The socket to the agent's terminal proxy failed. A browser reports an agent that is down and one
+ * that refused the handshake (a ticket or origin it did not accept) the same way, so the line names
+ * both, as the 1006 close line does; it says nothing of the sandbox.
+ */
+export function socketErrorLine(displayUrl: string): string {
+  return `WebSocket connection to ${displayUrl} failed: the agent did not accept the connection (down, restarting, or the handshake was refused).`
 }
 
 export interface KaliTerminalProps {
@@ -58,6 +68,14 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
   const fitAddonRef = useRef<FitAddon | null>(null)
   const [status, setStatus] = useState<ConnectionStatus>('disconnected')
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [sandboxBanner, setSandboxBanner] = useState<string | null>(null)
+  // The person's own reverse-shell port (FU-24), read once the shell of a connection speaks.
+  const [portLine, setPortLine] = useState<string | null>(null)
+  // connect() is created once, so what it calls later is read through refs.
+  const showSandboxUnavailable = useSandboxUnavailable()
+  const showUnavailableRef = useRef(showSandboxUnavailable)
+  showUnavailableRef.current = showSandboxUnavailable
+  const reconnectRef = useRef<() => void>(() => {})
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null)
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const inputDisposablesRef = useRef<Array<{ dispose: () => void }>>([])
@@ -171,7 +189,7 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
     terminal.writeln('\x1b[1;36m  \u2502\x1b[0m  \x1b[2;37mmetasploit \u2022 nmap \u2022 nuclei \u2022 hydra \u2022 sqlmap\x1b[0m \x1b[1;36m\u2502\x1b[0m')
     terminal.writeln('\x1b[1;36m  \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\x1b[0m')
     terminal.writeln('')
-    terminal.writeln('\x1b[2;37m  Connecting to kali-sandbox...\x1b[0m')
+    terminal.writeln('\x1b[2;37m  Connecting to your Kali sandbox...\x1b[0m')
 
     // STRIDE S3: mint a ws-ticket (bound to the effective user + project) before
     // dialing. Without a valid ticket the agent proxy now closes the socket.
@@ -195,6 +213,11 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
     const ws = new WebSocket(url)
     wsRef.current = ws
     connectingRef.current = false
+    // Per connection: sandbox frames are read only until the PTY speaks, and an
+    // `unavailable` frame shows one modal, whose Retry replaces the reconnect loop.
+    let ptyStarted = false
+    let unavailableReason: string | null = null
+    let closed = false
 
     ws.binaryType = 'arraybuffer'
 
@@ -253,20 +276,45 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
     }
 
     ws.onmessage = (event) => {
-      if (event.data instanceof ArrayBuffer) {
+      // binaryType is 'arraybuffer': anything not a string is PTY output.
+      if (typeof event.data !== 'string') {
+        if (!ptyStarted) {
+          ptyStarted = true
+          setSandboxBanner(null)
+          // The sandbox runs now, so its port is the one this shell's handlers bind.
+          void readOwnSandboxStatus().then((status) => {
+            if (mountedRef.current && !closed && wsRef.current === ws) setPortLine(reversePortLine(status?.reversePort ?? null))
+          })
+        }
         terminal.write(new Uint8Array(event.data))
-      } else {
-        terminal.write(event.data)
+        return
       }
+      const sandbox = ptyStarted ? null : parseSandboxFrame(event.data)
+      if (!sandbox) {
+        terminal.write(event.data)
+        return
+      }
+      if (sandbox.state === 'starting') {
+        setSandboxBanner(TERMINAL_STARTING_BANNER)
+        return
+      }
+      setSandboxBanner(null)
+      if (sandbox.state !== 'unavailable' || unavailableReason) return
+      const reason = sandbox.reason ?? 'error'
+      unavailableReason = reason
+      void showUnavailableRef.current(sandbox).then((answer) => {
+        if (answer === 'retry' && reason !== 'refused' && mountedRef.current) reconnectRef.current()
+      })
     }
 
     ws.onerror = () => {
       if (!mountedRef.current) return
       setStatus('error')
-      terminal.writeln(`\n\x1b[1;31mWebSocket connection to ${wsUrlForDisplay(url)} failed. Is the kali-sandbox running?\x1b[0m`)
+      terminal.writeln(`\n\x1b[1;31m${socketErrorLine(wsUrlForDisplay(url))}\x1b[0m`)
     }
 
     ws.onclose = (event: CloseEvent) => {
+      closed = true
       if (!mountedRef.current) return
 
       // Clear keepalive
@@ -276,7 +324,16 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
       }
 
       setStatus('disconnected')
-      terminal.writeln(`\n\x1b[1;31m\u2717 ${disconnectLine(event.code, event.reason)}\x1b[0m`)
+      setSandboxBanner(null)
+      setPortLine(null)
+      const sandboxLine = sandboxCloseLine(event.code, event.reason, unavailableReason)
+      terminal.writeln(`\n\x1b[1;31m\u2717 ${sandboxLine ?? disconnectLine(event.code, event.reason)}\x1b[0m`)
+
+      // The sandbox modal's Retry reconnects; a refused sandbox never does by itself.
+      if (unavailableReason) {
+        if (unavailableReason !== 'refused') terminal.writeln('\x1b[2;37m  Click "Reconnect" to try again.\x1b[0m')
+        return
+      }
 
       // Auto-reconnect with exponential backoff
       const attempt = reconnectAttemptRef.current
@@ -305,6 +362,8 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
       wsRef.current = null
     }
     setStatus('disconnected')
+    setSandboxBanner(null)
+    setPortLine(null)
   }, [])
 
   const reconnect = useCallback(() => {
@@ -312,6 +371,7 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
     disconnect()
     reconnectTimerRef.current = setTimeout(() => connect(), 200)
   }, [disconnect, connect])
+  reconnectRef.current = reconnect
 
   const toggleFullscreen = useCallback(() => {
     setIsFullscreen(prev => !prev)
@@ -430,7 +490,7 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
         <div className={styles.toolbarLeft}>
           <TerminalIcon size={14} className={styles.terminalIcon} />
           <span className={styles.title}>RedAmon Terminal</span>
-          <span className={styles.subtitle}>kali-sandbox</span>
+          <span className={styles.subtitle}>your Kali sandbox</span>
         </div>
         <div className={styles.toolbarRight}>
           <span className={`${styles.statusBadge} ${styles[status]}`} aria-live="polite">
@@ -461,7 +521,8 @@ export const KaliTerminal = memo(function KaliTerminal({ userId, projectId }: Ka
           </button>
         </div>
       </div>
-      <div className={styles.sharedNotice} role="note">{SHARED_ENVIRONMENT_NOTICE}</div>
+      {portLine && <div className={styles.reversePort} data-testid="kali-reverse-port">{portLine}</div>}
+      {sandboxBanner && <div className={styles.sandboxBanner} role="status">{sandboxBanner}</div>}
       <div ref={termRef} className={styles.terminal} role="application" aria-label="Kali Linux terminal" />
     </div>
   )

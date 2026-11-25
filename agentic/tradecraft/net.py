@@ -56,6 +56,15 @@ ERRORS = frozenset({
     "navigation_failed",    # the browser could not load the page
 })
 
+class BrowserUnavailable(Exception):
+    """The browser tool could not run the script at all: ``reason`` says why (the sandbox
+    router's refusal reason, or ``no_tool``). Read as ``browser_unavailable``."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(f"browser_unavailable ({reason})")
+
+
 # No response body is read past this, whatever `max_bytes` asks: the per-page setting (2 MB at most) is far
 # below it, so it only stops a caller that forgot `max_bytes` from reading an endless or decompressing body.
 HARD_MAX_BYTES = 100 * 1024 * 1024
@@ -410,6 +419,11 @@ class GuardedFetcher:
             out = await asyncio.wait_for(tool.ainvoke({"script": script}), timeout=timeout + _BROWSER_MARGIN_S)
         except asyncio.TimeoutError:
             return "", "timeout"
+        except BrowserUnavailable as e:
+            # No sandbox to render in (no memory, the sandbox limit, no sandbox for this
+            # account, an outage): the browser was not there, the page did not fail in it.
+            logger.info(f"[tradecraft] net browser unavailable ({e.reason})")
+            return "", "browser_unavailable"
         except Exception as e:
             logger.warning(f"[tradecraft] net browser error: {type(e).__name__}")
             return "", "browser_error"

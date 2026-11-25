@@ -45,6 +45,7 @@ from orchestrator_helpers.llm_setup import apply_project_settings
 from agent_context import current_llm, current_llm_wait_listener
 from agent_in_the_loop.broker import get_broker
 from agent_in_the_loop import is_loop_llm
+import sandbox_router
 from prompt_safety import fence_node_context
 from orchestrator_helpers.streaming import clear_stale_streaming_state, emit_streaming_events
 from orchestrator_helpers.body_sweep import sweep_session_bodies
@@ -82,12 +83,6 @@ NO_PENDING_REQUEST_MESSAGE = (
 # answer left in a checkpoint beside a request can never be applied by the next message
 # (initialize resumes on "answer + request"), with no permission check and no audit row.
 _NO_ANSWER = {**NO_APPROVAL_ANSWER, **NO_TOOL_CONFIRMATION_ANSWER}
-
-# Base URL for session manager (kali-sandbox HTTP server on port 8013)
-_SESSION_MANAGER_BASE = os.environ.get(
-    "MCP_METASPLOIT_PROGRESS_URL", "http://kali-sandbox:8013/progress"
-).rsplit("/progress", 1)[0]
-
 
 class AgentOrchestrator:
     """
@@ -259,21 +254,14 @@ class AgentOrchestrator:
 
     async def _setup_tools(self) -> None:
         """Set up all tools (MCP and Neo4j)."""
-        # Build MCP server config: 5 system servers + (later, after project
-        # settings load) any user-managed servers from UserSettings.mcpServers.
-        # User servers are merged in via reload_mcp_manifests() once the
-        # project's settings are available; at startup we only have the
-        # system set so the agent can come up cleanly.
-        from tools import _build_system_mcp_servers
+        # The five system servers are each person's own (sandbox_router), never a
+        # connection of this shared manager, which holds user-managed servers only
+        # (UserSettings.mcpServers, merged in by reload_mcp_manifests() once a project's
+        # settings are available). At startup it holds none.
         import mcp_registry
-        system_servers = _build_system_mcp_servers()
-        mcp_registry.set_current(system_servers)
-        server_configs, env_warnings = mcp_registry.to_mcp_servers_dict(system_servers)
-        if env_warnings:
-            mcp_registry.set_current(system_servers, warnings=env_warnings)
-
-        mcp_manager = MCPToolsManager(server_configs=server_configs)
-        mcp_tools = await mcp_manager.get_tools()
+        mcp_registry.set_current([])
+        mcp_manager = MCPToolsManager(server_configs={})
+        mcp_tools = []
 
         # No client of its own: text-to-Cypher runs on the calling run's client
         # (current_llm), so it is never another owner's.
@@ -321,15 +309,14 @@ class AgentOrchestrator:
             graph_schema_tool=graph_schema_tool,
             graph_summary_tool=graph_summary_tool,
         )
-        # No declared_tool_names filter at startup — only system MCP tools
-        # are loaded. User MCPs (with their declared filter) come through
-        # reload_mcp_manifests() once project settings are available.
+        # User MCPs (with their declared filter) come through reload_mcp_manifests()
+        # once project settings are available.
         self.tool_executor.register_mcp_tools(mcp_tools)
 
         logger.info(f"Tools initialized: {len(self.tool_executor.get_all_tools())} available")
 
     async def reload_mcp_manifests(self, user_servers_raw=None, owner_id=None) -> dict:
-        """Re-merge system + user MCP servers, refresh registry, reconnect MCP client.
+        """Reload the user MCP servers, refresh the registry, reconnect the MCP client.
 
         Called by the webapp's POST /mcp/reload after a user adds/edits/deletes an
         MCP server, once mcp_toolset_guard admitted it. Always reloads, even the set
@@ -382,23 +369,19 @@ class AgentOrchestrator:
             return {**result, "loaded": loaded}
 
     async def _load_user_mcp_servers(self, user_servers_raw: list) -> tuple:
-        """Load system + user servers. Returns (manifest snapshot, loaded).
+        """Load the user servers. Returns (manifest snapshot, loaded).
 
         A load that fails keeps no user MCP tool: the client answers all-or-nothing,
         and keeping the previous tools would route a call to the previous owner's
-        server (and token) under a name this set declared. The system servers are
-        loaded alone instead, so the Kali tools stay.
+        server (and token) under a name this set declared. The Kali tools are each
+        person's (sandbox_router), never this manager's, so they stay either way.
         """
-        from tools import _build_system_mcp_servers
         from prompts.tool_registry import apply_mcp_manifests_to_registry
         import mcp_registry
 
         user_servers, parse_errors = mcp_registry.parse_user_servers(user_servers_raw)
-        system_servers = _build_system_mcp_servers()
-        all_servers = system_servers + user_servers
-
-        server_configs, env_warnings = mcp_registry.to_mcp_servers_dict(all_servers)
-        mcp_registry.set_current(all_servers, errors=parse_errors, warnings=env_warnings)
+        server_configs, env_warnings = mcp_registry.to_mcp_servers_dict(user_servers)
+        mcp_registry.set_current(user_servers, errors=parse_errors, warnings=env_warnings)
 
         declared_user_tools = apply_mcp_manifests_to_registry(user_servers)
         loaded = True
@@ -406,7 +389,11 @@ class AgentOrchestrator:
         # Swap the manager's config and force a reconnect to bind a fresh
         # MultiServerMCPClient that includes any new user-MCP URLs. Forced: a
         # transport-error rebuild that finished meanwhile used the previous configs.
-        if hasattr(self, '_mcp_manager') and self._mcp_manager is not None:
+        if hasattr(self, '_mcp_manager') and self._mcp_manager is not None and not server_configs:
+            # No user server: nothing for the shared manager to hold.
+            await self._mcp_manager.disconnect()
+            self.tool_executor.register_mcp_tools([], declared_tool_names=declared_user_tools)
+        elif hasattr(self, '_mcp_manager') and self._mcp_manager is not None:
             self._mcp_manager.replace_server_configs(server_configs)
             new_gen, new_tools = await self._mcp_manager.reconnect(
                 self._mcp_manager.generation, reason="mcp_manifest_reload", force=True,
@@ -423,25 +410,17 @@ class AgentOrchestrator:
                 )
             else:
                 loaded = False
-                system_tools = []
-                if user_servers:
-                    system_configs, _ = mcp_registry.to_mcp_servers_dict(system_servers)
-                    self._mcp_manager.replace_server_configs(system_configs)
-                    _, system_tools = await self._mcp_manager.reconnect(
-                        self._mcp_manager.generation, reason="mcp_manifest_reload_system_only",
-                        force=True,
-                    )
-                self.tool_executor.register_mcp_tools(system_tools or [], declared_tool_names=set())
+                await self._mcp_manager.disconnect()
+                self.tool_executor.register_mcp_tools([], declared_tool_names=set())
                 # A disabled server was never part of this load, so it is not a failed one.
                 tried = sum(1 for s in user_servers if s.enabled)
                 logger.warning(
                     f"MCP manifest reload failed: {tried} user server(s) not loaded; "
-                    f"no user MCP tool is registered, {len(system_tools or [])} system tool(s). "
-                    "The next run loads the set again."
+                    "no user MCP tool is registered. The next run loads the set again."
                 )
 
         return {
-            "servers": mcp_registry.redact_for_api(all_servers),
+            "servers": mcp_registry.redact_for_api(user_servers),
             "errors": [e.model_dump() for e in parse_errors],
             "warnings": [w.model_dump() for w in env_warnings],
             "declared_user_tool_names": sorted(declared_user_tools),
@@ -510,10 +489,10 @@ class AgentOrchestrator:
             return await think_node(state, config, llm=self.llm, guidance_queues=self._guidance_queues, neo4j_creds=neo4j_creds, streaming_callbacks=self._streaming_callbacks, graph_view_cyphers=self._graph_view_cyphers)
 
         async def _execute_tool(state, config=None):
-            return await execute_tool_node(state, config, tool_executor=self.tool_executor, streaming_callbacks=self._streaming_callbacks, session_manager_base=_SESSION_MANAGER_BASE, graph_view_cyphers=self._graph_view_cyphers)
+            return await execute_tool_node(state, config, tool_executor=self.tool_executor, streaming_callbacks=self._streaming_callbacks, graph_view_cyphers=self._graph_view_cyphers)
 
         async def _execute_plan(state, config=None):
-            return await execute_plan_node(state, config, tool_executor=self.tool_executor, streaming_callbacks=self._streaming_callbacks, session_manager_base=_SESSION_MANAGER_BASE, graph_view_cyphers=self._graph_view_cyphers)
+            return await execute_plan_node(state, config, tool_executor=self.tool_executor, streaming_callbacks=self._streaming_callbacks, graph_view_cyphers=self._graph_view_cyphers)
 
         async def _await_approval(state, config=None):
             await sweep_session_bodies(self.tool_executor, state)
@@ -545,7 +524,6 @@ class AgentOrchestrator:
             llm_getter=lambda: self.llm,
             tool_executor=self.tool_executor,
             streaming_callbacks=self._streaming_callbacks,
-            session_manager_base=_SESSION_MANAGER_BASE,
             neo4j_creds=neo4j_creds,
             graph_view_cyphers=self._graph_view_cyphers,
         )
@@ -901,7 +879,8 @@ class AgentOrchestrator:
             }
 
             async with self._mcp_toolset_lease(tenant_user_id or user_id):
-                final_state = await self.graph.ainvoke(input_data, config)
+                async with sandbox_router.run_scope(session_id):
+                    final_state = await self.graph.ainvoke(input_data, config)
 
             return self._build_response(final_state)
 
@@ -1093,7 +1072,9 @@ class AgentOrchestrator:
             listener = current_llm_wait_listener.set(
                 getattr(streaming_callback, "on_rate_limit_wait", None))
             try:
-                async with get_broker().run_scope(
+                # The run's Kali tools take one sandbox lease, on the first call, released
+                # when the run ends (sandbox_router); its nodes and members share it.
+                async with sandbox_router.run_scope(session_id), get_broker().run_scope(
                         user_id, project_id, session_id, streaming_callback, uses_loop=uses_loop,
                         tool_confirmation=bool(get_setting('REQUIRE_TOOL_CONFIRMATION', True))) as scope:
                     async for event in self.graph.astream(graph_input, config, stream_mode="values"):

@@ -30,7 +30,7 @@ const BASE: Data = {
 
 /** Renders with live state so a change event feeds the next render, as in the form. */
 function renderSection(initial: Partial<Data> = {}) {
-  let data: Data = { ...BASE, ...initial }
+  const data: Data = { ...BASE, ...initial }
   const updateField = vi.fn((k: string, v: unknown) => { data[k] = v; rerender() })
   const draw = () => <JevSelectionProvider ownerUserId="u1" selectedProviderId={typeof data.jevProviderId === 'string' ? data.jevProviderId : null}>
     <TargetSection data={{ ...data } as never} updateField={updateField as never} mode="create" />
@@ -230,7 +230,7 @@ describe('mode switching', () => {
 describe('the wildcard Root control', () => {
   /** Renders in edit mode, where the batch list is now unlocked. */
   function renderEdit(initial: Partial<Data> = {}) {
-    let data: Data = { ...BASE, ...initial }
+    const data: Data = { ...BASE, ...initial }
     const updateField = vi.fn((k: string, v: unknown) => { data[k] = v; rerender() })
     const view = render(<TargetSection data={data as never} updateField={updateField as never} mode="edit" />)
     function rerender() {

@@ -98,7 +98,7 @@ export function QuotasPanel({ settings, onSaved }: { settings: InstanceSettingsV
 
   return (
     <Panel id="quotas" title="Quotas" lead={LEAD}>
-      <form onSubmit={submit} className={styles.page} style={{ gap: 'var(--space-3)' }} noValidate>
+      <form onSubmit={submit} className={styles.page} noValidate>
         <EntryFields
           legend="Default for everyone"
           prefix="quota-default"
@@ -110,7 +110,7 @@ export function QuotasPanel({ settings, onSaved }: { settings: InstanceSettingsV
         />
 
         <h3 className={styles.groupTitle}>Per permission set</h3>
-        {Object.keys(draft.perSet).length === 0 && <p className={styles.state}>No set has its own quota.</p>}
+        {Object.keys(draft.perSet).length === 0 && <p className={styles.note}>No set has its own quota.</p>}
         {Object.keys(draft.perSet).map((id, i) => (
           <EntryFields
             key={id}
@@ -125,7 +125,7 @@ export function QuotasPanel({ settings, onSaved }: { settings: InstanceSettingsV
           />
         ))}
         {freeSets.length > 0 && (
-          <div className={styles.actions}>
+          <div className={styles.inline}>
             <label htmlFor="quota-add-set">Give a set its own quota</label>
             <select id="quota-add-set" className="select" value={addSet} onChange={(e) => setAddSet(e.target.value)}>
               <option value="">Choose a set…</option>
@@ -138,7 +138,7 @@ export function QuotasPanel({ settings, onSaved }: { settings: InstanceSettingsV
         )}
 
         <h3 className={styles.groupTitle}>Per account</h3>
-        {Object.keys(draft.perUser).length === 0 && <p className={styles.state}>No account has its own quota.</p>}
+        {Object.keys(draft.perUser).length === 0 && <p className={styles.note}>No account has its own quota.</p>}
         {Object.keys(draft.perUser).map((id, i) => (
           <EntryFields
             key={id}
@@ -188,49 +188,53 @@ function EntryFields({ legend, link, prefix, errorPrefix, cells, allowInherit, e
   onRemove?: () => void
 }) {
   const modes: CellMode[] = allowInherit ? ['inherit', 'unlimited', 'limit'] : ['unlimited', 'limit']
+  const legendId = `${prefix}-legend`
   return (
-    <fieldset className={styles.fields} style={{ border: '1px solid var(--border-default)', borderRadius: 'var(--radius-md)', padding: 'var(--space-3)' }}>
-      <legend className={styles.groupTitle}>
-        {link ? <GuardedLink href={link}>{legend}</GuardedLink> : legend}
-      </legend>
-      {QUOTA_FIELD_SPECS.map((spec) => {
-        const id = `${prefix}-${spec.field}`
-        const cell = cells[spec.field]
-        const error = errors[`${errorPrefix}.${spec.field}`]
-        return (
-          <div key={spec.field} className={styles.field}>
-            <label htmlFor={id}>{spec.label}</label>
-            <select
-              id={id}
-              className="select"
-              value={cell.mode}
-              aria-describedby={`${id}-hint`}
-              onChange={(e) => onChange(spec.field, { mode: e.target.value as CellMode, value: cell.value })}
-            >
-              {modes.map((m) => <option key={m} value={m}>{MODE_LABEL[m]}</option>)}
-            </select>
-            {cell.mode === 'limit' && (
-              <input
-                id={`${id}-value`}
-                className="textInput"
-                inputMode="numeric"
-                aria-label={`${spec.label}: limit in ${spec.unit} for ${legend}`}
-                aria-invalid={!!error}
-                value={cell.value}
-                onChange={(e) => onChange(spec.field, { mode: 'limit', value: e.target.value })}
-              />
-            )}
-            <span id={`${id}-hint`} className={error ? styles.fieldError : styles.hint}>
-              {error ?? (cell.mode === 'inherit' ? 'The next level decides.' : `${spec.min} to ${spec.max} ${spec.unit}.`)}
-            </span>
-          </div>
-        )
-      })}
-      {onRemove && (
-        <div className={styles.actions}>
+    // Named by its header rather than a <legend>, so the Remove button can sit in the same bar.
+    <fieldset className={styles.entry} aria-labelledby={legendId}>
+      <div className={styles.entryHead}>
+        <span id={legendId} className={styles.entryLegend}>
+          {link ? <GuardedLink href={link}>{legend}</GuardedLink> : legend}
+        </span>
+        {onRemove && (
           <button type="button" className="textButton" onClick={onRemove} aria-label={`Remove the quota of ${legend}`}>Remove</button>
-        </div>
-      )}
+        )}
+      </div>
+      <div className={styles.entryGrid}>
+        {QUOTA_FIELD_SPECS.map((spec) => {
+          const id = `${prefix}-${spec.field}`
+          const cell = cells[spec.field]
+          const error = errors[`${errorPrefix}.${spec.field}`]
+          return (
+            <div key={spec.field} className={styles.entryField}>
+              <label htmlFor={id}>{spec.label}</label>
+              <select
+                id={id}
+                className="select"
+                value={cell.mode}
+                aria-describedby={`${id}-hint`}
+                onChange={(e) => onChange(spec.field, { mode: e.target.value as CellMode, value: cell.value })}
+              >
+                {modes.map((m) => <option key={m} value={m}>{MODE_LABEL[m]}</option>)}
+              </select>
+              {cell.mode === 'limit' && (
+                <input
+                  id={`${id}-value`}
+                  className="textInput"
+                  inputMode="numeric"
+                  aria-label={`${spec.label}: limit in ${spec.unit} for ${legend}`}
+                  aria-invalid={!!error}
+                  value={cell.value}
+                  onChange={(e) => onChange(spec.field, { mode: 'limit', value: e.target.value })}
+                />
+              )}
+              <span id={`${id}-hint`} className={error ? styles.rowError : styles.rowHint}>
+                {error ?? (cell.mode === 'inherit' ? 'The next level decides.' : `${spec.min} to ${spec.max} ${spec.unit}.`)}
+              </span>
+            </div>
+          )
+        })}
+      </div>
     </fieldset>
   )
 }
@@ -258,8 +262,8 @@ function AccountSearch({ exclude, onPick }: { exclude: string[]; onPick: (u: Use
   }
 
   return (
-    <div className={styles.fields}>
-      <div className={styles.actions}>
+    <div className={styles.page} style={{ gap: 'var(--space-2)' }}>
+      <div className={styles.inline}>
         <label htmlFor="quota-user-search">Give an account its own quota</label>
         <input
           id="quota-user-search"
@@ -274,13 +278,13 @@ function AccountSearch({ exclude, onPick }: { exclude: string[]; onPick: (u: Use
         </button>
       </div>
       {error && <div className={styles.error} role="alert">{error}</div>}
-      {results && results.length === 0 && <p className={styles.state}>No account matches.</p>}
+      {results && results.length === 0 && <p className={styles.note}>No account matches.</p>}
       {results && results.length > 0 && (
-        <ul className={styles.toolList} aria-label="Accounts found">
+        <ul className={`${styles.rows} ${styles.itemList}`} aria-label="Accounts found">
           {results.map((u) => (
-            <li key={u.id}>
-              {u.name} ({u.email}){' '}
-              <button type="button" className="textButton" disabled={exclude.includes(u.id)} onClick={() => onPick(u)}>
+            <li key={u.id} className={styles.item}>
+              <span>{u.name} ({u.email})</span>
+              <button type="button" className="secondaryButton" disabled={exclude.includes(u.id)} onClick={() => onPick(u)}>
                 {exclude.includes(u.id) ? 'Has its own quota' : `Add ${u.email}`}
               </button>
             </li>

@@ -126,9 +126,9 @@ export const JsDepSignalsTable = memo(function JsDepSignalsTable({ projectId }: 
     [sortedRows, rows.length],
   )
 
-  const m = data?.meta as any
-  const meta = rows.length && m?.byType
-    ? Object.entries(m.byType).map(([k, v]) => `${k}:${v}`).join(' · ')
+  const byType = data?.meta?.byType as Record<string, number> | undefined
+  const meta = rows.length && byType
+    ? Object.entries(byType).map(([k, v]) => `${k}:${v}`).join(' · ')
     : undefined
 
   return (

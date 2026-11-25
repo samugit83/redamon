@@ -2,6 +2,7 @@
 
 import { useRef, useEffect, useMemo } from 'react'
 import dynamic from 'next/dynamic'
+import { forceCollide } from 'd3-force'
 import { GraphData, GraphNode, GraphLink } from '../../types'
 import { getNodeColor, getNodeSize, getGlowLevel } from '../../utils'
 import { getLinkColor, getLinkWidth2D, getParticleWidth, getParticleColor, getParticleCount, getParticleSpeed } from '../../utils/linkHelpers'
@@ -71,12 +72,9 @@ export function GraphCanvas2D({
       const fg = graphRef.current
       if (!fg) return
 
-      const d3 = require('d3-force')
       fg.d3Force(
         'collide',
-        d3
-          .forceCollide()
-          .radius(FORCE_CONFIG.collisionRadius)
+        forceCollide()          .radius(FORCE_CONFIG.collisionRadius)
           .strength(FORCE_CONFIG.collisionStrength)
           .iterations(forceConfig.collisionIterations)
       )

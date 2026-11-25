@@ -1,5 +1,6 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
 import { mintToken, signIn } from './auth'
+import { ownerJevProviderId } from './jevProvider'
 
 /**
  * The three Route Exposure Jev hooks, driven through the real settings UI.
@@ -9,8 +10,8 @@ import { mintToken, signIn } from './auth'
  * the Route Exposure card (Vulnerability Scanning tab) and a card under Target &
  * Modules -> AI in Pipeline. A change on one must show on the other with no copy
  * step, leave the form in the PUT, and persist. Turning one on is refused
- * server-side without a Jev token on the owner's account, so the account this
- * signs in as must hold one.
+ * server-side unless the project selects one of the owner's Jev providers, so the
+ * account this signs in as must hold one; the throwaway project selects it.
  *
  * A throwaway project on a .test domain, deleted afterwards. Requires the stack up
  * and the webapp image built. Run:
@@ -32,11 +33,13 @@ test.beforeAll(async ({ playwright, baseURL }) => {
   api = await playwright.request.newContext({
     baseURL, extraHTTPHeaders: { cookie: `redamon-auth=${mintToken(USER)}` },
   })
+  const jevProviderId = await ownerJevProviderId(api, USER)
+  test.skip(!jevProviderId, 'the signed-in account holds no Jev provider (Global Settings -> LLM providers)')
   // The module card's rows render only with Route Exposure on, and stay disabled
   // until AI in Pipeline is on.
   const res = await api.post('/api/projects', {
     data: { name: 'route-exposure-jev-ui', targetDomain: 'example.test',
-            aiInPipeline: true, routeExposureEnabled: true },
+            aiInPipeline: true, routeExposureEnabled: true, jevProviderId },
   })
   expect(res.ok(), `create project: ${res.status()}`).toBeTruthy()
   projectId = (await res.json()).id
@@ -116,8 +119,8 @@ test('each module row and its AI in Pipeline card are one switch, and it persist
     await expect(control, row).toBeVisible({ timeout: 15_000 })
     await expect(control.getByRole('button', { name: 'Off' })).toHaveAttribute('aria-pressed', 'true')
     const jev = control.getByRole('button', { name: 'Jev' })
-    // Enabled only once the owner's Jev token has been looked up.
-    await expect(jev, 'Jev stayed disabled: no Jev token on this account?').toBeEnabled({ timeout: 15_000 })
+    // Enabled only once the project's Jev provider has been looked up.
+    await expect(jev, 'Jev stayed disabled: does the project select a Jev provider?').toBeEnabled({ timeout: 15_000 })
     await jev.click()
     await expect(jev).toHaveAttribute('aria-pressed', 'true')
   }
@@ -165,7 +168,7 @@ test('with AI in Pipeline off both controls are disabled, and the master switch 
   await openTab(page, 'Target & Modules')
   for (const { field } of HOOKS) {
     const jev = aiPanelControl(page, field).getByRole('button', { name: 'Jev' })
-    await expect(jev, 'Jev stayed disabled: no Jev token on this account?').toBeEnabled({ timeout: 15_000 })
+    await expect(jev, 'Jev stayed disabled: does the project select a Jev provider?').toBeEnabled({ timeout: 15_000 })
     await jev.click()
     await expect(jev).toHaveAttribute('aria-pressed', 'true')
   }

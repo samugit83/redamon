@@ -77,7 +77,8 @@ describe('states', () => {
     renderPanel()
     expect(screen.getByRole('status')).toHaveTextContent('Loading the instance LLM providers')
     const list = await screen.findByRole('list', { name: 'Instance LLM providers' })
-    expect(list).toHaveTextContent('Shared OpenAI (OpenAI, key ••••••••1234): Red-team operator')
+    expect(list).toHaveTextContent('Shared OpenAI')
+    expect(list).toHaveTextContent('OpenAI · key ••••••••1234 · Offered to Red-team operator')
   })
 
   test('refused (not the confirmed Root): the reason, no control', async () => {

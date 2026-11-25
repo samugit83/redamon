@@ -136,6 +136,8 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'agent.session_kill': 'Stopped an agent session',
     'agent.job_kill': 'Stopped an agent job',
     'agent.terminal_opened': 'Opened the Kali terminal',
+    'sandbox.started': "A Kali sandbox started for a person's work",
+    'sandbox.stopped': "A person's Kali sandbox was stopped",
     'workspace.upload': 'Uploaded files to the workspace',
     'workspace.import': 'Imported a link into the workspace',
     'workspace.resync': 'Refreshed a workspace import',

@@ -10,8 +10,19 @@ Run: ./agentic/run_tests.sh tests/test_body_sweep.py
 
 import asyncio
 import inspect
+from unittest import mock
 
+import pytest
+
+import sandbox_router
 from orchestrator_helpers import body_sweep
+
+
+@pytest.fixture
+def running_sandbox():
+    """The run holds its sandbox (the sweep then never asks the gateway)."""
+    with mock.patch.object(sandbox_router, "current_handle", return_value=object()):
+        yield
 
 
 def _trace(*args_list):
@@ -45,7 +56,7 @@ class _Executor:
         return {"success": True}
 
 
-def test_the_sweep_removes_exactly_those_paths_quoted():
+def test_the_sweep_removes_exactly_those_paths_quoted(running_sandbox):
     ex = _Executor()
     state = {"current_phase": "informational",
              "execution_trace": _trace({"args": "-o /tmp/rex-a.body"}, {"args": "-o /tmp/rex-b.body"})}
@@ -55,7 +66,7 @@ def test_the_sweep_removes_exactly_those_paths_quoted():
     assert args["command"] == "rm -rf -- /tmp/rex-a.body /tmp/rex-b.body"
 
 
-def test_no_paths_means_no_call_and_a_failure_never_raises():
+def test_no_paths_means_no_call_and_a_failure_never_raises(running_sandbox):
     ex = _Executor()
     assert asyncio.run(body_sweep.sweep_session_bodies(ex, {"execution_trace": []})) == 0
     assert ex.calls == []
@@ -70,3 +81,38 @@ def test_both_run_terminals_sweep_before_they_run():
     for wrapper in ("_await_approval", "_generate_response"):
         body = src.split(f"async def {wrapper}(state, config=None):", 1)[1].split("async def", 1)[0]
         assert "await sweep_session_bodies(self.tool_executor, state)" in body, wrapper
+
+
+def test_a_stopped_sandbox_is_never_started_to_sweep_it():
+    """After the idle stop, a later message with no Kali step must not cold-start the
+    sandbox (memory, a "starting" line) to delete files its stop already took with it."""
+    ex = _Executor()
+    state = {"execution_trace": _trace({"args": "-o /tmp/rex-a.body"})}
+    running = mock.AsyncMock(return_value=False)
+    with mock.patch.object(sandbox_router, "current_handle", return_value=None), \
+            mock.patch.object(sandbox_router, "sandbox_user", return_value="bob"), \
+            mock.patch.object(sandbox_router, "is_running", running):
+        assert asyncio.run(body_sweep.sweep_session_bodies(ex, state)) == 0
+    assert ex.calls == []
+    running.assert_awaited_once_with("bob")
+
+
+def test_a_running_sandbox_the_run_has_not_called_yet_is_swept():
+    ex = _Executor()
+    state = {"execution_trace": _trace({"args": "-o /tmp/rex-a.body"})}
+    with mock.patch.object(sandbox_router, "current_handle", return_value=None), \
+            mock.patch.object(sandbox_router, "sandbox_user", return_value="bob"), \
+            mock.patch.object(sandbox_router, "is_running", mock.AsyncMock(return_value=True)):
+        assert asyncio.run(body_sweep.sweep_session_bodies(ex, state)) == 1
+    assert [c[0] for c in ex.calls] == ["kali_shell"]
+
+
+def test_no_person_no_sweep():
+    ex = _Executor()
+    state = {"execution_trace": _trace({"args": "-o /tmp/rex-a.body"})}
+    running = mock.AsyncMock(return_value=True)
+    with mock.patch.object(sandbox_router, "current_handle", return_value=None), \
+            mock.patch.object(sandbox_router, "sandbox_user", return_value=""), \
+            mock.patch.object(sandbox_router, "is_running", running):
+        assert asyncio.run(body_sweep.sweep_session_bodies(ex, state)) == 0
+    assert ex.calls == [] and running.await_count == 0

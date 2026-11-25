@@ -7,7 +7,7 @@ import { ForbiddenNotice, forbiddenPermission } from '@/components/auth/Forbidde
 import { readApiError } from '@/lib/apiError'
 import { failureText } from '@/components/settings/failureText'
 import { DEFAULT_MEMBER_SET_ID } from '@/lib/authz/builtinSets'
-import { FieldRow, Panel, RootOnlyNote } from './Panel'
+import { FieldRow, Panel, RootOnlyNote, Rows } from './Panel'
 import styles from './instance.module.css'
 
 interface SetRow { id: string; name: string; description: string | null; builtin: boolean; holders: number }
@@ -53,6 +53,7 @@ export function DefaultSetPanel({ canEdit, unconfirmedRoot }: { canEdit: boolean
     }
   }, [])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: load() also serves Retry, so it starts from the loading state
   useEffect(() => { load() }, [load])
 
   const lead = 'The permission set a member gets until an administrator assigns one: new members, and members never assigned a set.'
@@ -93,24 +94,26 @@ export function DefaultSetPanel({ canEdit, unconfirmedRoot }: { canEdit: boolean
 
   return (
     <Panel id="default-set" title="Defaults for new members" lead={lead}>
-      <form onSubmit={submit} className={styles.page} style={{ gap: 'var(--space-2)' }}>
-        <FieldRow
-          id="default-member-set"
-          label="Default member set"
-          hint="A member never assigned a set who loses a permission with the change is signed out."
-        >
-          <select
+      <form onSubmit={submit} className={styles.page}>
+        <Rows>
+          <FieldRow
             id="default-member-set"
-            className="select"
-            value={pick}
-            aria-describedby="default-member-set-hint"
-            onChange={(e) => setPick(e.target.value)}
+            label="Default member set"
+            hint="A member never assigned a set who loses a permission with the change is signed out."
           >
-            {view.sets.map((s) => (
-              <option key={s.id} value={s.id}>{s.name}{s.builtin ? ' (built-in)' : ''}</option>
-            ))}
-          </select>
-        </FieldRow>
+            <select
+              id="default-member-set"
+              className="select"
+              value={pick}
+              aria-describedby="default-member-set-hint"
+              onChange={(e) => setPick(e.target.value)}
+            >
+              {view.sets.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}{s.builtin ? ' (built-in)' : ''}</option>
+              ))}
+            </select>
+          </FieldRow>
+        </Rows>
         <div className={styles.actions}>
           <button type="submit" className="primaryButton" disabled={!pick || pick === view.current}>Make it the default</button>
           <span className={styles.hint}>Saving asks for your password.</span>

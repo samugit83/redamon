@@ -205,7 +205,6 @@ class FsToolsThroughTheChokepoint(WorkspaceBase, unittest.IsolatedAsyncioTestCas
             ok = await execute_plan_node._execute_single_step(
                 step, 0, 1, phase="informational", iteration=1, wave_id="w1", user_id="u",
                 project_id="p1", session_id="s", tool_executor=self.executor, streaming_cb=None,
-                session_manager_base="",
             )
         self.assertFalse(ok)
         self.assertIn("is being replaced by a running import", step["error_message"])

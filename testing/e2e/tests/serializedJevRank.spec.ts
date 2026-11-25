@@ -1,5 +1,6 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
 import { mintToken, signIn } from './auth'
+import { ownerJevProviderId } from './jevProvider'
 
 /**
  * The serialized-object Jev ranking switch, driven through the real settings UI.
@@ -8,8 +9,8 @@ import { mintToken, signIn } from './auth'
  * with Jev" on the Serialized Object Scan card (JS Recon tab) and the Serialized
  * Objects card under Target & Modules -> AI in Pipeline. A change on one must show
  * on the other with no copy step, leave the form in the PUT, and persist. Turning
- * it on is refused server-side without a Jev token on the owner's account, so the
- * account this signs in as must hold one.
+ * it on is refused server-side unless the project selects one of the owner's Jev providers, so the
+ * account this signs in as must hold one; the throwaway project selects it.
  *
  * A throwaway project on a .test domain, deleted afterwards. Requires the stack up
  * and the webapp image built. Run:
@@ -25,10 +26,12 @@ test.beforeAll(async ({ playwright, baseURL }) => {
   api = await playwright.request.newContext({
     baseURL, extraHTTPHeaders: { cookie: `redamon-auth=${mintToken(USER)}` },
   })
+  const jevProviderId = await ownerJevProviderId(api, USER)
+  test.skip(!jevProviderId, 'the signed-in account holds no Jev provider (Global Settings -> LLM providers)')
   // The scan card's control stays disabled until AI in Pipeline is on.
   const res = await api.post('/api/projects', {
     data: { name: 'serialized-jev-ui', targetDomain: 'example.test',
-            aiInPipeline: true, serializedScanEnabled: true },
+            aiInPipeline: true, serializedScanEnabled: true, jevProviderId },
   })
   expect(res.ok(), `create project: ${res.status()}`).toBeTruthy()
   projectId = (await res.json()).id
@@ -107,8 +110,8 @@ test('the scan card and the AI in Pipeline card are one switch, and it persists'
   await expect(scan).toBeVisible({ timeout: 15_000 })
   await expect(scan.getByRole('button', { name: 'Off' })).toHaveAttribute('aria-pressed', 'true')
   const scanJev = scan.getByRole('button', { name: 'Jev' })
-  // Enabled only once the owner's Jev token has been looked up.
-  await expect(scanJev, 'Jev stayed disabled: no Jev token on this account?').toBeEnabled({ timeout: 15_000 })
+  // Enabled only once the project's Jev provider has been looked up.
+  await expect(scanJev, 'Jev stayed disabled: does the project select a Jev provider?').toBeEnabled({ timeout: 15_000 })
   await scanJev.click()
   await expect(scanJev).toHaveAttribute('aria-pressed', 'true')
 

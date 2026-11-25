@@ -14,7 +14,7 @@ import {
 
 interface RedZoneTableShellProps {
   /** Per-column filtering, from `useRedZoneFilters`. Omit for an unfilterable sheet. */
-  filterUi?: RedZoneFilterUi<any>
+  filterUi?: RedZoneFilterUi<unknown>
   title: string
   meta?: string
   search: string

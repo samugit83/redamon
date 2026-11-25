@@ -1,11 +1,11 @@
 'use client'
 
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 import { useToast } from '@/components/ui'
 import { StepUpModal } from '@/components/auth/StepUpModal'
 import type { InstanceSettingsView } from './instanceView'
 import { putInstanceSettings } from './instanceSettingsClient'
-import { FieldRow, Panel, RootOnlyNote } from './Panel'
+import { FieldRow, Panel, RootOnlyNote, Rows, ValueRow } from './Panel'
 import styles from './instance.module.css'
 
 /** lib/authz/auditRetention.ts AUDIT_RETENTION_MAX_DAYS; that module reads the database (instanceView.test.ts pins the copy). */
@@ -62,17 +62,27 @@ export function AuditRetentionPanel({ settings, unconfirmedRoot, onSaved }: {
   const [forever, setForever] = useState(retention?.days === null)
   const [daysText, setDaysText] = useState(retention?.days === null ? '' : String(retention?.days ?? ''))
   const [asking, setAsking] = useState<null | { days: number | null; cancel: boolean }>(null)
-  useEffect(() => {
+  // New settings (a save, a reload) start the draft again from what is in force.
+  const [draftBase, setDraftBase] = useState(retention)
+  if (draftBase !== retention) {
+    setDraftBase(retention)
     setForever(retention?.days === null)
     setDaysText(retention?.days == null ? '' : String(retention.days))
-  }, [retention])
+  }
   if (!retention) return null
 
   const lead = `How long the audit log keeps its rows. A change applies ${retention.delayDays} days after Root asks for it; the rows the code reads back (upgrade markers, legacy-grant decisions) and the act-as and Fireteam records are always kept.`
-  const pendingLine = retention.pending && (
-    <p className={styles.note} role="status">
-      Change waiting: {keptText(retention.pending.days).toLowerCase()} from {day(retention.pending.effectiveAt)} (asked {day(retention.pending.requestedAt)}).
-    </p>
+  const pending = retention.pending && (
+    <div className={styles.callout}>
+      <span role="status">
+        Change waiting: {keptText(retention.pending.days).toLowerCase()} from {day(retention.pending.effectiveAt)} (asked {day(retention.pending.requestedAt)}).
+      </span>
+      {canEdit && (
+        <button type="button" className="secondaryButton" onClick={() => setAsking({ days: retention.days, cancel: true })}>
+          Cancel the waiting change
+        </button>
+      )}
+    </div>
   )
 
   if (!canEdit) {
@@ -81,7 +91,7 @@ export function AuditRetentionPanel({ settings, unconfirmedRoot, onSaved }: {
         <dl className={styles.readList}>
           <dt>Audit rows</dt><dd>{keptText(retention.days)}</dd>
         </dl>
-        {pendingLine}
+        {pending}
         <RootOnlyNote unconfirmedRoot={unconfirmedRoot} />
       </Panel>
     )
@@ -98,26 +108,20 @@ export function AuditRetentionPanel({ settings, unconfirmedRoot, onSaved }: {
 
   return (
     <Panel id="retention" title="Audit retention" lead={lead}>
-      <dl className={styles.readList}>
-        <dt>In force now</dt><dd>{keptText(retention.days)}</dd>
-      </dl>
-      {pendingLine}
-      {retention.pending && (
-        <div className={styles.actions}>
-          <button type="button" className="secondaryButton" onClick={() => setAsking({ days: retention.days, cancel: true })}>
-            Cancel the waiting change
-          </button>
-        </div>
-      )}
-      <form onSubmit={submit} noValidate className={styles.page} style={{ gap: 'var(--space-3)' }}>
-        <fieldset className={styles.fields} style={{ border: 'none', padding: 0, margin: 0 }}>
-          <legend className={styles.panelTitle} style={{ fontSize: 'var(--text-sm)' }}>Keep audit rows</legend>
-          <label>
-            <input type="radio" name="retention-mode" checked={forever} onChange={() => setForever(true)} /> Forever
-          </label>
-          <label>
-            <input type="radio" name="retention-mode" checked={!forever} onChange={() => setForever(false)} /> For a number of days
-          </label>
+      {pending}
+      <form onSubmit={submit} noValidate className={styles.page}>
+        <Rows>
+          <ValueRow label="In force now">{keptText(retention.days)}</ValueRow>
+          <ValueRow label="Keep audit rows" labelId="retention-mode-label" hint="What the next change asks for.">
+            <fieldset className={styles.choice} aria-labelledby="retention-mode-label">
+              <label className={styles.choiceOption}>
+                <input type="radio" className="radio" name="retention-mode" checked={forever} onChange={() => setForever(true)} /> Forever
+              </label>
+              <label className={styles.choiceOption}>
+                <input type="radio" className="radio" name="retention-mode" checked={!forever} onChange={() => setForever(false)} /> For a number of days
+              </label>
+            </fieldset>
+          </ValueRow>
           {!forever && (
             <FieldRow
               id="retention-days"
@@ -136,7 +140,7 @@ export function AuditRetentionPanel({ settings, unconfirmedRoot, onSaved }: {
               />
             </FieldRow>
           )}
-        </fieldset>
+        </Rows>
         <div className={styles.actions}>
           <button type="submit" className="primaryButton" disabled={!dirty}>Ask for this retention</button>
           <span className={styles.hint}>Asking needs your password; the change applies {retention.delayDays} days later.</span>

@@ -10,8 +10,9 @@ import { describe, test, expect, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import { GraphToolbar } from './GraphToolbar'
 import {
-  agentStopFailureLabel, agentStopSummary, emergencyPauseTitle, isEmergencyStopScope,
+  agentStopFailureLabel, agentStopSummary, emergencyPauseTitle, isEmergencyStopScope, sandboxStopSummary,
 } from './emergencyStopScope'
+import { sandboxIsRunning } from './useOwnSandboxRunning'
 
 afterEach(cleanup)
 
@@ -90,5 +91,46 @@ describe('the page\'s message after a press', () => {
     expect(isEmergencyStopScope('ALL')).toBe(false)
     expect(isEmergencyStopScope(undefined)).toBe(false)
     expect(emergencyPauseTitle('own')).not.toBe(emergencyPauseTitle('all'))
+  })
+})
+
+describe('PAUSE ALL and the Kali sandboxes (gap G-02, G-19)', () => {
+  test('the tooltip says the press also stops the Kali sandboxes, by scope', () => {
+    expect(emergencyPauseTitle('own')).toContain('and your own Kali sandbox (shells, sessions and tunnels end)')
+    expect(emergencyPauseTitle('all')).toContain('and every Kali sandbox (shells, sessions and tunnels end)')
+    expect(emergencyPauseTitle(undefined)).toContain('and Kali sandboxes (shells, sessions and tunnels end)')
+  })
+
+  test('nothing but Kali work running: the button can still be pressed', () => {
+    render(<GraphToolbar {...base} isAnyPipelineRunning={false} isKaliActive />)
+    expect(pauseButton().disabled).toBe(false)
+  })
+
+  test('nothing running at all: the button stays disabled', () => {
+    render(<GraphToolbar {...base} isAnyPipelineRunning={false} isKaliActive={false} />)
+    expect(pauseButton().disabled).toBe(true)
+  })
+
+  test('a running or starting instance counts, a stopping one or a malformed answer does not', () => {
+    expect(sandboxIsRunning({ instances: [{ state: 'running' }] })).toBe(true)
+    expect(sandboxIsRunning({ instances: [{ state: 'stopping' }, { state: 'starting' }] })).toBe(true)
+    expect(sandboxIsRunning({ instances: [{ state: 'stopping' }] })).toBe(false)
+    expect(sandboxIsRunning({ instances: 'running' })).toBe(false)
+    expect(sandboxIsRunning(null)).toBe(false)
+  })
+
+  test('the sandbox outcome: stopped, none, failed (never folded into success), absent', () => {
+    expect(sandboxStopSummary({ sandboxes: { stopped: 2 } }, 'all')).toEqual({ ok: true, text: 'Kali sandboxes: stopped 2 sandboxes.' })
+    expect(sandboxStopSummary({ sandboxes: { stopped: 1 } }, 'all')).toEqual({ ok: true, text: 'Kali sandboxes: stopped 1 sandbox.' })
+    expect(sandboxStopSummary({ sandboxes: { stopped: 0 } }, 'all')).toEqual({ ok: true, text: 'Kali sandboxes: none was running.' })
+    expect(sandboxStopSummary({ sandboxes: { stopped: 1 } }, 'own')).toEqual({ ok: true, text: 'Kali sandboxes: stopped 1 of your own.' })
+    expect(sandboxStopSummary({ sandboxes: { stopped: 0 } }, 'own')).toEqual({ ok: true, text: 'Kali sandboxes: you had none running.' })
+    const failed = sandboxStopSummary({ sandboxes: { error: 'orchestrator_unreachable' } }, 'all')
+    expect(failed?.ok).toBe(false)
+    expect(failed?.text).toContain('not stopped (orchestrator_unreachable)')
+    // A code that is not a code is never shown as one.
+    expect(sandboxStopSummary({ sandboxes: { error: '<b>x</b>' } }, 'all')?.text).toContain('(unknown)')
+    expect(sandboxStopSummary({ scope: 'all', stopped: 3 }, 'all')).toBeNull()
+    expect(sandboxStopSummary(null, 'all')).toBeNull()
   })
 })

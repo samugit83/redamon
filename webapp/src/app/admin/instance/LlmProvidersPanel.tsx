@@ -5,7 +5,7 @@ import { useAlertModal, useToast } from '@/components/ui'
 import { StepUpModal } from '@/components/auth/StepUpModal'
 import { readApiError, type ApiError } from '@/lib/apiError'
 import { failureText } from '@/components/settings/failureText'
-import { CheckField, FieldRow, Panel } from './Panel'
+import { CheckField, FieldRow, Panel, Rows } from './Panel'
 import styles from './instance.module.css'
 
 export const LLM_PROVIDERS_URL = '/api/admin/llm-providers'
@@ -112,6 +112,7 @@ export function LlmProvidersPanel() {
     }
   }, [])
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch in an effect: load() also serves Retry, so it starts from the loading state
   useEffect(() => { load() }, [load])
 
   const title = 'Instance LLM providers'
@@ -208,65 +209,77 @@ export function LlmProvidersPanel() {
       {view.providers.length === 0 ? (
         <p className={styles.state}>No instance LLM provider yet: every account uses only the providers it adds itself.</p>
       ) : (
-        <ul className={styles.toolList} aria-label="Instance LLM providers">
+        <ul className={`${styles.rows} ${styles.itemList}`} aria-label="Instance LLM providers">
           {view.providers.map((p) => (
-            <li key={p.id}>
-              <strong>{p.name}</strong> ({KIND_LABELS[p.providerType] ?? p.providerType}
-              {p.providerType === 'bedrock' ? '' : `, key ${p.apiKey || 'none'}`}):{' '}
-              {p.setIds.length ? p.setIds.map(setName).join(', ') : 'assigned to no set, so offered to nobody'}{' '}
-              <button type="button" className="textButton" onClick={() => setDraft(draftOf(p))} aria-label={`Edit ${p.name}`}>Edit</button>{' '}
-              <button type="button" className="textButton" onClick={() => remove(p)} aria-label={`Delete ${p.name}`}>Delete</button>
+            <li key={p.id} className={styles.item}>
+              <div className={styles.itemText}>
+                <span className={styles.rowLabel}>{p.name}</span>
+                <span className={styles.rowHint}>
+                  {KIND_LABELS[p.providerType] ?? p.providerType}
+                  {p.providerType === 'bedrock' ? '' : ` · key ${p.apiKey || 'none'}`}
+                  {' · '}
+                  {p.setIds.length ? `Offered to ${p.setIds.map(setName).join(', ')}` : 'Assigned to no set, so offered to nobody'}
+                </span>
+              </div>
+              <div className={styles.itemActions}>
+                <button type="button" className="secondaryButton" onClick={() => setDraft(draftOf(p))} aria-label={`Edit ${p.name}`}>Edit</button>
+                <button type="button" className="secondaryButton" onClick={() => remove(p)} aria-label={`Delete ${p.name}`}>Delete</button>
+              </div>
             </li>
           ))}
         </ul>
       )}
 
       {draft ? (
-        <form onSubmit={submit} className={styles.page} style={{ gap: 'var(--space-2)' }} aria-label={draft.id ? `Edit ${draft.name}` : 'New instance LLM provider'}>
-          <FieldRow id="llm-kind" label="Kind" hint="A chat model provider. Changing the kind of a saved provider needs its key typed again.">
-            <select id="llm-kind" className="select" value={draft.providerType} aria-describedby="llm-kind-hint" onChange={(e) => setKind(e.target.value)}>
-              {view.kinds.map((k) => <option key={k} value={k}>{KIND_LABELS[k] ?? k}</option>)}
-            </select>
-          </FieldRow>
-          <FieldRow id="llm-name" label="Name" hint="What the model pickers show, after 'Instance:'.">
-            <input id="llm-name" className="input" value={draft.name} aria-describedby="llm-name-hint" onChange={(e) => set('name', e.target.value)} />
-          </FieldRow>
-          {draft.providerType === 'openai_compatible' && (
-            <>
-              <FieldRow id="llm-base-url" label="Base URL" hint="The endpoint's OpenAI-compatible address; a new one needs the key typed again.">
-                <input id="llm-base-url" className="input" value={draft.baseUrl} aria-describedby="llm-base-url-hint" onChange={(e) => set('baseUrl', e.target.value)} />
-              </FieldRow>
-              <FieldRow id="llm-model" label="Model identifier" hint="The model the endpoint serves.">
-                <input id="llm-model" className="input" value={draft.modelIdentifier} aria-describedby="llm-model-hint" onChange={(e) => set('modelIdentifier', e.target.value)} />
-              </FieldRow>
-            </>
-          )}
-          {draft.providerType === 'bedrock' ? (
-            <>
-              <FieldRow id="llm-aws-region" label="AWS region" hint="Where the Bedrock models run.">
-                <input id="llm-aws-region" className="input" value={draft.awsRegion} aria-describedby="llm-aws-region-hint" onChange={(e) => set('awsRegion', e.target.value)} />
-              </FieldRow>
-              <FieldRow id="llm-aws-bearer" label="Bedrock API key" hint="A long-term API key, or the access key pair below.">
-                <input id="llm-aws-bearer" type="password" autoComplete="off" className="input" value={draft.awsBearerToken} aria-describedby="llm-aws-bearer-hint" onChange={(e) => set('awsBearerToken', e.target.value)} />
-              </FieldRow>
-              <FieldRow id="llm-aws-id" label="Access key id" hint="With its secret, when there is no API key.">
-                <input id="llm-aws-id" type="password" autoComplete="off" className="input" value={draft.awsAccessKeyId} aria-describedby="llm-aws-id-hint" onChange={(e) => set('awsAccessKeyId', e.target.value)} />
-              </FieldRow>
-              <FieldRow id="llm-aws-secret" label="Secret access key" hint="Kept masked; leave it as it is to keep the stored one.">
-                <input id="llm-aws-secret" type="password" autoComplete="off" className="input" value={draft.awsSecretKey} aria-describedby="llm-aws-secret-hint" onChange={(e) => set('awsSecretKey', e.target.value)} />
-              </FieldRow>
-            </>
-          ) : (
-            <FieldRow id="llm-key" label="API key" hint="Kept masked; leave it as it is to keep the stored one.">
-              <input id="llm-key" type="password" autoComplete="off" className="input" value={draft.apiKey} aria-describedby="llm-key-hint" onChange={(e) => set('apiKey', e.target.value)} />
+        <form onSubmit={submit} className={styles.page} aria-label={draft.id ? `Edit ${draft.name}` : 'New instance LLM provider'}>
+          <Rows>
+            <FieldRow id="llm-kind" label="Kind" hint="A chat model provider. Changing the kind of a saved provider needs its key typed again.">
+              <select id="llm-kind" className="select" value={draft.providerType} aria-describedby="llm-kind-hint" onChange={(e) => setKind(e.target.value)}>
+                {view.kinds.map((k) => <option key={k} value={k}>{KIND_LABELS[k] ?? k}</option>)}
+              </select>
             </FieldRow>
-          )}
-          <fieldset className={styles.field}>
-            <legend>Offered to the holders of</legend>
-            {view.sets.map((s) => (
-              <CheckField key={s.id} id={`llm-set-${s.id}`} label={`${s.name}${s.kind === 'admin' ? ' (admin profile)' : ''}`}
-                hint={s.builtin ? 'Built-in set' : 'Custom set'} checked={draft.setIds.includes(s.id)} onChange={(on) => toggleSet(s.id, on)} />
-            ))}
+            <FieldRow id="llm-name" label="Name" hint="What the model pickers show, after 'Instance:'.">
+              <input id="llm-name" className="textInput" value={draft.name} aria-describedby="llm-name-hint" onChange={(e) => set('name', e.target.value)} />
+            </FieldRow>
+            {draft.providerType === 'openai_compatible' && (
+              <>
+                <FieldRow id="llm-base-url" label="Base URL" hint="The endpoint's OpenAI-compatible address; a new one needs the key typed again.">
+                  <input id="llm-base-url" className="textInput" value={draft.baseUrl} aria-describedby="llm-base-url-hint" onChange={(e) => set('baseUrl', e.target.value)} />
+                </FieldRow>
+                <FieldRow id="llm-model" label="Model identifier" hint="The model the endpoint serves.">
+                  <input id="llm-model" className="textInput" value={draft.modelIdentifier} aria-describedby="llm-model-hint" onChange={(e) => set('modelIdentifier', e.target.value)} />
+                </FieldRow>
+              </>
+            )}
+            {draft.providerType === 'bedrock' ? (
+              <>
+                <FieldRow id="llm-aws-region" label="AWS region" hint="Where the Bedrock models run.">
+                  <input id="llm-aws-region" className="textInput" value={draft.awsRegion} aria-describedby="llm-aws-region-hint" onChange={(e) => set('awsRegion', e.target.value)} />
+                </FieldRow>
+                <FieldRow id="llm-aws-bearer" label="Bedrock API key" hint="A long-term API key, or the access key pair below.">
+                  <input id="llm-aws-bearer" type="password" autoComplete="off" className="textInput" value={draft.awsBearerToken} aria-describedby="llm-aws-bearer-hint" onChange={(e) => set('awsBearerToken', e.target.value)} />
+                </FieldRow>
+                <FieldRow id="llm-aws-id" label="Access key id" hint="With its secret, when there is no API key.">
+                  <input id="llm-aws-id" type="password" autoComplete="off" className="textInput" value={draft.awsAccessKeyId} aria-describedby="llm-aws-id-hint" onChange={(e) => set('awsAccessKeyId', e.target.value)} />
+                </FieldRow>
+                <FieldRow id="llm-aws-secret" label="Secret access key" hint="Kept masked; leave it as it is to keep the stored one.">
+                  <input id="llm-aws-secret" type="password" autoComplete="off" className="textInput" value={draft.awsSecretKey} aria-describedby="llm-aws-secret-hint" onChange={(e) => set('awsSecretKey', e.target.value)} />
+                </FieldRow>
+              </>
+            ) : (
+              <FieldRow id="llm-key" label="API key" hint="Kept masked; leave it as it is to keep the stored one.">
+                <input id="llm-key" type="password" autoComplete="off" className="textInput" value={draft.apiKey} aria-describedby="llm-key-hint" onChange={(e) => set('apiKey', e.target.value)} />
+              </FieldRow>
+            )}
+          </Rows>
+          <fieldset className={styles.group}>
+            <legend className={styles.groupTitle}>Offered to the holders of</legend>
+            <Rows>
+              {view.sets.map((s) => (
+                <CheckField key={s.id} id={`llm-set-${s.id}`} label={`${s.name}${s.kind === 'admin' ? ' (admin profile)' : ''}`}
+                  hint={s.builtin ? 'Built-in set' : 'Custom set'} checked={draft.setIds.includes(s.id)} onChange={(on) => toggleSet(s.id, on)} />
+              ))}
+            </Rows>
           </fieldset>
           <div className={styles.actions}>
             <button type="submit" className="primaryButton" disabled={!draft.name.trim()}>{draft.id ? 'Save the provider' : 'Add the provider'}</button>
@@ -280,9 +293,11 @@ export function LlmProvidersPanel() {
         </div>
       )}
 
-      <CheckField id="llm-byo-forbidden" label="Only accounts allowed to add their own providers keep them"
-        hint="On: the agent stops using the providers added by accounts without the 'Add your own LLM providers' permission."
-        checked={byoDraft} onChange={setByoDraft} />
+      <Rows>
+        <CheckField id="llm-byo-forbidden" label="Only accounts allowed to add their own providers keep them"
+          hint="On: the agent stops using the providers added by accounts without the 'Add your own LLM providers' permission."
+          checked={byoDraft} onChange={setByoDraft} />
+      </Rows>
       <div className={styles.actions}>
         <button type="button" className="secondaryButton" disabled={byoDraft === view.byoLlmForbidden} onClick={savePolicy}>Save the policy</button>
       </div>

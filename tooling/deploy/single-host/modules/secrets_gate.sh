@@ -3,10 +3,12 @@
 # Runs on the host in the app dir. Verifies the secrets redamon.sh generated; it does
 # NOT set them. Requires _common.sh.
 #
-# MCP_AUTH_TOKEN, AGENT_WS_TICKET_SECRET and TUNNEL_AUTH_TOKEN fail closed when unset:
-# the Kali servers, the agent WebSocket and the tunnel manager refuse every request, so
-# those features stop working instead of opening up. On a public host every secret must
-# be strong.
+# AGENT_WS_TICKET_SECRET fails closed when unset: the agent WebSocket refuses every
+# request, so it stops working instead of opening up. MCP_AUTH_TOKEN and TUNNEL_AUTH_TOKEN
+# are read by nothing on a release with per-user sandboxes (the orchestrator gives each
+# sandbox its own pair), but redamon.sh still generates them, and on an older checkout
+# they are the shared Kali container's and tunnel manager's only credential, so they stay
+# checked. On a public host every secret must be strong.
 
 secrets_gate() {
   local env_file="${1:?usage: secrets_gate <path-to-.env>}"

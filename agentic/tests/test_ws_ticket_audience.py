@@ -160,6 +160,14 @@ class ProxiedEndpointsCheckTheirAudience(unittest.TestCase):
         cls.client = TestClient(api_module.app)
 
     def setUp(self):
+        import sandbox_router
+        from one_sandbox import route_to
+
+        # The terminal opens on its person's own sandbox (one_sandbox's handle).
+        sandbox_router._reset()
+        self.addCleanup(sandbox_router._reset)
+        route_to(self, {})
+
         self._env = mock.patch.dict(os.environ, {"AGENT_WS_TICKET_SECRET": SECRET})
         self._env.start()
 

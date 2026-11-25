@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import threading
 import uuid
 from pathlib import Path
@@ -29,6 +30,10 @@ logger = logging.getLogger(__name__)
 STAGING_DIRNAME = ".staging"
 SWAP_RECORD = "swap.json"
 SWAP_ENTRY = "entry"
+# A real record is `{"target_rel": ...}`, a few hundred bytes at most. The boot read is
+# bounded so a planted record can never make it unbounded (D16, TD-18); no sandbox
+# mounts .staging.
+SWAP_RECORD_MAX_BYTES = 65_536
 
 # Injectable for tests; must return an object with a `.free` attribute.
 disk_usage: Callable[[Path], object] = shutil.disk_usage
@@ -190,6 +195,62 @@ def write_swap_record(trash: Path, target_rel: str) -> None:
     os.replace(tmp, rec)
 
 
+class _OversizedRecord(Exception):
+    pass
+
+
+def _read_swap_record(rec: Path) -> Optional[str]:
+    """The record's text, or None when it is not a regular file (a link is never followed).
+    Raises _OversizedRecord past SWAP_RECORD_MAX_BYTES before reading a byte. The checks are
+    made again on the open descriptor, so a record swapped after the lstat changes nothing."""
+    try:
+        st = os.lstat(rec)
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    if st.st_size > SWAP_RECORD_MAX_BYTES:
+        raise _OversizedRecord()
+    # O_NONBLOCK: a FIFO swapped in after the lstat must not block the boot.
+    fd = os.open(rec, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        if st.st_size > SWAP_RECORD_MAX_BYTES:
+            raise _OversizedRecord()
+        chunks, total = [], 0
+        while True:
+            chunk = os.read(fd, SWAP_RECORD_MAX_BYTES + 1 - total)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > SWAP_RECORD_MAX_BYTES:
+                raise _OversizedRecord()
+    finally:
+        os.close(fd)
+    return b"".join(chunks).decode("utf-8")
+
+
+def _restore_into(entry: Path, target: Path, project_root: Path) -> bool:
+    """Rename `entry` back to `target` unless something is there. The target's
+    folder is opened by descriptor and checked inside the project (the path was
+    checked only as text): a link a sandbox planted above the target must not
+    carry the old copy into another project. False when there is nothing to do."""
+    try:
+        with workspace_fs._pinned_parent(target, project_root) as (dir_fd, name):
+            try:
+                os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                return False
+            except FileNotFoundError:
+                pass
+            os.rename(entry, name, dst_dir_fd=dir_fd)
+            return True
+    except FileNotFoundError:
+        return False
+
+
 def recover_swaps() -> int:
     """Put back every folder a crash left in a replace's trash. Returns how many
     were restored. Runs at boot, before sweep_all()."""
@@ -201,16 +262,28 @@ def recover_swaps() -> int:
         if not pdir.is_dir() or pdir.is_symlink():
             continue
         for trash in pdir.glob("trash-*"):
+            if trash.is_symlink():
+                continue
             rec = trash / SWAP_RECORD
-            if trash.is_symlink() or not rec.is_file():
+            try:
+                text = _read_swap_record(rec)
+            except _OversizedRecord:
+                logger.warning(f"[workspace-import] swap record of {trash.name} is over "
+                               f"{SWAP_RECORD_MAX_BYTES} bytes; removed without reading it")
+                remove_tree(trash)
+                continue
+            except Exception as e:
+                logger.warning(f"[workspace-import] swap recovery skipped {trash.name}: {type(e).__name__}")
+                remove_tree(trash)
+                continue
+            if text is None:
                 continue
             try:
-                target_rel = json.loads(rec.read_text(encoding="utf-8"))["target_rel"]
+                target_rel = json.loads(text)["target_rel"]
                 target = workspace_fs.resolve_for_project(pdir.name, target_rel, follow_symlinks=False)
                 entry = trash / SWAP_ENTRY
-                if (entry.exists() or entry.is_symlink()) and not (target.exists() or target.is_symlink()):
-                    if target.parent.is_dir():
-                        os.rename(entry, target)
+                if entry.exists() or entry.is_symlink():
+                    if _restore_into(entry, target, (workspace_fs.WORKSPACE_ROOT / pdir.name).resolve()):
                         restored += 1
                         logger.warning(f"[workspace-import] restored {pdir.name}/{target_rel} after an interrupted replace")
             except Exception as e:

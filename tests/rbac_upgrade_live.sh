@@ -6,8 +6,9 @@
 # Each scenario is a full dump (schema and data) in tests/fixtures/rbac_upgrade/<name>.sql,
 # made with the pinned redamon-webapp:rbac-7.7.2 image (git archive 442debbf:webapp), so
 # it keeps the 7.7.x shape while redamon-webapp:latest moves on. The startup list is the
-# image's /app/entrypoint.sh minus its last line (exec node server.js), which
-# webapp/Dockerfile writes: the harness runs exactly what the image runs at boot.
+# image's /app/entrypoint.sh minus its last line (the server start: exec node server.js up
+# to 7.9.x, exec node scripts/serve.cjs from 7.10.0), which webapp/Dockerfile writes: the
+# harness runs exactly what the image runs at boot.
 #
 # After every run it asserts:
 #   - nothing changed but what the upgrade adds by design: the row count of every table
@@ -309,8 +310,6 @@ def preview(lines):
         elif section == 'tunnel_rows':
             kinds, state = (re.split(r'\s{2,}', rest) + ['', ''])[:2]
             out.append(f'tunnel_rows|{email}|{role}|{kinds}|{state}')
-            if rest.endswith("<- the agent's tunnel"):
-                out.append(f'tunnel_pick|{email}')
         elif section == 'stdio_mcp':
             out.extend(f'stdio_mcp|{email}|{name}' for name in rest.split(', '))
         elif section == 'mcp_token_env_var':
@@ -335,14 +334,16 @@ SAMPLE_FULL = """RBAC upgrade preview (read-only: nothing has been changed)
     Accounts created after the upgrade get none.
 
   Tunnel settings saved in accounts:
-    upg-member-b@e2e.local (member)  chisel  enabled  saved 2026-03-02  <- the agent's tunnel
+    upg-member-b@e2e.local (member)  chisel  enabled  saved 2026-03-02
     upg-member-a@e2e.local (member)  ngrok  disabled  saved 2026-03-10
-    After the upgrade only admins and members keeping the tunnel grant change it.
+    After the upgrade each account's tunnel runs in its own Kali sandbox, with its own credentials;
+    turning one on needs the tunnel grant (admins, and members keeping it).
 
   Instance settings, copied at the next start from the accounts' settings (which stay):
     tunnel                    upg-member-b@e2e.local (member), saved 2026-03-02; 2 accounts hold one
     TrafficMind, egress, SCA  upg-admin-b@e2e.local, saved 2026-04-01, the latest of 2 admin rows
     While RBAC_IDENTITY_ENABLED is off the accounts' settings stay in force; each start copies them again.
+    The tunnel in this copy is not used: each account's own tunnel runs in its own Kali sandbox.
 
   stdio MCP servers that stop loading (they run inside the agent; only admins may add them):
     upg-member-a@e2e.local  upg stdio, upg other (disabled)
@@ -360,7 +361,7 @@ SAMPLE_FULL_LINES = [
     'root|upg-admin-a@e2e.local|oldest_admin|2',
     'legacy_grants|upg-member-a@e2e.local|kali_terminal,shell_sessions,tunnels',
     'legacy_grants|upg-member-b@e2e.local|kali_terminal,shell_sessions',
-    'tunnel_rows|upg-member-b@e2e.local|member|chisel|enabled', 'tunnel_pick|upg-member-b@e2e.local',
+    'tunnel_rows|upg-member-b@e2e.local|member|chisel|enabled',
     'tunnel_rows|upg-member-a@e2e.local|member|ngrok|disabled',
     'instance_settings|tunnel|upg-member-b@e2e.local|2', 'instance_settings|capture|upg-admin-b@e2e.local|2',
     'stdio_mcp|upg-member-a@e2e.local|upg stdio', 'stdio_mcp|upg-member-a@e2e.local|upg other (disabled)',
@@ -609,9 +610,10 @@ reset_db() {
     -c 'DROP DATABASE IF EXISTS redamon WITH (FORCE)' -c 'CREATE DATABASE redamon' >/dev/null
 }
 
-# The startup list as the image writes it, minus `exec node server.js`. The guard stops
+# The startup list as the image writes it, minus the server start (`exec node server.js`
+# in the pinned 7.7.2 image, `exec node scripts/serve.cjs` from 7.10.0). The guard stops
 # the harness from silently skipping a step a later Dockerfile appends after the server.
-LIST_CMD='tail -n 1 /app/entrypoint.sh | grep -qx "exec node server.js" || { echo "[harness] /app/entrypoint.sh does not end with exec node server.js"; exit 97; }; sed "\$d" /app/entrypoint.sh | sh'
+LIST_CMD='tail -n 1 /app/entrypoint.sh | grep -qxE "exec node (server\.js|scripts/serve\.cjs)" || { echo "[harness] /app/entrypoint.sh does not end with the server start"; exit 97; }; sed "\$d" /app/entrypoint.sh | sh'
 
 run_list() { # image log_file [url_suffix] -> exit code of the list
   docker run --rm --label "$LABEL" --network "$NET" \

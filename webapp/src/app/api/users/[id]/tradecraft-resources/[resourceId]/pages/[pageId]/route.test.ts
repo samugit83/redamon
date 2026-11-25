@@ -15,6 +15,7 @@ const h = vi.hoisted(() => ({
   db: null as unknown as TradecraftDb, denied: null as Response | null, person: 'owner' as string | null, actingAs: false,
   notOwn: null as Response | null,
   loginRefusal: null as Response | null,
+  onBehalfOf: null as string | null,
 }))
 vi.mock('@/lib/prisma', () => ({ default: new Proxy({}, { get: (_t, k) => (h.db.prisma as Record<string | symbol, unknown>)[k] }) }))
 vi.mock('@/lib/authz/selfService', () => ({
@@ -24,7 +25,7 @@ vi.mock('@/lib/authz/selfService', () => ({
 vi.mock('@/lib/session', () => ({ requireUserAccess: vi.fn(async () => h.denied), isInternalRequest: vi.fn(() => false) }))
 vi.mock('@/lib/auditActor', async orig => ({
   ...(await orig<typeof import('@/lib/auditActor')>()),
-  auditActor: async () => ({ actorId: h.person, onBehalfOfUserId: null }),
+  auditActor: async () => ({ actorId: h.person, onBehalfOfUserId: h.onBehalfOf }),
 }))
 vi.mock('@/lib/authz/actAsRefusals', () => ({
   refuseWhileActingAsOn: vi.fn(async (_o: string, action: string) => (h.actingAs ? NextResponse.json({ code: 'not_while_acting_as', action }, { status: 403 }) : null)),
@@ -54,6 +55,7 @@ beforeEach(() => {
   h.person = 'owner'
   h.actingAs = false
   h.loginRefusal = null
+  h.onBehalfOf = null
   h.db.seed('tradecraftUserSettings', { userId: 'owner', v2Enabled: true })
   h.db.seed('userSettings', { userId: 'owner', githubAccessToken: '' })
   h.db.seed('userTradecraftResource', {
@@ -128,6 +130,17 @@ describe('Read now', () => {
     expect(JSON.stringify(agent.calls[0].body)).not.toMatch(/evil|"set"/)
     expect(timeout).toHaveBeenCalledWith(WEBAPP_TIMEOUTS_MS.readNow)
     expect(h.db.calls.filter(c => !/\.(findFirst|findUnique|findMany|count)$/.test(c))).toEqual([])
+  })
+
+  test('FU-18: the agent is told who really acts: null for the account itself, the administrator acting as it otherwise', async () => {
+    let agent = readAgent()
+    expect((await post('wiki:413')).status).toBe(200)
+    expect(ReadNowRequest.parse(agent.calls[0].body)).toMatchObject({ user_id: 'owner', real_actor_user_id: null })
+    h.person = 'admin-x'
+    h.onBehalfOf = 'owner'
+    agent = readAgent()
+    expect((await post('wiki:413')).status).toBe(200)
+    expect(agent.calls[0].body).toMatchObject({ user_id: 'owner', resource_id: 'r1', real_actor_user_id: 'admin-x' })
   })
 
   test('a blocked page is refused; the GitHub token is refused while acting as the account', async () => {

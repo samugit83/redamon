@@ -17,11 +17,9 @@ export interface PasswordPolicyView extends PasswordPolicy {
  */
 export function usePasswordPolicy(identityOn: boolean): PasswordPolicyView | null {
   const [policy, setPolicy] = useState<PasswordPolicyView | null>(null)
+  if (!identityOn && policy !== null) setPolicy(null)
   useEffect(() => {
-    if (!identityOn) {
-      setPolicy(null)
-      return
-    }
+    if (!identityOn) return
     let live = true
     fetch('/api/auth/password-policy')
       .then((res) => (res.ok ? res.json() : null))

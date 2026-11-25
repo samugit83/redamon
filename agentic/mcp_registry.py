@@ -15,9 +15,10 @@ import os
 import stat
 import threading
 import logging
+from contextvars import ContextVar
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,12 @@ STDIO_HOME = "/var/lib/redamon-mcp"
 STDIO_PRIVDROP = "/usr/bin/setpriv"
 STDIO_PRIVDROP_ARGS: Tuple[str, ...] = (
     f"--reuid={STDIO_UID}", f"--regid={STDIO_GID}", "--clear-groups", "--no-new-privs",
+)
+
+SANDBOX_ADDRESS_REFUSED = "sandbox_address_refused"
+SANDBOX_ADDRESS_REFUSED_MESSAGE = (
+    "the server's address is on the Kali sandbox network (10.214.0.0/16), which the agent "
+    "never dials for an MCP server you add"
 )
 
 TOKEN_ENV_VAR_REFUSED = "token_env_var_refused"
@@ -132,6 +139,10 @@ class MCPServer(BaseModel):
 
     tools: List[ToolSpec] = Field(default_factory=list)
 
+    # Set only in code (mark_system), never from a payload: an HTTP server without it
+    # connects through the sandbox-pool guard (user_server_http_client).
+    _system: bool = PrivateAttr(default=False)
+
     @model_validator(mode="after")
     def _validate_transport_fields(self) -> "MCPServer":
         if self.transport in ("sse", "streamable_http"):
@@ -193,6 +204,42 @@ def _builtin_tool_names() -> Set[str]:
     return _BUILTIN_NAME_CACHE
 
 
+def mark_system(srv: MCPServer) -> MCPServer:
+    """Mark one of the five system servers (tools._build_system_mcp_servers): it may
+    connect to a sandbox address, a per-user sandbox being where it runs."""
+    srv._system = True
+    return srv
+
+
+def sandbox_address_refusal(srv: MCPServer) -> Optional[ValidationError]:
+    """The refusal of a user's server whose URL names a Kali sandbox address literally,
+    or None: an early, readable error when it is saved or loaded. The agent sits on every
+    person's sandbox network, where ngrok's API and the reverse-shell listener check
+    nothing, so a server one person adds must never point the agent at another person's
+    sandbox (group 1, R1-F6).
+
+    It resolves no name (the load runs on the event loop). A name, a redirect or a
+    rebinding answer is refused where it matters, when the connection is opened
+    (user_server_http_client). Loading the user's servers asks it, and so does the draft
+    test route (/mcp/test, agentic/api.py) before it connects."""
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    from orchestrator_helpers.llm_url_guard import sandbox_pool_refusal
+    if not srv.url:
+        return None
+    try:
+        host = urlsplit(srv.url).hostname
+        ipaddress.ip_address(host or "")
+    except ValueError:
+        return None
+    if sandbox_pool_refusal(host) is None:
+        return None
+    logger.warning(f"[rbac] mcp server on the sandbox network refused server={srv.id}")
+    return ValidationError(server_id=srv.id, code=SANDBOX_ADDRESS_REFUSED,
+                           message=SANDBOX_ADDRESS_REFUSED_MESSAGE)
+
+
 def validate_servers(
     servers: List[MCPServer],
     *,
@@ -227,6 +274,11 @@ def validate_servers(
                 message=f"Server id '{srv.id}' is reserved for a system MCP server.",
             ))
 
+        if is_user_supplied:
+            refused = sandbox_address_refusal(srv)
+            if refused is not None:
+                srv_errors.append(refused)
+
         for t in srv.tools:
             if t.name in builtin_names:
                 srv_errors.append(ValidationError(
@@ -257,11 +309,13 @@ def validate_servers(
 
 
 def _resolve_auth_header(srv: MCPServer) -> Tuple[Dict[str, str], List[str]]:
-    """Build auth + custom headers, resolving env vars. Returns (headers, missing_vars).
+    """Build auth + custom headers. Returns (headers, missing_vars); nothing is read from the
+    environment, so missing_vars stays empty.
 
     Token resolution order:
     1. ``auth.token`` literal — used verbatim.
-    2. ``auth.token_env_var`` resolved via os.getenv, for a system server only.
+    ``auth.token_env_var`` is never resolved: no server reads the agent's environment
+    for its bearer (the system servers carry their sandbox instance's own token).
     """
     headers: Dict[str, str] = {}
     missing: List[str] = []
@@ -275,15 +329,12 @@ def _resolve_auth_header(srv: MCPServer) -> Tuple[Dict[str, str], List[str]]:
         if srv.auth.token:
             # Literal bearer token — used as-is.
             token = srv.auth.token
-        elif srv.auth.token_env_var and srv.id not in SYSTEM_SERVER_IDS:
-            # Only the operator's own servers read the agent's environment (OQ-R1): a
-            # user's server naming INTERNAL_API_KEY would carry it to its own URL.
-            # parse_user_servers strips it first; this holds for any other path.
-            logger.warning(f"[rbac] mcp token_env_var refused server={srv.id}")
         elif srv.auth.token_env_var:
-            token = os.environ.get(srv.auth.token_env_var)
-            if not token:
-                missing.append(srv.auth.token_env_var)
+            # A user's server naming INTERNAL_API_KEY would carry it to its own URL (OQ-R1),
+            # and a system id naming MCP_AUTH_TOKEN would send the shared container's token:
+            # no server reads the agent's environment. parse_user_servers strips it first;
+            # this holds for any other path.
+            logger.warning(f"[rbac] mcp token_env_var refused server={srv.id}")
         if token:
             # Defensive: HTTP headers must be ASCII. If the token still
             # contains the mask placeholder (••••) or any other non-ASCII
@@ -352,6 +403,104 @@ def stdio_launch(srv: MCPServer) -> Tuple[str, List[str]]:
     ]
 
 
+def user_server_http_client(headers=None, timeout=None, auth=None):
+    """The HTTP client of an MCP server a user adds (an McpHttpClientFactory): it follows
+    no redirect, unlike the SDK's default, and judges the peer of every connection it
+    opens, so neither a redirect nor a name that resolves into the sandbox pool reaches
+    another person's sandbox."""
+    import httpx
+
+    from orchestrator_helpers.llm_url_guard import pool_guarded_async_transport
+    return httpx.AsyncClient(
+        transport=pool_guarded_async_transport(), follow_redirects=False,
+        # The SDK's own default when none is given (mcp.shared._httpx_utils).
+        timeout=timeout if timeout is not None else httpx.Timeout(30.0, read=300.0),
+        headers=headers, auth=auth)
+
+
+#: The most one answer of a Kali sandbox's tool server may send. Each tool call opens its
+#: own SSE session (langchain-mcp-adapters), so this bounds one call. It is above
+#: tools.SANDBOX_OUTPUT_MAX_CHARS with room for JSON escaping, so legitimate output reaches
+#: that cap (and its marker) first.
+SYSTEM_ANSWER_MAX_BYTES = 64 * 1024 * 1024
+#: Set by the executor around one sandbox call: the stream records here that it cut the
+#: answer. The SDK reports the cut as a closed connection, which would otherwise read as a
+#: dead session and send the command again.
+sandbox_answer_cut: ContextVar[Optional[list]] = ContextVar("sandbox_answer_cut", default=None)
+#: Replaced by the tests with an httpx.MockTransport; None is httpx's own.
+_system_transport = None
+
+
+class SandboxAnswerCut(Exception):
+    """A sandbox's answer was not read on: ``reason`` is ``too_large`` or ``encoding``."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(f"sandbox answer cut ({reason})")
+
+
+def _cut(reason: str) -> SandboxAnswerCut:
+    seen = sandbox_answer_cut.get()
+    if seen is not None:
+        seen.append(reason)
+    return SandboxAnswerCut(reason)
+
+
+def _capped_transport(inner, limit: int):
+    """`inner` with every answer refused when compressed (httpx inflates whatever it is
+    given) and cut past `limit` raw bytes."""
+    import httpx
+
+    class _CappedStream(httpx.AsyncByteStream):
+        def __init__(self, stream):
+            self._stream = stream
+
+        async def __aiter__(self):
+            total = 0
+            async for chunk in self._stream:
+                total += len(chunk)
+                if total > limit:
+                    raise _cut("too_large")
+                yield chunk
+
+        async def aclose(self):
+            await self._stream.aclose()
+
+    class _CappedTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            response = await inner.handle_async_request(request)
+            encodings = [v.strip().lower() for h in response.headers.get_list("content-encoding")
+                         for v in h.split(",") if v.strip()]
+            if any(v != "identity" for v in encodings):
+                await response.aclose()
+                raise _cut("encoding")
+            return httpx.Response(response.status_code, headers=response.headers,
+                                  stream=_CappedStream(response.stream),
+                                  extensions=response.extensions)
+
+        async def aclose(self):
+            await inner.aclose()
+
+    return _CappedTransport()
+
+
+def system_server_http_client(headers=None, timeout=None, auth=None):
+    """The HTTP client of a Kali sandbox's own tool servers (an McpHttpClientFactory). A
+    sandbox's root decides what its ports answer, and the agent serves every tenant, so:
+    no redirect (the SDK's default follows every one, which would point the agent, on its
+    own network, at any address), no compressed answer, and at most
+    SYSTEM_ANSWER_MAX_BYTES per answer. The sandbox is in the address pool a user server's
+    client refuses, so it does not take that client's peer guard."""
+    import httpx
+
+    inner = _system_transport if _system_transport is not None else httpx.AsyncHTTPTransport()
+    return httpx.AsyncClient(
+        transport=_capped_transport(inner, SYSTEM_ANSWER_MAX_BYTES),
+        follow_redirects=False,
+        timeout=timeout if timeout is not None else httpx.Timeout(30.0, read=300.0),
+        headers={**(headers or {}), "Accept-Encoding": "identity"}, auth=auth)
+
+
 def to_mcp_servers_dict(
     servers: List[MCPServer],
 ) -> Tuple[Dict[str, Dict[str, Any]], List[ValidationError]]:
@@ -384,6 +533,8 @@ def to_mcp_servers_dict(
             }
             if headers:
                 entry["headers"] = headers
+            entry["httpx_client_factory"] = (system_server_http_client if srv._system
+                                             else user_server_http_client)
             config[srv.id] = entry
 
         elif srv.transport == "stdio":
@@ -429,7 +580,7 @@ def set_current(
 
 
 def current() -> List[MCPServer]:
-    """Snapshot of currently-registered servers (system + user)."""
+    """Snapshot of the registered user MCP servers (the system servers are per sandbox)."""
     with _state_lock:
         return list(_current_servers)
 

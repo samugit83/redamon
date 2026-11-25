@@ -51,7 +51,7 @@ describe('backfill-tradecraft-phases', () => {
     const at = entry.indexOf('node scripts/backfill-tradecraft-phases.mjs 2>&1\\n')
     expect(at).toBeGreaterThan(entry.indexOf('db push'))
     expect(entry.indexOf('db push')).toBeGreaterThan(-1)
-    expect(at).toBeLessThan(entry.indexOf('exec node server.js'))
+    expect(at).toBeLessThan(entry.indexOf('exec node scripts/serve.cjs'))
     // The dev container's list equals this one: tests/webapp_dev_startup_parity_test.sh.
   })
 

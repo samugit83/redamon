@@ -39,9 +39,12 @@ class MsfOwnerStamp(unittest.TestCase):
             var.reset(token)
 
     def _executor(self, *names):
+        from one_sandbox import route_to
         from tools import PhaseAwareToolExecutor
         ex = PhaseAwareToolExecutor(mcp_manager=mock.MagicMock(), graph_tool=None)
         tools = {}
+        # The call runs in the person's sandbox, whose client serves these tools.
+        route_to(self, tools)
         for name in names:
             tool = mock.AsyncMock()
             tool.name = name

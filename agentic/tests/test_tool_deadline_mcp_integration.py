@@ -84,6 +84,8 @@ class LostMcpAnswer(unittest.IsolatedAsyncioTestCase):
         cls._ping_patch.stop()
 
     async def asyncSetUp(self):
+        from one_sandbox import route_to
+
         self.mgr = MCPToolsManager({
             "network_recon": {
                 "url": f"http://127.0.0.1:{self.port}/sse",
@@ -95,7 +97,9 @@ class LostMcpAnswer(unittest.IsolatedAsyncioTestCase):
         tools = await self.mgr.get_tools(max_retries=2, retry_delay=0.5)
         self.assertEqual([t.name for t in tools], ["execute_code"])
         self.ex = PhaseAwareToolExecutor(self.mgr, graph_tool=None)
-        self.ex.register_mcp_tools(tools)
+        # The fake server stands in for the person's sandbox: its client is this real
+        # MCPToolsManager, reached the way every Kali call is (_call_in_sandbox).
+        route_to(self, {}).client = self.mgr
 
     async def _call(self, code: str):
         return await self.ex.execute("execute_code", {"code": code}, "exploitation",

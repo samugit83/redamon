@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import type { PartialReconState } from '@/lib/recon-types'
 
 /**
@@ -16,9 +16,9 @@ export function usePartialLogsRun(runs: PartialReconState[]) {
   const [runId, setRunId] = useState<string | null>(null)
   const [startReply, setStartReply] = useState<PartialReconState | null>(null)
 
-  useEffect(() => {
-    if (startReply && runs.some(r => r.run_id === startReply.run_id)) setStartReply(null)
-  }, [runs, startReply])
+  // Dropped during render, not derived: once listed, the reply must stay gone after the
+  // list drops the run again.
+  if (startReply && runs.some(r => r.run_id === startReply.run_id)) setStartReply(null)
 
   const showStarted = useCallback((reply: PartialReconState) => {
     setStartReply(reply)

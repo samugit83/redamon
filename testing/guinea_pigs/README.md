@@ -79,6 +79,40 @@ RedAmon or anything else you keep.
   that `tooling/scripts/triage_eval.py` scores a triage run against (NDCG, precision,
   false-positive rates). It is keyed by finding properties, never by host.
 
+## The pentest network
+
+The labs that join `redamon_pentest-net` declare it `external`, so it must exist before
+their `docker compose up`. No default RedAmon service runs on it, so `./redamon.sh` creates
+it as compose would (`_ensure_pentest_net` in `redamon.sh`: `<project>_pentest-net`, compose's
+subnet and labels) on `install`, `up` and `update`, and `purge` removes it. A checkout whose
+compose project is not `redamon` gets `<project>_pentest-net`, which these labs do not name.
+
+## Reaching a lab from a Kali sandbox
+
+The agent's Kali tools, the Kali terminal and MCP `kali_exec` run in the person's own
+sandbox (`redamon-kali-<key>-<instance>`), which sits only on its own network
+`redamon-sbx-<key>`: not on `redamon_pentest-net`, not on `redamon-network`. A lab on those
+networks is therefore not reachable from it until you connect the lab to that person's
+sandbox network, and then by its container name or its address on that network (a lab's
+fixed `redamon_pentest-net` or `redamon-network` address is not routed from a sandbox):
+
+```bash
+# The running sandboxes, each with its person, view (own / act_as) and network key
+docker ps --filter label=redamon.sandbox=1 \
+  --format '{{.Names}}  {{.Label "redamon.sandbox.user"}}  {{.Label "redamon.sandbox.view"}}  {{.Label "redamon.sandbox.key"}}'
+docker network connect redamon-sbx-<key> <lab-container>   # e.g. pbtarget
+```
+
+The sandbox must be running first (open the Kali terminal, or run a Kali tool in a chat).
+Its network is removed when that view's last instance stops (20 idle minutes by default):
+the orchestrator disconnects every endpoint first, the lab included, so connect it again
+after a restart. Connect only a lab container you started, never a RedAmon service: anything
+on a sandbox network reaches that sandbox's reverse-shell listener, which checks no token.
+Traffic sent through the capture proxy keeps addressing the lab by its name or its
+`redamon_pentest-net` address: the proxy refuses the sandbox range `10.214.0.0/16`.
+[`docs/readmes/README.KALI_SANDBOX.md`](../../docs/readmes/README.KALI_SANDBOX.md) has the
+network design.
+
 ## Labs that cannot run together
 
 Some labs claim the same fixed address or host port, so start only one of each group:

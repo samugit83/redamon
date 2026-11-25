@@ -1,19 +1,19 @@
 /**
  * STRIDE I19 — settings PUT is the tunnel ACTIVATION path. Tunnels come up ONLY
- * when the operator explicitly enables them; a credential edit while disabled
- * must NOT start a tunnel; disabling pushes a stop config; and the push carries
- * the TUNNEL_AUTH_TOKEN.
+ * when the person explicitly enables them; a credential edit while disabled must NOT
+ * start a tunnel; disabling pushes a stop config. Every push goes to the person's own
+ * Kali sandbox through the agent (group 1), never to a fixed Kali address.
  *
- * HD-06 (F-05) — the tunnel is one listener for the whole instance, so changing it
- * (`ngrokAuthtoken`, `chiselServerUrl`, `chiselAuth`, `tunnelsEnabled`) takes
+ * HD-06 (F-05) — a tunnel is an internet-facing listener, so turning one on or changing
+ * it (`ngrokAuthtoken`, `chiselServerUrl`, `chiselAuth`, `tunnelsEnabled` on) takes
  * `sharedToolAccess(principal, 'tunnels')`: an admin, the member who kept the legacy
  * grant, or a pre-upgrade account under the escape hatch. Everyone else gets 403
  * `tunnels_admin_only` before anything is written or pushed; a full-form save that
  * sends the four fields back unchanged or masked is not a change. The GET tells the
  * page whether to offer the controls, without counting as a use of the escape hatch.
  *
- * The session is mocked; the principal, the shared-tools rule and the audit row are
- * the real code over a mocked Prisma.
+ * The session is mocked; the principal, the shared-tools rule, the audit row and the push
+ * logic are the real code over a mocked Prisma, gateway and agent.
  *
  * Run: npx vitest run "src/app/api/users/[id]/settings/tunnel-gating.test.ts"
  *
@@ -21,6 +21,21 @@
  */
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { NextRequest } from 'next/server'
+const sandbox = vi.hoisted(() => ({
+  ensureSandbox: vi.fn(),
+  sandboxStatus: vi.fn(),
+  pushSandboxTunnel: vi.fn(),
+  agentFetch: vi.fn(),
+}))
+vi.mock('@/lib/sandbox/gateway', () => ({
+  ensureSandbox: (...a: unknown[]) => sandbox.ensureSandbox(...a),
+  sandboxStatus: (...a: unknown[]) => sandbox.sandboxStatus(...a),
+}))
+vi.mock('@/lib/sandbox/agentCalls', () => ({ pushSandboxTunnel: (...a: unknown[]) => sandbox.pushSandboxTunnel(...a) }))
+vi.mock('@/lib/agentFetch', async (orig) => ({
+  ...(await orig() as Record<string, unknown>),
+  agentFetch: (...a: unknown[]) => sandbox.agentFetch(...a),
+}))
 
 const mockFindUnique = vi.fn()
 const mockUpsert = vi.fn()
@@ -39,7 +54,9 @@ vi.mock('@/lib/prisma', () => ({
     userSettings: {
       findUnique: (...a: unknown[]) => mockFindUnique(...a),
       upsert: (...a: unknown[]) => mockUpsert(...a),
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
+    instanceSettings: { findUnique: vi.fn().mockResolvedValue(null) },
     apiKeyRotationConfig: {
       findMany: vi.fn().mockResolvedValue([]),
       findUnique: vi.fn(),
@@ -68,6 +85,7 @@ vi.mock('@/lib/session', () => ({
   // like a route bug rather than a test-setup one.
   isScannerRequest: vi.fn().mockReturnValue(false),
   getSession: vi.fn(async () => session),
+  authzIdentityOf: vi.fn(async (s: unknown) => ({ session: s, principal: {}, actingAs: null })),
 }))
 
 // The step-up's own outcomes are proved in stepUp.test.ts; here the double answers as
@@ -85,7 +103,6 @@ import { GET, PUT } from './route'
 import { setFlagsForTests } from '@/lib/authz/flags'
 import { resetSharedToolsForTests } from '@/lib/authz/sharedTools'
 
-const WORKER_URL = 'http://kali-sandbox:8015/tunnel/configure'
 const CUTOFF = new Date('2026-11-11T08:00:00.000Z')
 const BEFORE_CUTOFF = new Date('2026-01-01T00:00:00.000Z')
 const AFTER_CUTOFF = new Date('2026-11-12T00:00:00.000Z')
@@ -99,23 +116,31 @@ function put(id: string, body: unknown): NextRequest {
 }
 const params = (id: string) => ({ params: Promise.resolve({ id }) })
 
-/** upsert echoes the resulting row from create/update payloads. */
+/** upsert echoes the resulting row from create/update payloads; later reads see it. */
 function wireUpsert(existing: Record<string, unknown> | null) {
-  mockFindUnique.mockResolvedValue(existing)
-  mockUpsert.mockImplementation(({ create, update }: { create: Record<string, unknown>; update: Record<string, unknown> }) =>
-    Promise.resolve({
+  let current = existing
+  mockFindUnique.mockImplementation(async () => current)
+  mockUpsert.mockImplementation(({ create, update }: { create: Record<string, unknown>; update: Record<string, unknown> }) => {
+    current = {
       ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '', tunnelsEnabled: false,
       ...(existing ?? {}), ...(existing ? update : create),
-    }),
-  )
+    }
+    return Promise.resolve(current)
+  })
 }
 
+const EMPTY = { ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '' }
+
+/** The last config pushed to a person's own sandbox through the agent, or null. */
 function lastPush(fetchSpy: ReturnType<typeof vi.fn>) {
-  const call = fetchSpy.mock.calls.find(c => c[0] === WORKER_URL)
-  if (!call) return null
-  const opts = call[1] as RequestInit
-  return { headers: opts.headers as Record<string, string>, body: JSON.parse(opts.body as string) }
+  // Nothing ever goes to a fixed Kali address.
+  expect(fetchSpy).not.toHaveBeenCalled()
+  const call = sandbox.pushSandboxTunnel.mock.calls.at(-1) as [string, Record<string, string>] | undefined
+  return call ? { userId: call[0], body: call[1] } : null
 }
+/** The configs that carried a credential, of every push. */
+const credentialPushes = () =>
+  (sandbox.pushSandboxTunnel.mock.calls as [string, Record<string, string>][]).filter(([, c]) => JSON.stringify(c) !== JSON.stringify(EMPTY))
 
 const auditRows = (action: string) =>
   mockAuditCreate.mock.calls.map(c => (c[0] as { data: Record<string, unknown> }).data).filter(d => d.action === action)
@@ -139,7 +164,11 @@ beforeEach(() => {
   session = { userId: 'u1', role: 'admin' }
   internal = false
   resetSharedToolsForTests()
-  process.env.TUNNEL_AUTH_TOKEN = 'ttok'
+  for (const fn of Object.values(sandbox)) fn.mockReset()
+  sandbox.ensureSandbox.mockResolvedValue({ state: 'running', fresh: false, instance: 'a1b2c3' })
+  sandbox.sandboxStatus.mockResolvedValue({ instances: [{ instance: 'a1b2c3', view: 'own', state: 'running' }] })
+  sandbox.pushSandboxTunnel.mockResolvedValue({ ok: true, status: 200 })
+  sandbox.agentFetch.mockResolvedValue(new Response(JSON.stringify({ ngrok: { active: true }, chisel: { active: false } })))
   fetchSpy = vi.fn().mockResolvedValue(new Response(null, { status: 200 }))
   vi.stubGlobal('fetch', fetchSpy)
   vi.spyOn(console, 'info').mockImplementation(() => {})
@@ -149,19 +178,17 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
   setFlagsForTests(null)
-  delete process.env.TUNNEL_AUTH_TOKEN
 })
 
 describe('settings PUT tunnel activation gating — I19', () => {
-  test('enable + creds → activates with real creds and Authorization header', async () => {
+  test('enable + creds → activates with real creds, in the person\'s own sandbox (started first)', async () => {
     wireUpsert({ tunnelsEnabled: false, ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '' })
 
     await PUT(put('u1', { tunnelsEnabled: true, ngrokAuthtoken: 'ng-tok' }), params('u1'))
 
     const push = lastPush(fetchSpy)
-    expect(push).not.toBeNull()
-    expect(push!.body).toEqual({ ngrokAuthtoken: 'ng-tok', chiselServerUrl: '', chiselAuth: '' })
-    expect(push!.headers['Authorization']).toBe('Bearer ttok')
+    expect(push).toEqual({ userId: 'u1', body: { ngrokAuthtoken: 'ng-tok', chiselServerUrl: '', chiselAuth: '' } })
+    expect(sandbox.ensureSandbox).toHaveBeenCalledWith('u1', expect.objectContaining({ wait: true }))
   })
 
   test('credential edit while DISABLED → pushes empty stop config (no activation)', async () => {
@@ -170,8 +197,9 @@ describe('settings PUT tunnel activation gating — I19', () => {
     await PUT(put('u1', { ngrokAuthtoken: 'new-secret' }), params('u1'))
 
     const push = lastPush(fetchSpy)
-    expect(push).not.toBeNull()
-    expect(push!.body).toEqual({ ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '' })
+    expect(push).toEqual({ userId: 'u1', body: EMPTY })
+    expect(credentialPushes()).toEqual([])
+    expect(sandbox.ensureSandbox).not.toHaveBeenCalled()
   })
 
   test('disable → pushes empty stop config', async () => {
@@ -179,9 +207,8 @@ describe('settings PUT tunnel activation gating — I19', () => {
 
     await PUT(put('u1', { tunnelsEnabled: false }), params('u1'))
 
-    const push = lastPush(fetchSpy)
-    expect(push).not.toBeNull()
-    expect(push!.body).toEqual({ ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '' })
+    expect(lastPush(fetchSpy)).toEqual({ userId: 'u1', body: EMPTY })
+    expect(credentialPushes()).toEqual([])
   })
 
   test('non-tunnel settings change → NO push at all', async () => {
@@ -236,7 +263,9 @@ describe('who may change the tunnel — HD-06', () => {
     const res = await PUT(put('m1', { chiselServerUrl: 'http://vps2.example:9090', chiselAuth: 'user:typed-again', stepUpPassword: 'right-password' }), params('m1'))
     expect(res.status).toBe(200)
     expect(mockUpsert.mock.calls[0][0].update).toMatchObject({ chiselServerUrl: 'http://vps2.example:9090' })
-    expect(lastPush(fetchSpy)).not.toBeNull()
+    // Stored off: the new endpoint is kept, and the stop config goes, never the credentials.
+    expect(lastPush(fetchSpy)).toEqual({ userId: 'm1', body: EMPTY })
+    expect(credentialPushes()).toEqual([])
     const rows = auditRows('settings.tunnel_changed')
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({
@@ -268,9 +297,9 @@ describe('who may change the tunnel — HD-06', () => {
     wireUpsert({ ...STORED, userId: 'u1' })
     const res = await PUT(put('u1', { tunnelsEnabled: true }), params('u1'))
     expect(res.status).toBe(200)
-    expect(lastPush(fetchSpy)!.body).toEqual({
+    expect(lastPush(fetchSpy)).toEqual({ userId: 'u1', body: {
       ngrokAuthtoken: 'ngrok-STORED-tok', chiselServerUrl: 'http://vps.example:9090', chiselAuth: 'user:STORED-pass',
-    })
+    } })
     expect(auditRows('settings.tunnel_changed')[0]).toMatchObject({
       actorId: 'u1', targetId: 'u1', after: { fields: ['tunnelsEnabled'], via: 'admin' },
     })
@@ -304,7 +333,10 @@ describe('who may change the tunnel — HD-06', () => {
     expect(mockUpsert.mock.calls[0][0].update).toMatchObject({
       ngrokAuthtoken: 'ngrok-STORED-tok', chiselAuth: 'user:STORED-pass', shodanApiKey: 'member-shodan',
     })
-    expect(lastPush(fetchSpy)).toBeNull()
+    // The explicit "off" is sent again to the person's own sandbox (an earlier stop may not have
+    // reached it): the stop config only, never a credential.
+    expect(lastPush(fetchSpy)).toEqual({ userId: 'm1', body: EMPTY })
+    expect(credentialPushes()).toEqual([])
     expect(auditRows('settings.tunnel_changed')).toEqual([])
     // Nothing to decide, so no account read beyond the session.
     expect(mockUserFindUnique).not.toHaveBeenCalled()
@@ -318,7 +350,7 @@ describe('who may change the tunnel — HD-06', () => {
     }), params('m1'))
     expect(res.status).toBe(200)
     expect(mockUpsert.mock.calls[0][0].create).toMatchObject({ userId: 'm1', shodanApiKey: 'member-shodan', tunnelsEnabled: false })
-    expect(lastPush(fetchSpy)).toBeNull()
+    expect(credentialPushes()).toEqual([])
   })
 
   test('the internal key changes it with no session, audited without an actor', async () => {

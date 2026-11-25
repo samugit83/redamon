@@ -98,6 +98,15 @@ The plugin platform (always on; plugins themselves are installed on demand) is
 `src/lib/plugins/`, its routes `src/app/api/{plugins,plugin-gateway,plugin-runner,internal/plugins}/`,
 its UI `src/components/plugins/` and `src/app/plugins/`; the `plugin-platform` skill holds its rules.
 
+The per-person Kali sandboxes are `src/lib/sandbox/`: `gateway.ts` decides who may have one
+and with which projects (only from `src/lib/authz/` helpers; a sandbox belongs to the person
+doing the work, never the project's owner), `lifecycle.ts` stops them on access loss, account
+end, project deletion and emergency stop, and `contract.ts` mirrors the two Python contract
+copies (`tests/test_sandbox_contract.py` keeps them equal). Their routes are
+`src/app/api/internal/agent/sandbox/` (the agent's, master key) and
+`src/app/api/agent/sandbox/status/`; [README.KALI_SANDBOX.md](../docs/readmes/README.KALI_SANDBOX.md)
+is the design.
+
 Tradecraft is `src/lib/tradecraft/`, its routes `src/app/api/users/[id]/tradecraft-resources/`,
 `src/app/api/users/[id]/tradecraft-settings/`, `src/app/api/projects/[id]/tradecraft/` and
 `src/app/api/internal/agent/tradecraft/`, its UI `src/components/settings/tradecraft/`; the
@@ -110,7 +119,7 @@ Tradecraft is `src/lib/tradecraft/`, its routes `src/app/api/users/[id]/tradecra
 cd webapp
 npm run test          # vitest run --no-file-parallelism (full parallelism OOMs the box)
 npm run type-check    # tsc --noEmit
-npm run lint          # next lint
+npm run lint          # eslint . (eslint.config.mjs: Next's core-web-vitals + typescript configs)
 
 # Prisma schema changes: db push, NOT migrate
 docker compose exec webapp npx prisma db push

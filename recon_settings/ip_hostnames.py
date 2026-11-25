@@ -317,14 +317,22 @@ def matches(name: str, include: Iterable[Pattern], exclude: Iterable[Pattern]) -
 # Addresses
 # ---------------------------------------------------------------------------
 
+# The per-user Kali sandboxes' address pool: SUBNET_POOL in the two
+# sandbox_contract.py copies (agentic/, recon_orchestrator/), which not every
+# service that reads this module ships. Recon and the AI attack-surface scanner
+# run on the host network, which reaches every sandbox bridge, so an address in
+# here is another person's Kali sandbox, never a target, whoever typed it.
+SANDBOX_POOL = ipaddress.ip_network("10.214.0.0/16")
+
+
 def is_never_scannable_ip(ip_str: Any) -> bool:
     """A stdlib copy of `recon/main_recon_modules/ip_filter.is_never_scannable_ip`.
 
-    Loopback, link-local (169.254.169.254 is cloud metadata), unspecified and
-    multicast are wrong for a scanner whoever owns the estate; anything that is
-    not an address fails closed. Private addresses are NOT here: IP-mode
-    engagements are often internal. Pinned against the original, address by
-    address, by recon/tests/test_ip_hostname_rule.py.
+    Loopback, link-local (169.254.169.254 is cloud metadata), unspecified,
+    multicast and the Kali sandbox pool are wrong for a scanner whoever owns the
+    estate; anything that is not an address fails closed. Private addresses are
+    NOT here: IP-mode engagements are often internal. Pinned against the
+    original, address by address, by recon/tests/test_ip_hostname_rule.py.
     """
     try:
         addr = ipaddress.ip_address(ip_str)
@@ -332,7 +340,20 @@ def is_never_scannable_ip(ip_str: Any) -> bool:
         return True
     if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
         addr = addr.ipv4_mapped
-    return addr.is_loopback or addr.is_link_local or addr.is_unspecified or addr.is_multicast
+    return (addr.is_loopback or addr.is_link_local or addr.is_unspecified or addr.is_multicast
+            or (addr.version == 4 and addr in SANDBOX_POOL))
+
+
+def in_sandbox_pool(ip_str: Any) -> bool:
+    """True for an address of the Kali sandbox pool (IPv4-mapped included); a
+    stdlib copy of `ip_filter.in_sandbox_pool`. Not an address: False."""
+    try:
+        addr = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return addr.version == 4 and addr in SANDBOX_POOL
 
 
 def _in_hosts(net: ipaddress.IPv4Network | ipaddress.IPv6Network, addr: Any) -> bool:

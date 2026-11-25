@@ -23,9 +23,8 @@ function projectWorkspacePath(projectId: string, path: string): string | null {
 /**
  * Download one file of a project's agent workspace. The caller names the project and needs
  * workspace:read (Raw data & files) on it; the agent reads the file from that project's workspace
- * only (`/workspace/download`). The in-chat flow that read any file under the shared sandbox's
- * `/tmp`, with no project or user scope, is refused: a file outside the project's workspace is not
- * a download this route makes.
+ * only (`/workspace/download`). A file outside the project's workspace (a sandbox's `/tmp`, say,
+ * which no project or user scope covers) is not a download this route makes.
  */
 export const GET = withRouteErrors(FAILED, async (request: NextRequest) => {
   const path = request.nextUrl.searchParams.get('path')

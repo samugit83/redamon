@@ -21,7 +21,16 @@ out="$(docker run --rm -i \
   -v "$REPO/recon:/app/recon:ro" \
   -e PYTHONPATH=/app -e PYTHONDONTWRITEBYTECODE=1 \
   --entrypoint python redamon-recon - <<'PY'
-import subprocess, sys, time
+import json, os, subprocess, sys, tempfile, time, uuid
+
+# A scan's recon container names its run to the broker (recon/entrypoint.sh
+# writes this header into the Docker CLI's config); the broker lists only that
+# run's containers, so without it the leftover check below would see nothing.
+config = tempfile.mkdtemp(prefix="zaplab-docker-")
+with open(os.path.join(config, "config.json"), "w") as f:
+    json.dump({"HttpHeaders": {"X-Redamon-Run": f"full_recon:zaplab:{uuid.uuid4().hex}"}}, f)
+os.environ["DOCKER_CONFIG"] = config
+
 from recon.helpers.resource_enum import zap_ajax_spider_helpers as zap
 
 zap._zap_seed_timeout = lambda max_duration: 45
@@ -31,11 +40,12 @@ _, meta = zap.run_zap_ajax_spider(
     1, 3, 0, 1, "firefox-headless", 1000, 1000, True, True, False, True, "Strict")
 elapsed = time.time() - started
 time.sleep(5)
-left = subprocess.run(["docker", "ps", "-a", "--filter", "name=redamon-zap-ajax-", "--format", "{{.Names}}"],
-                      capture_output=True, text=True).stdout.split()
+ps = subprocess.run(["docker", "ps", "-a", "--filter", "name=redamon-zap-ajax-", "--format", "{{.Names}}"],
+                    capture_output=True, text=True)
+left = ps.stdout.split()
 kinds = [e.get("type") for e in meta.get("errors", [])]
 ok_timeout = kinds == ["timeout"]
-ok_clean = not left
+ok_clean = ps.returncode == 0 and not left
 print(f"  {'PASS' if ok_timeout else 'FAIL'}  the seed timed out after {elapsed:.0f}s (errors: {kinds})")
 print(f"  {'PASS' if ok_clean else 'FAIL'}  no ZAP container left behind {left if left else ''}")
 sys.exit(0 if ok_timeout and ok_clean else 1)

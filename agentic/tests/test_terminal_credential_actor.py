@@ -121,6 +121,14 @@ except Exception:  # pragma: no cover - only outside the agent image
 @unittest.skipUnless(_HAVE_APP, "agent deps unavailable (run in-container)")
 class TheTerminalNamesWhoOpenedIt(unittest.TestCase):
     def setUp(self):
+        import sandbox_router
+        from one_sandbox import route_to
+
+        # The terminal opens on its person's own sandbox (one_sandbox's handle).
+        sandbox_router._reset()
+        self.addCleanup(sandbox_router._reset)
+        route_to(self, {})
+
         self._e = _env()
         self._e.start()
         self.addCleanup(self._e.stop)
@@ -183,7 +191,7 @@ class TheTerminalNamesWhoOpenedIt(unittest.TestCase):
                 mock.patch.object(api.websockets, "connect", connect):
             with TestClient(api.app).websocket_connect(f"/ws/kali-terminal?ticket={ticket}") as ws:
                 ws.send_text("hi")
-                self.assertEqual(ws.receive_text(), "hi")
+                self.assertEqual(ws.receive_bytes(), b"hi")
         claims = mc.verify_run_credential(connect.call_args.kwargs["additional_headers"]["X-Redamon-Run"], "graph")
         self.assertEqual((claims["ten"], claims["sub"]), ("owner-1", "collab-1"))
         self.assertIn("user_id=owner-1", connect.call_args.args[0])

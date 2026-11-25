@@ -55,6 +55,11 @@ When performing these actions, ALWAYS invoke the corresponding skill FIRST:
   ([prompts/\_\_init\_\_.py](prompts/__init__.py)). When the label's skill is off,
   it returns the enabled skill whose `supersedes` lists it. That substitution is
   render-only: never relabel, `switch_skill`, write Neo4j or reset LATS for it.
+- **ALWAYS** route a Kali call by **person**, never by tenant: through
+  [sandbox_router.py](sandbox_router.py), to the sandbox of `sandbox_user()` (the
+  run's actor, the MCP token's owner, the terminal ticket's `sub`), in the `act_as`
+  view under act-as. Never dial a fixed `kali-sandbox` address, and never send a call
+  to another person's sandbox or the other view's.
 - **ALWAYS** record rendered user-skill text with `record_applied_user()`
   ([prompts/skill_part_seam.py](prompts/skill_part_seam.py)): `skill_workflow`
   becomes `{skillId: "user_skill:<id>", kind: "user", contentSha256}` (16 hex of
@@ -93,6 +98,10 @@ tradecraft/                              Tradecraft: ingestion jobs (ingest/, jo
                                          search, the librarian, hints (`tradecraft-library` skill)
 graph_db/  knowledge_base/               COPY-baked copies of the repo-root layers
 mcp_registry.py  project_settings.py     tool registry + per-project settings
+sandbox_router.py  sandbox_runs.py       per-person Kali sandboxes: routing, leases, run stops;
+sandbox_hold.py  sandbox_http.py         the hold watcher; bounded reads of a sandbox's answer
+sandbox_contract.py  kali_auth.py        contract copy, byte-identical to recon_orchestrator's
+                                         (tests/test_sandbox_contract.py); per-instance bearer
 tests/                                   pytest (run via ../agentic/run_tests.sh)
 ```
 

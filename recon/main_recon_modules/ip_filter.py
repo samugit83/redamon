@@ -17,6 +17,14 @@ logger = logging.getLogger(__name__)
 
 CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
+# The per-user Kali sandboxes' address pool: SUBNET_POOL in
+# recon_orchestrator/sandbox_contract.py (and its agentic/ twin), which the
+# recon image does not ship. Recon and its tools run on the host network, which
+# reaches every sandbox bridge, so an address in here is another person's Kali
+# sandbox and never an engagement host, whoever typed it. The stdlib copy in
+# recon_settings/ip_hostnames.py must say the same (test_ip_hostname_rule.py).
+SANDBOX_POOL_NETWORK = ipaddress.ip_network("10.214.0.0/16")
+
 # Cloud metadata hostnames that resolve OFF-host (so an IP check alone misses
 # them). Mirrors the agent-side llm_url_guard blocklist.
 _METADATA_HOSTNAMES = frozenset({
@@ -66,6 +74,8 @@ def is_never_scannable_ip(ip_str: str) -> bool:
       common record; vulnweb.com publishes one.
     - link-local: includes 169.254.169.254, i.e. cloud metadata.
     - unspecified / multicast: not a host.
+    - the Kali sandbox pool (:data:`SANDBOX_POOL_NETWORK`): another person's
+      sandbox. A typed target in it is refused too (:func:`in_sandbox_pool`).
 
     Private and CGNAT addresses are deliberately KEPT and logged by the caller,
     so an operator can see a discovered name pointing inward without the scan
@@ -82,7 +92,42 @@ def is_never_scannable_ip(ip_str: str) -> bool:
         or addr.is_link_local
         or addr.is_unspecified
         or addr.is_multicast
+        or (addr.version == 4 and addr in SANDBOX_POOL_NETWORK)
     )
+
+
+def in_sandbox_pool(ip_str) -> bool:
+    """True for an address of the Kali sandbox pool (IPv4-mapped included).
+
+    Unlike :func:`is_never_scannable_ip`, the operator's own targets are refused
+    by it as well: a sandbox is no estate anyone engages. Not an address: False.
+    """
+    try:
+        addr = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return addr.version == 4 and addr in SANDBOX_POOL_NETWORK
+
+
+def resolves_into_sandbox_pool(host: str) -> bool:
+    """True when ``host`` is, or resolves to, an address of the sandbox pool.
+    A name that does not resolve is not in it (there is nothing to reach)."""
+    name = (host or "").strip().strip("[]").rstrip(".")
+    if not name:
+        return False
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        pass
+    else:
+        return in_sandbox_pool(name)
+    try:
+        infos = socket.getaddrinfo(name, None)
+    except (OSError, UnicodeError):
+        return False
+    return any(in_sandbox_pool(info[4][0].split("%")[0]) for info in infos)
 
 
 def is_url_safe_to_probe(url: str) -> bool:
@@ -126,7 +171,8 @@ def is_address_safe_to_scan(host: str, operator_hosts=(), operator_networks=()) 
     resolved, and refused if it is a cloud-metadata name or ANY of its
     addresses is never scannable (:func:`is_never_scannable_ip`). An
     unresolvable host is refused: there is nothing to scan. Private and CGNAT
-    addresses stay allowed, as for the pipeline.
+    addresses stay allowed, as for the pipeline. The Kali sandbox pool is
+    refused before any of the operator's own hosts and networks.
 
     The check and the connection resolve separately; that DNS-rebinding window
     is the recon-wide limitation in README.SECURITY_POSTURE.md.
@@ -134,12 +180,14 @@ def is_address_safe_to_scan(host: str, operator_hosts=(), operator_networks=()) 
     name = (host or "").strip().strip("[]").rstrip(".").lower()
     if not name:
         return False
-    if name in operator_hosts:
-        return True
     try:
         addr = ipaddress.ip_address(name)
     except ValueError:
         addr = None
+    if addr is not None and in_sandbox_pool(name):
+        return False
+    if name in operator_hosts:
+        return addr is not None or not resolves_into_sandbox_pool(name)
     if addr is not None:
         candidates = [addr]
         if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:

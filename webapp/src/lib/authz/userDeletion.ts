@@ -18,7 +18,8 @@
  * Whatever that switch says, once the account row is gone the revocation path (step 5.9,
  * `account_deleted`) stops what the person still ran on other people's projects, with sharing in force
  * only: without it nobody reaches another person's project, and the teardown stopped the work on the
- * account's own.
+ * account's own. The person's Kali sandboxes end with the account whatever the switch (group 1,
+ * OQ-G1-8: their output folders go too).
  */
 import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
@@ -31,6 +32,7 @@ import { rbacFlags } from './flags'
 import { openOffersOf, writeSharingInForce, type TransferView } from './ownershipTransfer'
 import { agentRunCount } from './quotas'
 import { onAccessReduced, type LiveWorkStopped } from './revocation'
+import { sandboxAccountEnded } from '@/lib/sandbox/lifecycle'
 import { rootStanding } from './rootPowers'
 
 /** The deletion plan and the DELETE's check of it exist only with the write switch on. */
@@ -139,12 +141,14 @@ export function unresolvedResponse(userId: string, unresolved: Array<{ id: strin
 
 /**
  * After the account row is deleted: what the person still ran on other people's projects stops
- * (agent runs, sockets, queued scans, schedules, a triage run). Never throws; each failed step is logged
- * by the revocation path. Null with sharing off (nothing to reach, nothing asked).
+ * (agent runs, sockets, queued scans, schedules, a triage run, its Kali sandboxes). Never throws; each
+ * failed step is logged by the revocation path. Null with sharing off (nothing to reach, nothing asked
+ * but the sandbox stop, which the revocation plan asks when sharing is in force).
  */
 export async function endDeletedAccountWork(userId: string): Promise<LiveWorkStopped | null> {
-  if (!rbacFlags().sharing) return null
-  return onAccessReduced(null, userId, 'account_deleted')
+  if (rbacFlags().sharing) return onAccessReduced(null, userId, 'account_deleted')
+  await sandboxAccountEnded(userId, 'account_deleted')
+  return null
 }
 
 /** Whether `projectId` is one of the account's own projects: the plan acts on no other. */

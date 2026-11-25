@@ -592,6 +592,36 @@ describe('community import', () => {
   })
 })
 
+describe('community copies older than the catalog (gap G-29)', () => {
+  const outdatedAnswer = { imported: 0, skipped: 1, skippedBy: { outdated: 1 }, total: 1, outdated: [{ skillId: 'sk1', name: 'My SQLi flow', communityId: 'sqli' }] }
+  const imports = () => h.requests.filter(r => r.url.includes('/import-community'))
+
+  test('the person is asked, and only on their word the copy is sent for update', async () => {
+    h.responders['/import-community'] = (req) => (req.body
+      ? json(200, { imported: 0, skipped: 0, skippedBy: { outdated: 0 }, total: 1, outdated: [], updated: 1, updatedIds: ['sk1'] })
+      : json(200, outdatedAnswer))
+    draw([skill()])
+    await screen.findByTestId('user-skill-sk1')
+    fireEvent.click(screen.getByRole('button', { name: /Import from Community/ }))
+    expect(await screen.findByText(/differ from the Community catalog's current version: "My SQLi flow"/)).toBeInTheDocument()
+    expect(screen.getByText(/including any changes you made to them/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+    expect(await screen.findByText(/Updated 1 to the catalog's version\./)).toBeInTheDocument()
+    expect(imports().map(r => r.body)).toEqual([undefined, { update: ['sk1'] }])
+  })
+
+  test('declining sends nothing more and says the copy was kept', async () => {
+    h.responders['/import-community'] = () => json(200, outdatedAnswer)
+    draw([skill()])
+    await screen.findByTestId('user-skill-sk1')
+    fireEvent.click(screen.getByRole('button', { name: /Import from Community/ }))
+    await screen.findByText(/differ from the Community catalog's current version/)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(await screen.findByText(/1 older than the catalog's version \(kept as you have them\)/)).toBeInTheDocument()
+    expect(imports()).toHaveLength(1)
+  })
+})
+
 describe('importSummary', () => {
   test('every reason, in order', () => {
     expect(importSummary({ imported: 1, skippedBy: { duplicate: 1, limit: 2, tooLarge: 3, fetchFailed: 4, invalid: 5 } }))

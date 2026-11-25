@@ -2,9 +2,12 @@
  * A role change ends the account's open sockets (step 5.13, the pending item of step 5.9; SH-12): with
  * the identity switch on a role change raises the account's session version in its transaction, which
  * ends every cookie signed for the old role, but a socket is checked only when it opens. Once the change
- * has committed the revocation path (`sessions_revoked`) closes every socket of the account (scope
- * `account`). An edit that changes no role asks the agent nothing; a refused role change neither. With
- * the agent down the role change still lands and the failed close is logged.
+ * has committed the revocation path closes every socket of the account (scope `account`): a promotion
+ * plays `role_promoted` (nothing lost, the person's runs and Kali sandbox go on); a demotion plays
+ * `capability_removed`, since it takes the admin-only permissions away (its runs stop, its sandboxes
+ * stop), and turns off a tunnel the demoted admin may still have up (G-03). An edit that changes no
+ * role asks the agent nothing; a refused role change neither. With the agent down the role change
+ * still lands and the failed close is logged.
  *
  * Real session helpers, tokens, bcrypt, step-up, Root re-check and revocation path; the database is the
  * in-memory accountDb; the agent is a double that records what it was asked.
@@ -23,6 +26,11 @@ const h = vi.hoisted(() => ({
   jar: {} as { auth?: string },
   agent: [] as Array<{ path: string; body: Record<string, unknown> }>,
   agentDown: false,
+  enforceTunnel: vi.fn(async (_userId: string) => ({ turnedOff: false, warning: null })),
+}))
+vi.mock('@/lib/sharedSettingsEffects', async (orig) => ({
+  ...(await orig<typeof import('@/lib/sharedSettingsEffects')>()),
+  enforceTunnelPermission: (userId: string) => h.enforceTunnel(userId),
 }))
 vi.mock('next/headers', () => ({
   cookies: vi.fn(async () => ({
@@ -82,6 +90,7 @@ beforeEach(async () => {
   __resetThrottle()
   h.agent = []
   h.agentDown = false
+  h.enforceTunnel.mockClear()
   const row = db().account(ROOT)!
   h.jar.auth = await createToken(ROOT, String(row.role), Number(row.sessionVersion ?? 0))
   vi.spyOn(console, 'info').mockImplementation(() => {})
@@ -94,7 +103,7 @@ afterEach(() => {
 
 const closes = () => h.agent.filter((c) => c.path === '/ws/close').map((c) => c.body)
 
-describe('a role change closes the account\'s open sockets once it has committed (sessions_revoked)', () => {
+describe('a role change closes the account\'s open sockets once it has committed', () => {
   test('a promotion: the session version rose and every socket of the account closes, scope account', async () => {
     const before = Number(db().account('member-1')!.sessionVersion ?? 0)
     const res = await editUser(req({ role: 'admin', stepUpPassword: ROOT_PW }), params('member-1'))
@@ -103,12 +112,24 @@ describe('a role change closes the account\'s open sockets once it has committed
     expect(closes()).toEqual([{ user_id: 'member-1', kinds: expect.arrayContaining(['agent']), scope: 'account' }])
     // A session plan stops no run: the person signs in again and goes on (step 5.9's SESSIONS plan).
     expect(h.agent.map((c) => c.path)).toEqual(['/ws/close'])
+    expect(h.enforceTunnel).not.toHaveBeenCalled()
   })
 
-  test('a demotion by Root, under the last-admin guard: the same close', async () => {
+  test('a demotion by Root, under the last-admin guard: the capability plan (runs stop), the same close, the tunnel turned off', async () => {
     const res = await editUser(req({ role: 'standard', stepUpPassword: ROOT_PW }), params('admin-2'))
     expect(res.status).toBe(200)
     expect(closes()).toEqual([{ user_id: 'admin-2', kinds: expect.any(Array), scope: 'account' }])
+    expect(h.agent.filter((c) => c.path === '/agent-sessions/stop-for').map((c) => c.body)).toEqual([{ user_id: 'admin-2' }])
+    expect(h.enforceTunnel.mock.calls).toEqual([['admin-2']])
+  })
+
+  test('a demotion whose tunnel turn-off throws still lands, and says so', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    h.enforceTunnel.mockRejectedValueOnce(new Error('db down'))
+    const res = await editUser(req({ role: 'standard', stepUpPassword: ROOT_PW }), params('admin-2'))
+    expect(res.status).toBe(200)
+    expect(db().account('admin-2')!.role).toBe('standard')
+    expect(error.mock.calls.map((c) => String(c[0]))).toContain('[rbac] tunnel turn-off after a demotion failed user=admin-2: internal_error')
   })
 
   test('an edit that changes no role, or sets the role it has, asks the agent nothing', async () => {
@@ -130,6 +151,6 @@ describe('a role change closes the account\'s open sockets once it has committed
     expect(db().account('member-1')!.role).toBe('admin')
     const lines = error.mock.calls.map((c) => String(c[0]))
     expect(lines.some((l) => l.startsWith('[rbac] socket-close failed user=member-1'))).toBe(true)
-    expect(lines.some((l) => l.startsWith('[rbac] revocation step failed step=close_sockets reason=sessions_revoked user=member-1'))).toBe(true)
+    expect(lines.some((l) => l.startsWith('[rbac] revocation step failed step=close_sockets reason=role_promoted user=member-1'))).toBe(true)
   })
 })

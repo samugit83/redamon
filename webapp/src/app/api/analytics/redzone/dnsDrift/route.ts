@@ -99,7 +99,7 @@ export async function GET(request: NextRequest) {
     )
 
     const rows = result.records.map(r => {
-      const historicResolutions = ((r.get('historicResolutions') as any[]) || []).map(h => ({
+      const historicResolutions = ((r.get('historicResolutions') as Record<string, unknown>[]) || []).map(h => ({
         address: h.address as string | null,
         asn: h.asn as string | null,
         country: h.country as string | null,
@@ -110,7 +110,7 @@ export async function GET(request: NextRequest) {
         host: (h.host as string | null) ?? null,
       }))
 
-      const externalDomains = ((r.get('externalDomains') as any[]) || []).map(e => ({
+      const externalDomains = ((r.get('externalDomains') as Record<string, unknown>[]) || []).map(e => ({
         domain: e.domain as string,
         sources: (e.sources as string[]) || [],
         timesSeen: e.timesSeen != null ? toNum(e.timesSeen) : null,

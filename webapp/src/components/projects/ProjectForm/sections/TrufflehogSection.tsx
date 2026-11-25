@@ -732,9 +732,8 @@ function ProfileEditor({
   keys: CredentialKeysApi
 }) {
   const src = TRUFFLEHOG_SOURCES[profile.source]
-  const [config, setConfig] = useState<Record<string, unknown>>(profile.config ?? {})
-
-  // Keyed on the profile IDENTITY, not on `profile.config`.
+  // The card's state follows the profile IDENTITY (the parent keys it on
+  // `profile.id`), never `profile.config`.
   //
   // The card owns the operator's in-progress edits, and the parent already
   // mirrors every save back into its own list, so there is nothing to pull in
@@ -747,7 +746,7 @@ function ProfileEditor({
   // `{"groupIds":[...]}` then `{"excludeRepos":[...]}`, losing the target.
   // On gitlab that is invisible, because a profile with no target is still
   // valid and means "scan every project this token can reach".
-  useEffect(() => { setConfig(profile.config ?? {}) }, [profile.id])
+  const [config, setConfig] = useState<Record<string, unknown>>(profile.config ?? {})
 
   if (!src) return null
 

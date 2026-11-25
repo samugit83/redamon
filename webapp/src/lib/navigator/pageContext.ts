@@ -14,7 +14,7 @@ const SCREENS: ReadonlyArray<[RegExp, string | null]> = [
   [/^\/settings$/, PAGE_WIKI.settings.page],
   [/^\/cypherfix$/, PAGE_WIKI.cypherfix.page],
   [/^\/plugins(\/[A-Za-z0-9_-]{1,64})?$/, PAGE_WIKI.plugins.page],
-  [/^\/admin(\/[a-z-]{1,40})?$/, 'Admin-Console'],
+  [/^\/admin(\/[a-z-]{1,40})?$/, PAGE_WIKI.settingsUsers.page],
   [/^\/traffic$/, 'TrafficMind'],
   [/^\/ai-attack-surface$/, 'Adversarial-AI-Recon'],
   [/^\/account$/, null],

@@ -316,6 +316,20 @@ describe('useConversationRestoration - failures the person is told about (G-10, 
     expect(deps.notifyError).toHaveBeenCalledWith('Could not reopen your last session: Failed to fetch conversations (P1001 · HTTP 500)')
     expect(deps.handleNewChat).toHaveBeenCalled()
   })
+
+  test('after a project switch a chosen conversation is remembered for the NEW project', async () => {
+    // The hook outlives the switch; a stale project id saved the conversation as the previous
+    // project's session, so coming back there opened a new chat instead of its own.
+    const { getProjectSession } = await import('../sessionMemory')
+    window.localStorage.clear()
+    const deps = makeDeps({ items: [] }, { ...conv, id: 'c2', messages: [] })
+    const hook = renderHook((props: { projectId: string }) => useConversationRestoration({ ...deps, projectId: props.projectId }),
+      { initialProps: { projectId: 'pA' } })
+    hook.rerender({ projectId: 'pB' })
+    await act(async () => { await hook.result.current.handleSelectConversation({ ...conv, id: 'c2' }) })
+    expect(getProjectSession('pB')).toBe('c2')
+    expect(getProjectSession('pA')).toBeNull()
+  })
 })
 
 describe('useConversationRestoration - download cards keep their project (4.9 review)', () => {

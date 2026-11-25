@@ -32,6 +32,7 @@ export function useSkillNameCheck(
 
   useEffect(() => {
     if (!enabled || !userId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- debounced fetch in an effect: the check goes idle when disabled, and shows checking until the server answers
       setCheck({ state: 'idle', suggestion: null, reason: null })
       return
     }

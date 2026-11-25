@@ -32,6 +32,13 @@ The one-line "route every egress through the guard" rule is in the capture_proxy
   to an internal address (or re-resolves after a check) is the SSRF/DNS-rebinding
   case. See [scanners/capture_proxy/egress.py](../../scanners/capture_proxy/egress.py) (the block
   conditions operate on the resolved IP).
+- **NEVER check an egress rule only in `request`.** mitmproxy dials from
+  `server_connect` alone, and a CONNECT tunnel, raw TCP, the DNS layer and a body
+  large enough to stream all reach the upstream without a `request` hook first:
+  keep every upstream dial behind `server_connect`, take anything off a request in
+  `requestheaders`, and never set `flow.server_conn.address` in `request`. The
+  proxy serves every person's Kali sandbox on that sandbox's network, so the
+  sandbox pool `10.214.0.0/16` stays in its always-on denylist.
 - **NEVER build a replay/fuzz target from unvalidated LLM output and send it
   straight out.** The replay path is a new egress path; it must pass the same
   `EgressPolicy` guard as captured traffic, or the agent can be steered into an
@@ -50,7 +57,7 @@ The one-line "route every egress through the guard" rule is in the capture_proxy
 
 | Stage | File | Note |
 | --- | --- | --- |
-| intercept | [capture_addon.py](../../scanners/capture_proxy/capture_addon.py) | mitmproxy addon; request/response hooks |
+| intercept | [capture_addon.py](../../scanners/capture_proxy/capture_addon.py) | mitmproxy addon. `requestheaders` takes the tag off and checks every name the client gives (each Host header, `:authority`) before a large body can stream; `request` checks the request; `server_connect` checks the real target of every upstream dial (CONNECT tunnels, raw TCP and the DNS layer included) against the same rules and pins the dial to the checked IP; `response` records |
 | egress guard | [egress.py](../../scanners/capture_proxy/egress.py) | resolved-IP denylist + `EgressPolicy` toggles; the SSRF backstop |
 | ingest | [ingest_worker.py](../../scanners/capture_proxy/ingest_worker.py) | tails the spool -> Postgres; off the scan path |
 

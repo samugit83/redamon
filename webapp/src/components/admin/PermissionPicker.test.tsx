@@ -58,6 +58,6 @@ describe('PermissionPicker', () => {
     expect(onChange).toHaveBeenCalledWith('platform:tunnels')
     cleanup()
     renderPicker({ value: 'platform:tunnels' })
-    expect(screen.getByText('Configure and enable the ngrok or chisel tunnel every user shares.')).toBeTruthy()
+    expect(screen.getByText('Turn on a reverse-shell tunnel (ngrok or chisel) from your own Kali sandbox, with your own credentials.')).toBeTruthy()
   })
 })

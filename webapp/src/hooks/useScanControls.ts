@@ -71,12 +71,12 @@ export function useScanControls({
 
   // Exactly how the graph page decides whether a download button is live: a HEAD
   // against the download route. Re-probed when a scan settles, since that is
-  // when an artifact appears.
+  // when an artifact appears. Off, nothing is downloadable.
+  if (!on && (hasReconData || hasGvmData || reconDataError !== null || gvmDataError !== null)) {
+    setHasReconData(false); setHasGvmData(false); setReconDataError(null); setGvmDataError(null)
+  }
   useEffect(() => {
-    if (!on) {
-      setHasReconData(false); setHasGvmData(false); setReconDataError(null); setGvmDataError(null)
-      return
-    }
+    if (!on) return
     let cancelled = false
     void (async () => {
       const [recon, gvmData] = await Promise.all([

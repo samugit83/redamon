@@ -400,7 +400,7 @@ describe('the startup lists', () => {
     const push = entry.indexOf('db push')
     const instance = entry.indexOf('backfill-rbac-instance-settings.mjs')
     const ours = entry.indexOf('backfill-rbac-root.mjs')
-    const server = entry.indexOf('exec node server.js')
+    const server = entry.indexOf('exec node scripts/serve.cjs')
     expect(push).toBeGreaterThan(0)
     expect(instance).toBeGreaterThan(push)
     expect(ours).toBeGreaterThan(instance)

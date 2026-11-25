@@ -104,6 +104,15 @@ SUPPLY_CHAIN_ANALYZER_PIDS TERMINAL_MAX_SESSIONS WEBAPP_MEM WORKSPACE_IMPORT_MAX
 WORKSPACE_IMPORT_MAX_ENTRIES WORKSPACE_IMPORT_MAX_JOBS WORKSPACE_IMPORT_MIN_FREE_BYTES
 WORKSPACE_IMPORT_WORKERS WORKSPACE_UPLOAD_CHUNK_BYTES WORKSPACE_UPLOAD_SESSION_IDLE_SEC
 WORKSPACE_URL_IMPORT_ENABLED"
+# Per-user Kali sandboxes, with the owner's agreement (group 1, 2026-11-21: optional
+# variables of the orchestrator, absent from .env by default, documented commented out;
+# tests/kali_sandbox_no_required_env_test.sh checks none becomes required). The port
+# hold time joined them on the owner's request (follow-up FU, 2026-11-23, decision D-A).
+ENV_EXAMPLE_BASE="$ENV_EXAMPLE_BASE KALI_SANDBOX_IDLE_MINUTES KALI_SANDBOX_MAX_CONCURRENT
+KALI_SANDBOX_PORT_POOL KALI_SANDBOX_PORT_HOLD_HOURS"
+# Not a new variable (group 1, S21): the agent's environment blanks the shared Kali
+# container's old tunnel token, which its env_file (.env) would otherwise hand it.
+AGENT_BASE="$AGENT_BASE TUNNEL_AUTH_TOKEN"
 
 check() {  # <name> <base list> <current list>
     local added

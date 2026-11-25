@@ -1,8 +1,9 @@
 /**
- * The readers of the shared tunnel and capture settings (step 2.4, ID-32): with the
- * identity switch on they read the instance settings row, with it off (and until the boot
- * backfill fills that row) the user row each reader picked before. Retention stays per
- * owner either way.
+ * The readers of the shared capture settings (step 2.4, ID-32): with the identity switch on
+ * they read the instance settings row, with it off (and until the boot backfill fills that
+ * row) the user row each reader picked before. Retention stays per owner either way. The
+ * tunnel is no shared setting: the agent's lookup answers the named person's own row only
+ * (group 1), never the instance row or a row picked for everybody.
  *
  * Run: npx vitest run --no-file-parallelism src/lib/sharedInstanceSettings.test.ts
  * @vitest-environment node
@@ -13,6 +14,7 @@ import { NextRequest } from 'next/server'
 const db = {
   instanceFindUnique: vi.fn(),
   settingsFindFirst: vi.fn(),
+  settingsFindUnique: vi.fn(),
   settingsFindMany: vi.fn(),
   userFindMany: vi.fn(),
   trafficFindMany: vi.fn(),
@@ -25,6 +27,7 @@ vi.mock('@/lib/prisma', () => ({
     instanceSettings: { findUnique: (...a: unknown[]) => db.instanceFindUnique(...a) },
     userSettings: {
       findFirst: (...a: unknown[]) => db.settingsFindFirst(...a),
+      findUnique: (...a: unknown[]) => db.settingsFindUnique(...a),
       findMany: (...a: unknown[]) => db.settingsFindMany(...a),
     },
     user: { findMany: (...a: unknown[]) => db.userFindMany(...a) },
@@ -38,6 +41,12 @@ vi.mock('@/lib/prisma', () => ({
 vi.mock('@/lib/session', () => ({ isInternalRequest: () => true }))
 vi.mock('@/lib/recordingConfig', () => ({ activeRecordingBlock: async () => null }))
 vi.mock('@/lib/captureBodies', () => ({ gcOrphanBodies: async () => 0 }))
+// These tests are about which row the credentials come from; the platform:tunnels check the route
+// also makes (G-03) is held here and tested in global/tunnel-config/route.test.ts.
+vi.mock('@/lib/authz/sharedTools', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/authz/sharedTools')>()),
+  sharedToolHeldBy: async () => true,
+}))
 
 import { setFlagsForTests } from '@/lib/authz/flags'
 import { INSTANCE_SETTINGS_ID, instanceSettingsInForce } from './sharedInstanceSettings'
@@ -79,6 +88,7 @@ beforeEach(() => {
   for (const fn of Object.values(db)) fn.mockReset()
   db.instanceFindUnique.mockResolvedValue({ ...INSTANCE_ROW })
   db.settingsFindFirst.mockResolvedValue({ ...ADMIN_ROW })
+  db.settingsFindUnique.mockResolvedValue({ tunnelsEnabled: true, ngrokAuthtoken: 'fake-own-ngrok', chiselServerUrl: '', chiselAuth: '' })
   db.userFindMany.mockResolvedValue([{ id: 'admin-1' }])
 })
 afterEach(() => setFlagsForTests(null))
@@ -101,9 +111,11 @@ describe('switch off reads the user rows', () => {
     expect(db.settingsFindFirst).toHaveBeenCalledWith({ where: { userId: { in: ['admin-1'] } }, orderBy: { updatedAt: 'desc' } })
   })
 
-  test('the tunnel credentials come from the user row', async () => {
-    const body = await (await tunnelConfig(internalGet('/api/global/tunnel-config'))).json()
-    expect(body.ngrokAuthtoken).toBe('fake-user-row-ngrok')
+  test('the tunnel credentials are the named person\'s own row, never the row picked for everybody', async () => {
+    const body = await (await tunnelConfig(internalGet('/api/global/tunnel-config?userId=member-1'))).json()
+    expect(body.ngrokAuthtoken).toBe('fake-own-ngrok')
+    expect(db.settingsFindUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: 'member-1' } }))
+    expect(db.settingsFindFirst).not.toHaveBeenCalled()
   })
 
   test('the capture status reads the admin row', async () => {
@@ -127,9 +139,12 @@ describe('switch on reads the singleton', () => {
     expect(db.userFindMany).not.toHaveBeenCalled()
   })
 
-  test('the tunnel credentials come from the instance row', async () => {
-    const body = await (await tunnelConfig(internalGet('/api/global/tunnel-config'))).json()
-    expect(body).toEqual({ ngrokAuthtoken: '', chiselServerUrl: 'https://chisel.instance.test', chiselAuth: 'u:fake-pass' })
+  test('the tunnel credentials never come from the instance row: the named person\'s own, or nothing', async () => {
+    expect(await (await tunnelConfig(internalGet('/api/global/tunnel-config?userId=member-1'))).json())
+      .toEqual({ ngrokAuthtoken: 'fake-own-ngrok', chiselServerUrl: '', chiselAuth: '' })
+    expect(await (await tunnelConfig(internalGet('/api/global/tunnel-config'))).json())
+      .toEqual({ ngrokAuthtoken: '', chiselServerUrl: '', chiselAuth: '' })
+    expect(db.instanceFindUnique).not.toHaveBeenCalled()
     expect(db.settingsFindFirst).not.toHaveBeenCalled()
   })
 
@@ -141,7 +156,6 @@ describe('switch on reads the singleton', () => {
   test('before the backfill filled the row, every reader keeps the user rows', async () => {
     db.instanceFindUnique.mockResolvedValue(null)
     expect((await (await captureConfig(internalGet('/api/internal/capture-config'))).json()).source).toBe('db')
-    expect((await (await tunnelConfig(internalGet('/api/global/tunnel-config'))).json()).ngrokAuthtoken).toBe('fake-user-row-ngrok')
     expect(await isCaptureGloballyEnabled()).toBe(true)
   })
 

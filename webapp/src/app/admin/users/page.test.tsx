@@ -132,6 +132,14 @@ describe('what the directory shows', () => {
     expect(screen.getByRole('link', { name: 'm-1 name' })).toHaveAttribute('href', '/admin/users/m-1')
   })
 
+  test('the header links the Users section of the wiki, beside the title and outside the heading', async () => {
+    renderPage()
+    const wiki = await screen.findByRole('link', { name: 'Open Identity & Access Management wiki page' })
+    expect(wiki).toHaveAttribute('href', 'https://github.com/samugit83/redamon/wiki/Identity-and-Access-Management#where-accounts-are-managed-iam--users')
+    expect(wiki).toHaveAttribute('target', '_blank')
+    expect(screen.getByRole('heading', { level: 1, name: 'Users' })).toBeInTheDocument()
+  })
+
   test('without sharing in force no shared count is shown', async () => {
     directory = () => json(page([row('m-1', { projects: { owned: 1, shared: null } })]))
     renderPage()
@@ -283,6 +291,32 @@ describe('row actions follow the hierarchy', () => {
       method: 'PUT', body: JSON.stringify({ name: 'Renamed', email: 'new@e2e.local', stepUpPassword: 'own-passphrase' }),
     })))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  test('Reset credentials keeps its link on screen while the list reads again', async () => {
+    directory = () => json(page([row('m-1', { actions: ['reset_credentials'] })]))
+    const link = 'http://redamon.test/invite/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    let answerRead: () => void = () => {}
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://redamon.test')
+      if (url.pathname === '/api/admin/users') {
+        // The read after the reset stays open, as a real one does for a few ms.
+        if (directoryCalls().length > 1) await new Promise<void>((r) => { answerRead = r })
+        return directory(url)
+      }
+      if (init?.method === 'POST') return json({ mode: 'link', link, expiresAt: '2026-11-25T00:00:00.000Z' })
+      return json({})
+    })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Reset the credentials of m-1 name' }))
+    const dialog = await screen.findByRole('dialog')
+    const reads = directoryCalls().length
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Reset credentials' }))
+    await waitFor(() => expect(directoryCalls().length).toBe(reads + 1))
+    expect(await within(screen.getByRole('dialog')).findByLabelText('Reset link')).toHaveValue(link)
+    expect(screen.queryByText('Loading the accounts…')).toBeNull()
+    answerRead()
+    await waitFor(() => expect(screen.getByLabelText('Reset link')).toHaveValue(link))
   })
 
   test('Invite user shows only to a users:create holder', async () => {

@@ -25,7 +25,16 @@ OWNED_LABELS = {broker._OWNER_LABEL: "1"}
 
 
 def _daemon():
-    return Daemon({OWNED: dict(OWNED_LABELS)})
+    # A `docker run --rm` tool container: the daemon removes it on exit, so a
+    # wait for its removal ends (the broker refuses one that could not).
+    return Daemon({OWNED: dict(OWNED_LABELS)}, auto_remove={OWNED})
+
+
+@pytest.fixture(autouse=True)
+def _fresh_log_limits(monkeypatch):
+    # The broker rate-limits its DENY lines per kind of call; each test starts
+    # with a fresh allowance so its own refusal is logged.
+    monkeypatch.setattr(broker, "_log_marks", {}, raising=False)
 
 
 def _one(method, target, body=None, daemon=None):
@@ -211,7 +220,8 @@ def test_a_docker_run_is_allowed_end_to_end_and_its_container_is_then_owned():
     steps = [
         request_bytes("HEAD", "/_ping"),
         create,
-        lambda r: request_bytes("POST", f"{V}/containers/{created_id(r[1])}/attach?stderr=1&stdout=1&stream=1"),
+        lambda r: request_bytes("POST", f"{V}/containers/{created_id(r[1])}/attach?stderr=1&stdout=1&stream=1",
+                                headers=("Connection: Upgrade", "Upgrade: tcp")),
         lambda r: request_bytes("POST", f"{V}/containers/{created_id(r[1])}/wait?condition=removed"),
         lambda r: request_bytes("POST", f"{V}/containers/{created_id(r[1])}/start"),
         request_bytes("POST", f"{V}/containers/redamon-nuclei-x/kill"),

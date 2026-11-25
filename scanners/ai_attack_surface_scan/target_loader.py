@@ -19,7 +19,8 @@ from urllib.parse import urlsplit
 # The image COPYs recon_settings (the spawn mounts none): the one hostname rule
 # and guardrail copy every service shares.
 from recon_settings.hard_guardrail import is_hard_blocked
-from recon_settings.ip_hostnames import TargetSet, address_verdict, canonical_ip, matches, parse_entries
+from recon_settings.ip_hostnames import (
+    SANDBOX_POOL, TargetSet, address_verdict, canonical_ip, in_sandbox_pool, matches, parse_entries)
 
 logger = logging.getLogger("ai-attack-surface")
 
@@ -105,6 +106,8 @@ def load_targets(
       — recon stamps every crawled endpoint, mostly with the 'non-llm' sentinel).
     - `scope` (an IP-mode project, see ip_mode_scope): every target, a typed
       custom one included, must pass it; the refused ones are listed.
+    - in every mode, a target that is or resolves to an address of the Kali
+      sandbox pool is refused (_sandbox_pool_refusal).
     """
     if selected:
         targets = _load_selected(session, user_id, project_id, selected)
@@ -112,17 +115,49 @@ def load_targets(
         if interface_types is None:
             interface_types = ATTACK_SURFACE_INTERFACE_TYPES
         targets = _load_all_ai(session, user_id, project_id, interface_types)
-    if scope is None:
-        return targets
     admitted = []
+    pool_by_host: dict[str, str | None] = {}
     for target in targets:
-        reason = scope.refusal(target)
+        host = _host(target.baseurl)
+        if host not in pool_by_host:
+            pool_by_host[host] = _sandbox_pool_refusal(target)
+        reason = pool_by_host[host]
+        if reason is None and scope is not None:
+            reason = scope.refusal(target)
         if reason is None:
             admitted.append(target)
         else:
             print(f"    [-] refused {target.url}: {reason}")
-    logger.info(f"Target loader: {len(admitted)} of {len(targets)} target(s) in the IP-mode scope")
+    if scope is not None:
+        logger.info(f"Target loader: {len(admitted)} of {len(targets)} target(s) in the IP-mode scope")
     return admitted
+
+
+_SANDBOX_POOL = f"in the Kali sandbox address pool ({SANDBOX_POOL}), another person's sandbox"
+
+
+def _sandbox_pool_refusal(target: "Target") -> str | None:
+    """Why the target is refused for the sandbox pool, else None.
+
+    This scanner runs on the host network, which reaches every Kali sandbox
+    bridge, and an operator may type a custom target: neither a typed address
+    nor a name that resolves there is attacked. A name that does not resolve is
+    left to the attack, which cannot reach it either.
+    """
+    host = _host(target.baseurl)
+    if not host:
+        return None
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        return _SANDBOX_POOL if in_sandbox_pool(host) else None
+    try:
+        answer = _resolve(host)
+    except (OSError, UnicodeError):
+        return None
+    return _SANDBOX_POOL if any(in_sandbox_pool(a) for a in answer) else None
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +321,8 @@ class IpModeScope:
         return {n for n in names if matches(n, include, exclude).included}
 
     def _address_refusal(self, address: str) -> str | None:
+        if in_sandbox_pool(address):
+            return _SANDBOX_POOL
         if _roe_excluded(address, self.excluded):
             return _ROE
         return None if address in self.targets else "outside the target IPs"

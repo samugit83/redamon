@@ -129,7 +129,7 @@ every fixture account once and only known sets and permissions.
 `./redamon.sh update` does between the build and the restart, then the startup list. The
 harness reduces each preview section to one line per fact (`root|<email>|<rule>|<candidates>`,
 `legacy_grants|<email>|<grants>`, `tunnel_rows|<email>|<role>|<kinds>|<enabled>`,
-`tunnel_pick|<email>`, `instance_settings|tunnel|<email>|<candidates>` and `|capture|`,
+`instance_settings|tunnel|<email>|<candidates>` and `|capture|`,
 `stdio_mcp|<email>|<server>`, `mcp_token_env_var|<email>|<server>|<variable>`,
 `scanner_key|set`) and diffs them against what `preview_after.sql` reads of the database the
 run left. The preview must also write nothing and exit 10 exactly when `preview_after.sql`

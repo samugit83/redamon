@@ -18,9 +18,11 @@ export const ExpandedRowDetail = memo(function ExpandedRowDetail({ row }: Expand
     .filter(([key]) => !HIDDEN_KEYS.has(key))
     .sort(([a], [b]) => a.localeCompare(b))
 
-  // Lazy BFS: computed on first expand, cached thereafter
-  const level2 = useMemo(() => row.getLevel2(), [row])
-  const level3 = useMemo(() => row.getLevel3(), [row])
+  // Lazy BFS: computed on first expand, cached thereafter. Each row has its own
+  // closures, so they change exactly when the row does.
+  const { getLevel2, getLevel3 } = row
+  const level2 = useMemo(() => getLevel2(), [getLevel2])
+  const level3 = useMemo(() => getLevel3(), [getLevel3])
 
   const nodeUrl = useMemo(() => getNodeUrl(row.node), [row.node])
 

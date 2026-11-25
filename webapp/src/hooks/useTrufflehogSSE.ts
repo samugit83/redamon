@@ -52,99 +52,31 @@ export function useTrufflehogSSE({
   }, [])
 
   const connect = useCallback(() => {
-    if (!projectId || !source || !enabled) return
+    // Named, so a retry reopens the stream with the props this callback was made with.
+    function open() {
+      if (!projectId || !source || !enabled) return
 
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close()
-    }
-
-    const streamUrl = `/api/trufflehog/${projectId}/${encodeURIComponent(source)}/logs`
-    const eventSource = new EventSource(streamUrl)
-    eventSourceRef.current = eventSource
-
-    eventSource.onopen = () => {
-      setIsConnected(true)
-      setError(null)
-      reconnectAttempts.current = 0
-    }
-
-    eventSource.addEventListener('log', (event) => {
-      try {
-        const eventData = (event as MessageEvent).data
-        if (!eventData) return
-
-        const data = JSON.parse(eventData)
-
-        const logEvent: ReconLogEvent = {
-          log: data.log,
-          timestamp: data.timestamp,
-          phase: data.phase,
-          phaseNumber: data.phaseNumber,
-          isPhaseStart: data.isPhaseStart,
-          level: data.level || 'info',
-        }
-
-        setLogs(prev => [...prev, logEvent])
-        onLog?.(logEvent)
-
-        if (logEvent.isPhaseStart && logEvent.phase && logEvent.phaseNumber) {
-          setCurrentPhase(logEvent.phase)
-          setCurrentPhaseNumber(logEvent.phaseNumber)
-          onPhaseChange?.(logEvent.phase, logEvent.phaseNumber)
-        }
-      } catch (err) {
-        console.error('Error parsing trufflehog SSE log event:', err)
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close()
       }
-    })
 
-    eventSource.addEventListener('error', (event) => {
-      try {
-        const eventData = (event as MessageEvent).data
-        if (!eventData) return
+      const streamUrl = `/api/trufflehog/${projectId}/${encodeURIComponent(source)}/logs`
+      const eventSource = new EventSource(streamUrl)
+      eventSourceRef.current = eventSource
 
-        const data = JSON.parse(eventData)
-        if (data.error) {
-          console.error('trufflehog log stream error:', data.error)
-          setError(LOG_STREAM_EVENT_ERROR)
-          onError?.(LOG_STREAM_EVENT_ERROR)
-        }
-      } catch (err) {
-        console.error('Error parsing trufflehog SSE error event:', err)
+      eventSource.onopen = () => {
+        setIsConnected(true)
+        setError(null)
+        reconnectAttempts.current = 0
       }
-    })
 
-    eventSource.addEventListener('complete', (event) => {
-      try {
-        const eventData = (event as MessageEvent).data
-        if (!eventData) return
+      eventSource.addEventListener('log', (event) => {
+        try {
+          const eventData = (event as MessageEvent).data
+          if (!eventData) return
 
-        const data = JSON.parse(eventData)
-        onComplete?.(data.status, data.error)
-        eventSource.close()
-        setIsConnected(false)
-      } catch (err) {
-        console.error('Error parsing trufflehog SSE complete event:', err)
-      }
-    })
+          const data = JSON.parse(eventData)
 
-    eventSource.onmessage = (event) => {
-      try {
-        if (!event.data) return
-        const data = JSON.parse(event.data)
-
-        if (data.error) {
-          console.error('trufflehog log stream error:', data.error)
-          setError(LOG_STREAM_EVENT_ERROR)
-          onError?.(LOG_STREAM_EVENT_ERROR)
-          return
-        }
-
-        if (data.status) {
-          onComplete?.(data.status, data.error)
-          return
-        }
-
-        if (data.log) {
           const logEvent: ReconLogEvent = {
             log: data.log,
             timestamp: data.timestamp,
@@ -162,36 +94,108 @@ export function useTrufflehogSSE({
             setCurrentPhaseNumber(logEvent.phaseNumber)
             onPhaseChange?.(logEvent.phase, logEvent.phaseNumber)
           }
+        } catch (err) {
+          console.error('Error parsing trufflehog SSE log event:', err)
         }
-      } catch (err) {
-        console.error('Error parsing trufflehog SSE message:', err)
+      })
+
+      eventSource.addEventListener('error', (event) => {
+        try {
+          const eventData = (event as MessageEvent).data
+          if (!eventData) return
+
+          const data = JSON.parse(eventData)
+          if (data.error) {
+            console.error('trufflehog log stream error:', data.error)
+            setError(LOG_STREAM_EVENT_ERROR)
+            onError?.(LOG_STREAM_EVENT_ERROR)
+          }
+        } catch (err) {
+          console.error('Error parsing trufflehog SSE error event:', err)
+        }
+      })
+
+      eventSource.addEventListener('complete', (event) => {
+        try {
+          const eventData = (event as MessageEvent).data
+          if (!eventData) return
+
+          const data = JSON.parse(eventData)
+          onComplete?.(data.status, data.error)
+          eventSource.close()
+          setIsConnected(false)
+        } catch (err) {
+          console.error('Error parsing trufflehog SSE complete event:', err)
+        }
+      })
+
+      eventSource.onmessage = (event) => {
+        try {
+          if (!event.data) return
+          const data = JSON.parse(event.data)
+
+          if (data.error) {
+            console.error('trufflehog log stream error:', data.error)
+            setError(LOG_STREAM_EVENT_ERROR)
+            onError?.(LOG_STREAM_EVENT_ERROR)
+            return
+          }
+
+          if (data.status) {
+            onComplete?.(data.status, data.error)
+            return
+          }
+
+          if (data.log) {
+            const logEvent: ReconLogEvent = {
+              log: data.log,
+              timestamp: data.timestamp,
+              phase: data.phase,
+              phaseNumber: data.phaseNumber,
+              isPhaseStart: data.isPhaseStart,
+              level: data.level || 'info',
+            }
+
+            setLogs(prev => [...prev, logEvent])
+            onLog?.(logEvent)
+
+            if (logEvent.isPhaseStart && logEvent.phase && logEvent.phaseNumber) {
+              setCurrentPhase(logEvent.phase)
+              setCurrentPhaseNumber(logEvent.phaseNumber)
+              onPhaseChange?.(logEvent.phase, logEvent.phaseNumber)
+            }
+          }
+        } catch (err) {
+          console.error('Error parsing trufflehog SSE message:', err)
+        }
+      }
+
+      eventSource.onerror = () => {
+        setIsConnected(false)
+        eventSource.close()
+
+        if (reconnectAttempts.current < maxReconnectAttempts) {
+          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 10000)
+          reconnectAttempts.current++
+
+          reconnectTimeoutRef.current = setTimeout(() => {
+            open()
+          }, delay)
+        } else {
+          setError(LOG_STREAM_LOST)
+          onError?.(LOG_STREAM_LOST)
+          void describeLogStreamLoss(streamUrl, 'Failed to connect to Secret Multiscanner log stream').then(reason => {
+            if (eventSourceRef.current === eventSource) setError(reason)
+          })
+        }
       }
     }
-
-    eventSource.onerror = () => {
-      setIsConnected(false)
-      eventSource.close()
-
-      if (reconnectAttempts.current < maxReconnectAttempts) {
-        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 10000)
-        reconnectAttempts.current++
-
-        reconnectTimeoutRef.current = setTimeout(() => {
-          connect()
-        }, delay)
-      } else {
-        setError(LOG_STREAM_LOST)
-        onError?.(LOG_STREAM_LOST)
-        void describeLogStreamLoss(streamUrl, 'Failed to connect to Secret Multiscanner log stream').then(reason => {
-          if (eventSourceRef.current === eventSource) setError(reason)
-        })
-      }
-    }
-
+    open()
   }, [projectId, source, enabled, onLog, onPhaseChange, onComplete, onError])
 
   // Clear logs only when switching to a different project
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- SSE subscription: the reset runs in the commit that reconnects, so a late event from the old stream is cleared too
     setLogs([])
     setCurrentPhase(null)
     setCurrentPhaseNumber(null)

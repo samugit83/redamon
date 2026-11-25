@@ -1,8 +1,8 @@
 """Shared bearer-token authentication for the Kali MCP SSE servers.
 
-STRIDE S10 defense-in-depth. The MCP tool servers are consumed ONLY by the agent
-over the internal Docker bridge (``http://kali-sandbox:PORT/sse``); their host
-ports are loopback-only (see docker-compose.yml). This middleware adds a second
+STRIDE S10 defense-in-depth. The MCP tool servers are consumed ONLY by the agent,
+over the person's own sandbox network (the sandbox's container name and PORT);
+no port of a sandbox is published on the host. This middleware adds a second
 control: every HTTP/WebSocket request must carry
 ``Authorization: Bearer <MCP_AUTH_TOKEN>`` when ``MCP_AUTH_TOKEN`` is set.
 
