@@ -43,7 +43,7 @@
   <a href="https://github.com/samugit83/redamon/wiki"><img height="24" src="https://img.shields.io/badge/📖_WIKI-FULL%20DOCUMENTATION-1A73E8?style=flat" alt="Wiki Documentation"/></a>
 </p>
 
-> **LEGAL DISCLAIMER**: This tool is intended for **authorized security testing**, **educational purposes**, and **research only**. Never use this system to scan, probe, or attack any system you do not own or have explicit written permission to test. Unauthorized access is **illegal** and punishable by law. By using this tool, you accept **full responsibility** for your actions. **[Read Full Disclaimer](DISCLAIMER.md)**
+> **LEGAL DISCLAIMER**: This tool is intended for **authorized security testing**, **educational purposes**, and **research only**. Never use this system to scan, probe, or attack any system you do not own or have explicit written permission to test. Unauthorized access is **illegal** and punishable by law. By using this tool, you accept **full responsibility** for your actions. The author **condemns** any unauthorized use. **[Read Full Disclaimer](DISCLAIMER.md)**
 
 > 🏆 **Flagship result:** RedAmon solves **101 / 104 (97.1%)** of the XBOW web-security benchmark **fully black-box**. Every solve ships a complete, unedited raw agent session **and** a reproducible, step-by-step walkthrough: open any row and read exactly how the flag fell, tool call by tool call. Auditable, line by line. See the **[XBOW Validation Benchmark scorecard](https://github.com/samugit83/redamon/wiki/XBOW-Validation-Benchmark)**.
 
@@ -1139,7 +1139,7 @@ RedAmon integrates several third-party tools under their own licenses (MIT, Apac
 
 > **Commercial use note**: The Kali sandbox image bundles **WPScan**, which is governed by the WPScan Public Source License. WPScan restricts commercial use (SaaS, paid product offerings, value-added services) without a separate license from the WPScan team. Pentesting engagements and personal use are permitted. If you intend to use RedAmon in a commercial product or service, review [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) before distribution.
 
-See [DISCLAIMER.md](DISCLAIMER.md) for full terms of use, acceptable use policy, and legal compliance requirements.
+See [DISCLAIMER.md](DISCLAIMER.md) for full terms of use, acceptable use policy, and legal compliance requirements, including the [Statement on Misuse](DISCLAIMER.md#statement-on-misuse-25-november-2026).
 
 ---
 

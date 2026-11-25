@@ -12,6 +12,26 @@ RedAmon is an **educational and research tool** designed exclusively for:
 - Testing on systems you own or have explicit written permission to test
 - Learning about offensive security techniques in controlled environments
 
+### Statement on Misuse (25 November 2026)
+
+RedAmon is built for authorized security testing. Using it, or any modified version of it, against systems without the owner's permission is a crime in most countries and is contrary to everything this project is for.
+
+Public threat-intelligence reporting in 2026 has described criminals misusing open-source AI penetration-testing frameworks, and has named RedAmon among the frameworks of this kind.
+
+The author and contributors:
+
+- **Condemn** any use of RedAmon to access, attack or disrupt systems without authorization
+- Have **no connection** with anyone who uses it that way, and give them no support of any kind
+- Will not help, answer, or accept contributions from anyone who shows they are using RedAmon without authorization
+
+RedAmon sends no telemetry to its authors. The author does not know who runs it or against what, and cannot stop a copy that someone else is running.
+
+### Built-in Safeguards and Modified Versions
+
+RedAmon ships with safeguards meant to keep it on authorized targets: a project marked as targeting someone else's systems will not start without a recorded authorization and a rate limit; authorizations are kept in an append-only record; a Target Guardrail refuses government, financial and other sensitive domains; and approval gates require a person to confirm exploitation steps. They are best-effort, not guarantees (see *Autonomous AI Agent — Unintended Effects*).
+
+The only official source of RedAmon is [github.com/samugit83/redamon](https://github.com/samugit83/redamon). Forks, mirrors and builds that remove or bypass these safeguards are not made, endorsed or supported by the author. Removing them in order to use RedAmon against systems without permission is exactly the misuse this project condemns.
+
 ### Disclaimer of Liability
 
 **THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.**
@@ -264,4 +284,4 @@ For questions about authorized use or licensing, please open an issue on the rep
 
 ---
 
-*Last updated: July 2026*
+*Last updated: November 2026*
