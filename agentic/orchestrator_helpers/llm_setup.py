@@ -28,16 +28,20 @@ OLLAMA_REASONING_EFFORTS = frozenset({"low", "medium", "high", "max"})
 def _stream_usage(reports):
     """One usage for a streamed response from the usage its chunks reported.
 
-    Running totals (vLLM's continuous usage stats: the same input and a growing
-    output on every chunk) are counted once, by the last; anything else is
-    summed, as LangChain does.
+    Reports in which no count ever falls are running totals (vLLM's continuous
+    usage stats, or a final usage sent twice) and are counted once, by the last.
+    The input may rise too: a server can leave the prompt count at 0 until its
+    final chunk. Anything else is summed, as LangChain does.
     """
+    # Imported here, not at module level: test_execute_nodes, test_tool_confirmation
+    # and test_tool_stop replace langchain_core.messages with a plain module before
+    # importing this one, and a module-level import of its .ai submodule then fails.
     from langchain_core.messages.ai import add_usage
 
     if not reports:
         return None
     running_totals = all(
-        cur["input_tokens"] == prev["input_tokens"] and cur["output_tokens"] >= prev["output_tokens"]
+        cur["input_tokens"] >= prev["input_tokens"] and cur["output_tokens"] >= prev["output_tokens"]
         for prev, cur in zip(reports, reports[1:])
     )
     return reports[-1] if running_totals else reduce(add_usage, reports)
@@ -364,8 +368,9 @@ def setup_llm(
                 # runtimes such as Ollama can otherwise leave a non-streaming
                 # request silent until the full completion is ready, causing
                 # an intermediary/read timeout even though generation is
-                # healthy. stream_usage keeps token accounting intact when
-                # ChatOpenAI aggregates the chunks into one AIMessage.
+                # healthy. stream_usage asks for token usage on the stream;
+                # StreamUsageChatOpenAI, built below, counts a server's running
+                # totals once instead of summing every chunk's report.
                 kwargs["streaming"] = True
                 kwargs["stream_usage"] = True
                 reasoning_effort = _resolve_reasoning_effort(custom_llm_config)

@@ -74,6 +74,25 @@ def _split_usage_stream() -> list[dict]:
     return [_chunk("one two", first), _chunk(" three four five", rest, "stop")]
 
 
+def _issue_242_stream() -> list[dict]:
+    """The capture in #242: a first chunk with no output yet, the running totals on
+    every chunk, then a usage-only chunk (no choices) repeating the final totals."""
+    return [_chunk("", _usage(0))] + _cumulative_stream() + [_chunk(None, _usage(len(_WORDS)))]
+
+
+def _late_prompt_stream() -> list[dict]:
+    """Running output totals with the prompt count left at 0 until the last chunk."""
+    def usage(prompt: int, completion: int) -> dict:
+        return {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion}
+    content = [_chunk(word, usage(0, i + 1)) for i, word in enumerate(_WORDS)]
+    return content + [_chunk(None, usage(_PROMPT_TOKENS, len(_WORDS)))]
+
+
+def _no_usage_stream() -> list[dict]:
+    """A server that ignores stream_options and reports no usage at all."""
+    return [_chunk(word, None) for word in _WORDS]
+
+
 class _SSEHandler(BaseHTTPRequestHandler):
     chunks: list[dict] = []
 
@@ -97,7 +116,7 @@ class StreamUsageTests(unittest.TestCase):
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
 
-    def _invoke(self, chunks: list[dict]):
+    def _invoke(self, chunks: list[dict], *, sync: bool = False):
         _SSEHandler.chunks = chunks
         base_url = f"http://127.0.0.1:{self.server.server_port}/v1"
         cfg = {
@@ -108,6 +127,8 @@ class StreamUsageTests(unittest.TestCase):
             "baseUrl": base_url,
         }
         llm = setup_llm("custom/custom-test", custom_llm_config=cfg)
+        if sync:
+            return llm.invoke("Count to five.")
         return asyncio.run(llm.ainvoke("Count to five."))
 
     def test_cumulative_usage_on_every_chunk_is_counted_once(self):
@@ -131,6 +152,30 @@ class StreamUsageTests(unittest.TestCase):
         usage = self._invoke(_split_usage_stream()).usage_metadata
         self.assertEqual(usage["input_tokens"], _PROMPT_TOKENS)
         self.assertEqual(usage["output_tokens"], len(_WORDS))
+
+    def test_issue_242_capture_with_a_trailing_usage_chunk_is_counted_once(self):
+        msg = self._invoke(_issue_242_stream())
+        self.assertEqual(msg.content, "one two three four five")
+        usage = msg.usage_metadata
+        self.assertEqual(usage["input_tokens"], _PROMPT_TOKENS)
+        self.assertEqual(usage["output_tokens"], len(_WORDS))
+        self.assertEqual(usage["input_token_details"]["cache_read"], _CACHED_TOKENS)
+
+    def test_running_totals_with_a_late_prompt_count_are_counted_once(self):
+        usage = self._invoke(_late_prompt_stream()).usage_metadata
+        self.assertEqual(usage["input_tokens"], _PROMPT_TOKENS)
+        self.assertEqual(usage["output_tokens"], len(_WORDS))
+
+    def test_sync_invoke_counts_running_totals_once(self):
+        msg = self._invoke(_issue_242_stream(), sync=True)
+        self.assertEqual(msg.content, "one two three four five")
+        self.assertEqual(msg.usage_metadata["input_tokens"], _PROMPT_TOKENS)
+        self.assertEqual(msg.usage_metadata["output_tokens"], len(_WORDS))
+
+    def test_a_stream_without_usage_reports_none(self):
+        msg = self._invoke(_no_usage_stream())
+        self.assertEqual(msg.content, "one two three four five")
+        self.assertIsNone(msg.usage_metadata)
 
     def test_legacy_openai_compat_prefix_counts_cumulative_usage_once(self):
         _SSEHandler.chunks = _cumulative_stream()
