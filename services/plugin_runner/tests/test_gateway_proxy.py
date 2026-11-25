@@ -298,13 +298,23 @@ def test_a_full_listener_refuses_at_once_and_the_other_listener_still_answers(mo
     gateway, runner_door = Proxy("gateway", upstream.base_url), Proxy("runner", upstream.base_url)
     # Accepted in order, each taking its slot in the accept loop: the fifth finds none.
     held = [socket.create_connection(("127.0.0.1", gateway.port)) for _ in range(4)]
+
+    def answers_again():
+        try:
+            return gateway.raw("POST", "/api/plugin-gateway/v1/data/get", b"{}")[0] == 200
+        except (BrokenPipeError, ConnectionResetError):
+            return False  # still refused at accept while the closed sockets free their slots
+
     try:
-        status, _, body = gateway.raw("POST", "/api/plugin-gateway/v1/data/get", b"{}")
-        assert status == 503 and b"proxy_busy" in body
+        # A full listener writes its 503 at accept and closes without reading the request,
+        # so a client that sends first can meet a broken pipe: read the answer before sending.
+        with socket.create_connection(("127.0.0.1", gateway.port), timeout=10) as fifth:
+            answer = b"".join(iter(lambda: fifth.recv(4096), b""))
+        assert answer.startswith(b"HTTP/1.1 503") and b"proxy_busy" in answer
         assert runner_door.raw("GET", "/runner/v1/health")[0] == 200
         for s in held:
             s.close()
-        wait_until(lambda: gateway.raw("POST", "/api/plugin-gateway/v1/data/get", b"{}")[0] == 200, timeout=10)
+        wait_until(answers_again, timeout=10)
     finally:
         for s in held:
             s.close()
