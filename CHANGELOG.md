@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.10.1] - 2026-11-25
+
+### Added
+
+- **SecurityContext in MCP Tool Plugins' Quick add.** ProjectDiscovery's free security index (`https://mcp.securitycontext.com`, no key, streamable HTTP) is the 34th preset. Its card saves as it is: its two read tools come declared, with agent-facing guidance. `get_security_context` lists the CVEs that affect an exact product or package version, with known-exploited, public-exploit and Nuclei-template flags, and returns a CVE's Nuclei template ids for `execute_nuclei`. `search_security_context` filters a product's CVEs or templates. Both run in the informational and exploitation phases and send no traffic to the target. The server's third tool, `create_security_context`, is left undeclared, so the agent never loads it: it adds the repository it scans to a public index. A person can still add it from Discover.
+
+### Fixed
+
+- **Token usage from OpenAI-compatible providers that report running totals was multiplied by the chunk count (#243).** Servers that send a running usage total on every stream chunk (vLLM continuous usage stats, e.g. Privatemode) had every report summed: input counted once per chunk and output about N²/2 times, some 10,000 times the metered tokens. The stream now carries one total on its last chunk: the last report when the reports are running totals, their sum otherwise. Applies to `openai_compatible` custom providers and the legacy `openai_compat` prefix.
+
 ## [7.10.0] - 2026-11-21
 
 Security fixes for what an attacker with no account can do from the network: rewrite or fill the AI attack-surface judge, lock any account out of signing in, and exhaust the webapp's memory with large request bodies.
