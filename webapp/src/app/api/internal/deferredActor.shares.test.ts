@@ -179,7 +179,7 @@ describe.each([
   test('a queued job starts as its actor', async () => {
     h.job = queued(OWNER)
     expect(await dispatchIt()).toMatchObject({ ok: true })
-    expect(h.dispatchStart).toHaveBeenCalledWith('gvm', SHARED_PROJECT, { actorUserId: OWNER, payload: {} })
+    expect(h.dispatchStart).toHaveBeenCalledWith('gvm', SHARED_PROJECT, { actorUserId: OWNER, payload: {}, scheduleId: null })
     expect(h.audit).not.toHaveBeenCalled()
   })
 

@@ -24,6 +24,7 @@ import prisma from '@/lib/prisma'
 import { isInternalRequest } from '@/lib/session'
 import { readDegradedSourceCount } from '@/lib/scanCoverage'
 import { orchestratorFetch } from '@/lib/orchestrator'
+import { enqueueDeltaAlertsForScanJob } from '@/lib/deltaAlerts'
 
 export const runtime = 'nodejs'
 
@@ -221,7 +222,14 @@ export async function POST(request: NextRequest) {
           where: { id: s.id, status: 'running' },
           data: { status: outcome, finishedAt: new Date(), degradedSources },
         })
-        .then(res => { scansClosed += res.count })
+        .then(res => {
+          scansClosed += res.count
+          if (res.count === 1 && s.kind === 'full_recon' && outcome === 'completed') {
+            void enqueueDeltaAlertsForScanJob(s.id).catch((err) => {
+              console.error('[deltaAlerts] enqueue on job-queue reconcile failed:', err)
+            })
+          }
+        })
         .catch(() => {})
     }
 

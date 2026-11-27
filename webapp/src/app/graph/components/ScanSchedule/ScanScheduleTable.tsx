@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Loader2, Plus, Play, Pause, Trash2, CalendarClock, UserCheck } from 'lucide-react'
 import { useAlertModal, useToast, WikiInfoButton } from '@/components/ui'
 import { ScanQueuePanel, kindLabel } from './ScanQueuePanel'
+import { DeltaAlertsPanel } from './DeltaAlertsPanel'
 import { usePaged, Pager } from './pagination'
 import { scopeStartProblem } from '@/lib/scopeGroups'
 import { fetchJson, toApiError } from '@/lib/apiError'
@@ -513,6 +514,8 @@ export function ScanScheduleTable({ projectId }: ScanScheduleTableProps) {
         </table>
         <Pager page={historyPage.page} pageCount={historyPage.pageCount} total={historyPage.total} onPage={historyPage.setPage} />
       </section>
+
+      <DeltaAlertsPanel projectId={projectId} />
     </div>
   )
 }

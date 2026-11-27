@@ -82,6 +82,8 @@ const INTERNAL_ALLOWLIST: { method: string; pattern: RegExp }[] = [
   { method: 'GET', pattern: /^\/api\/internal\/job-queue\/candidates$/ },
   { method: 'POST', pattern: /^\/api\/internal\/job-queue\/[^/]+\/dispatch$/ },
   { method: 'POST', pattern: /^\/api\/internal\/job-queue\/reconcile$/ },
+  // Delta alerts outbox processor driven by the scan scheduler worker.
+  { method: 'POST', pattern: /^\/api\/internal\/delta-alerts\/process$/ },
   // Triage runs: the agent authorises a run, heartbeats it, claims the right to
   // publish, upserts the remediations and records how it ended. Exact paths, and
   // each route re-checks isInternalRequest plus the run's own project, because

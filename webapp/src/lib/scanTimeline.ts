@@ -18,6 +18,7 @@
 import prisma from '@/lib/prisma'
 import { writeAudit } from '@/lib/audit'
 import { readDegradedSourceCount } from '@/lib/scanCoverage'
+import { enqueueDeltaAlertsForScanJob } from '@/lib/deltaAlerts'
 import {
   captureGraphSnapshot,
   storeSnapshot,
@@ -380,10 +381,16 @@ export async function reconcileScanJobStatus(
         ? await readDegradedSourceCount(projectId)
         : null
 
-    await prisma.scanJob.update({
-      where: { id: open.id },
+    const res = await prisma.scanJob.updateMany({
+      where: { id: open.id, status: 'running' },
       data: { status: mapped, finishedAt: new Date(), nodeCount, degradedSources },
     })
+
+    if (res.count === 1 && kind === 'full_recon' && mapped === 'completed') {
+      void enqueueDeltaAlertsForScanJob(open.id).catch((err) => {
+        console.error('[deltaAlerts] enqueue on status reconcile failed:', err)
+      })
+    }
   } catch (err) {
     console.error('[scanTimeline] scan-job reconcile failed (continuing):', err)
   }

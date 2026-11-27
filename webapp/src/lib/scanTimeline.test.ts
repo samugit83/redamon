@@ -15,8 +15,11 @@ const prismaMock = vi.hoisted(() => ({
     update: vi.fn(), updateMany: vi.fn(), create: vi.fn(), findFirst: vi.fn(), findUnique: vi.fn(),
     delete: vi.fn(), findMany: vi.fn(),
   },
-  scanJob: { create: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), update: vi.fn() },
+  scanJob: { create: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   $transaction: vi.fn(),
+}))
+const deltaAlertMock = vi.hoisted(() => ({
+  enqueueDeltaAlertsForScanJob: vi.fn().mockResolvedValue({ enqueued: 0 }),
 }))
 const snapshotMock = vi.hoisted(() => ({
   captureGraphSnapshot: vi.fn(),
@@ -27,6 +30,7 @@ const auditMock = vi.hoisted(() => ({ writeAudit: vi.fn() }))
 
 vi.mock('@/lib/prisma', () => ({ default: prismaMock }))
 vi.mock('@/lib/audit', () => auditMock)
+vi.mock('@/lib/deltaAlerts', () => deltaAlertMock)
 vi.mock('@/lib/scanSnapshot', async orig => ({
   ...(await orig<typeof import('@/lib/scanSnapshot')>()),
   captureGraphSnapshot: (...a: unknown[]) => snapshotMock.captureGraphSnapshot(...a),
@@ -350,15 +354,32 @@ describe('reconcileScanJobStatus', () => {
   beforeEach(() => {
     prismaMock.scanJob.findFirst.mockResolvedValue({ id: 'j1', versionId: 'v1' })
     prismaMock.scanVersion.findUnique.mockResolvedValue({ nodeCount: 42 })
-    prismaMock.scanJob.update.mockResolvedValue({})
+    prismaMock.scanJob.updateMany.mockResolvedValue({ count: 1 })
+    deltaAlertMock.enqueueDeltaAlertsForScanJob.mockClear()
   })
 
   test('maps terminal orchestrator states onto the open job', async () => {
     for (const [status, expected] of [['completed', 'completed'], ['error', 'failed'], ['idle', 'canceled']]) {
-      prismaMock.scanJob.update.mockClear()
+      prismaMock.scanJob.updateMany.mockClear()
       await reconcileScanJobStatus('p1', status)
-      expect(prismaMock.scanJob.update.mock.calls[0][0].data).toMatchObject({ status: expected, nodeCount: 42 })
+      expect(prismaMock.scanJob.updateMany.mock.calls[0][0]).toMatchObject({
+        where: { id: 'j1', status: 'running' },
+        data: { status: expected, nodeCount: 42 },
+      })
     }
+  })
+
+  test('triggers delta alert enqueue once when full_recon closes as completed', async () => {
+    await reconcileScanJobStatus('p1', 'completed')
+    expect(deltaAlertMock.enqueueDeltaAlertsForScanJob).toHaveBeenCalledWith('j1')
+
+    deltaAlertMock.enqueueDeltaAlertsForScanJob.mockClear()
+    prismaMock.scanJob.updateMany.mockResolvedValueOnce({ count: 0 })
+    await reconcileScanJobStatus('p1', 'completed')
+    expect(deltaAlertMock.enqueueDeltaAlertsForScanJob).not.toHaveBeenCalled()
+
+    await reconcileScanJobStatus('p1', 'error')
+    expect(deltaAlertMock.enqueueDeltaAlertsForScanJob).not.toHaveBeenCalled()
   })
 
   test('leaves non-terminal states alone (no DB work at all)', async () => {
@@ -366,7 +387,7 @@ describe('reconcileScanJobStatus', () => {
       await reconcileScanJobStatus('p1', status)
     }
     expect(prismaMock.scanJob.findFirst).not.toHaveBeenCalled()
-    expect(prismaMock.scanJob.update).not.toHaveBeenCalled()
+    expect(prismaMock.scanJob.updateMany).not.toHaveBeenCalled()
   })
 
   // A GVM poll closing "the project's open job" would have ended the full recon's
@@ -391,7 +412,7 @@ describe('reconcileScanJobStatus', () => {
   test('no open job → no update', async () => {
     prismaMock.scanJob.findFirst.mockResolvedValue(null)
     await reconcileScanJobStatus('p1', 'completed')
-    expect(prismaMock.scanJob.update).not.toHaveBeenCalled()
+    expect(prismaMock.scanJob.updateMany).not.toHaveBeenCalled()
   })
 
   test('swallows DB errors so a status poll never breaks', async () => {

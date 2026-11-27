@@ -110,7 +110,7 @@ function readActions(files: Array<{ file: string; source: string }>): Found {
           if (value.kind === ts.SyntaxKind.TrueKeyword || value.kind === ts.SyntaxKind.FalseKeyword) continue
           const literal = ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value) || ts.isTemplateExpression(value)
             || (ts.isConditionalExpression(value) && ts.isStringLiteral(value.whenTrue) && ts.isStringLiteral(value.whenFalse))
-          if (!literal) found.indirect.add(`${path.relative(WEBAPP, file)}: ${value.getText(sf)}`)
+          if (!literal) found.indirect.add(`${path.relative(WEBAPP, file).replace(/\\/g, '/')}: ${value.getText(sf)}`)
         }
       }
       ts.forEachChild(n, visit)
