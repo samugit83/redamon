@@ -156,7 +156,7 @@ function grantedRoots(state: unknown): string[] {
 export async function dispatchStart(
   kind: string,
   projectId: string,
-  opts: { actorUserId?: string | null; payload?: StartScanPayload } = {},
+  opts: { actorUserId?: string | null; scheduleId?: string | null; payload?: StartScanPayload } = {},
 ): Promise<DispatchStartResult> {
   const payload = opts.payload ?? {}
 
@@ -167,7 +167,12 @@ export async function dispatchStart(
     // quietTransient: the queue retries a transient refusal, so the start path
     // must not record a failed ScanJob for each attempt.
     const r = await startFullScan({
-      projectId, mode, trigger, actorUserId: opts.actorUserId ?? null, quietTransient: true,
+      projectId,
+      mode,
+      trigger,
+      actorUserId: opts.actorUserId ?? null,
+      scheduleId: opts.scheduleId ?? null,
+      quietTransient: true,
     })
     if (r.ok) {
       return { ok: true, status: 200, state: r.state, scanJobId: r.scanJobId ?? null, runId: runId(r.state) }

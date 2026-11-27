@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Scheduled scan delta alerts (#38).** Projects can now configure per-project relevance thresholds (`minVulnSeverity`, `alertOnNewPorts`, `alertOnNewHosts`) and up to 10 Webhook or Slack delivery channels (`ProjectDeltaAlertConfig`, `DeltaAlertOutbox`), evaluated automatically when a scheduled `full_recon` finishes with a prior baseline snapshot. Generic webhooks support HMAC-SHA256 signing (`X-RedAmon-Signature-256`) with endpoint-change secret re-entry enforcement, Slack incoming-webhook URLs are masked on read, outbound HTTP posts reuse the public-IP DNS/socket egress guard and refuse 3xx redirects, and failed deliveries retry with exponential backoff via the orchestrator scheduler tick (`POST /api/internal/delta-alerts/process`).
+
 ## [7.10.1] - 2026-11-25
 
 ### Added

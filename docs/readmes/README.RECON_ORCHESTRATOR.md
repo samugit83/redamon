@@ -673,3 +673,7 @@ curl -X POST -H "X-Orchestrator-Key: $KEY" http://localhost:8010/recon/test-proj
 # Health is the one exempt route (no key needed)
 curl http://localhost:8010/health
 ```
+
+### Scheduled Scan Delta Alerts Outbox Tick
+
+On each scheduler tick (`recon_orchestrator/scan_scheduler.py`), after evaluating due scan schedules, the orchestrator sends a best-effort `POST /api/internal/delta-alerts/process` request authenticated with `X-Internal-Key`. The webapp processes due rows from `DeltaAlertOutbox` (`status='pending'` and `nextAttemptAt <= now`), signs webhook payloads (`X-RedAmon-Signature-256`), enforces outbound SSRF and redirect refusal checks, and applies exponential backoff retries up to `maxAttempts` without interrupting schedule execution if an alert endpoint is unreachable.

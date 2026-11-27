@@ -1841,6 +1841,8 @@ model Project {
   // The owner's tradecraft resources turned off in this project (Tradecraft 2.0, §3.4): a
   // relation, so the settings form's whole-row PUT never sees it.
   tradecraftChoices                 TradecraftProjectChoice[]
+  deltaAlertConfig                  ProjectDeltaAlertConfig?
+  deltaAlertOutbox                  DeltaAlertOutbox[]
 
   @@index([jevProviderId])
   @@map("projects")
@@ -3464,4 +3466,49 @@ model PluginAccessRule {
   @@id([pluginId, setId])
   @@index([setId])
   @@map("plugin_access_rules")
+}
+
+// Per-project alert routing and relevance thresholds for scheduled full_recon deltas.
+model ProjectDeltaAlertConfig {
+  id              String   @id @default(cuid())
+  projectId       String   @unique @map("project_id")
+  enabled         Boolean  @default(false)
+  minVulnSeverity String   @default("high") @map("min_vuln_severity")
+  alertOnNewPorts Boolean  @default(true) @map("alert_on_new_ports")
+  alertOnNewHosts Boolean  @default(true) @map("alert_on_new_hosts")
+  channels        Json     @default("[]")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("project_delta_alert_configs")
+}
+
+// Transactional outbox for scheduled scan delta notifications with idempotent dedupKey.
+model DeltaAlertOutbox {
+  id             String    @id @default(cuid())
+  projectId      String    @map("project_id")
+  scanJobId      String?   @map("scan_job_id")
+  scheduleId     String?   @map("schedule_id")
+  fromVersionId  String?   @map("from_version_id")
+  toVersionId    String?   @map("to_version_id")
+  channelId      String    @map("channel_id")
+  channelType    String    @map("channel_type")
+  channelName    String    @default("") @map("channel_name")
+  dedupKey       String    @unique @map("dedup_key")
+  status         String    @default("pending")
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(5) @map("max_attempts")
+  nextAttemptAt  DateTime  @default(now()) @map("next_attempt_at")
+  payload        Json
+  lastStatusCode Int?      @map("last_status_code")
+  lastError      String?   @map("last_error")
+  sentAt         DateTime? @map("sent_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([projectId, createdAt])
+  @@map("delta_alert_outbox")
 }

@@ -109,7 +109,8 @@ class TestTick(unittest.TestCase):
     def test_nothing_due_is_a_no_op(self):
         summary, calls = _run_tick([("/due", {"schedules": []})])
         self.assertEqual(summary, {"due": 0, "started": 0, "queued": 0, "failed": 0})
-        self.assertEqual(len(calls), 1)
+        schedule_calls = [c for c in calls if "/scan-schedules/" in c["url"]]
+        self.assertEqual(len(schedule_calls), 1)
 
     def test_runs_a_due_schedule_via_the_webapp(self):
         summary, calls = _run_tick([

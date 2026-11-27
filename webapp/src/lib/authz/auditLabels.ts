@@ -114,6 +114,8 @@ export const AUDIT_ACTION_LABELS: Readonly<Record<string, Readonly<AuditLabel>>>
     'schedule.paused': 'A scan schedule was paused',
     'scan-job.history-clear': 'Cleared the scan history',
     'job_queue.cancelled': 'A queued job was cancelled',
+    'delta_alert.update': 'Updated scheduled scan delta alert settings',
+    'delta_alert.test': 'Sent a test scheduled scan delta alert',
   }),
   ...g('findings', {
     'triage.start': 'Started a triage run',

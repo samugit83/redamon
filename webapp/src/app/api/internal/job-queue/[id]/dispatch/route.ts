@@ -301,7 +301,11 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     // 6. Run it through the same start path the button uses.
     const payload = (row.payload && typeof row.payload === 'object' ? row.payload : {}) as Record<string, unknown>
-    const result = await dispatchStart(row.kind, row.projectId, { actorUserId: row.userId, payload })
+    const result = await dispatchStart(row.kind, row.projectId, {
+      actorUserId: row.userId,
+      scheduleId: row.scheduleId ?? null,
+      payload,
+    })
 
     if (result.ok) {
       // CONDITIONAL on still being 'dispatching' (Finding 1): a cancel that landed

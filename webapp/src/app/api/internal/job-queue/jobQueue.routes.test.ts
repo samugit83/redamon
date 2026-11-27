@@ -826,7 +826,7 @@ describe('dispatch: a job of an account that is not active (step 2.3, DV-39)', (
 
   test('active accounts: the job starts as before, for the account that queued it', async () => {
     expect((await (await go()).json()).ok).toBe(true)
-    expect(h.dispatchStart).toHaveBeenCalledWith('full_recon', 'p1', { actorUserId: 'admin-acting', payload: {} })
+    expect(h.dispatchStart).toHaveBeenCalledWith('full_recon', 'p1', { actorUserId: 'admin-acting', payload: {}, scheduleId: null })
     expect(h.audit).not.toHaveBeenCalled()
   })
 
@@ -898,7 +898,7 @@ describe('dispatch: a job whose actor lost access to the project (step 5.5, DV-3
     h.jqFindUnique.mockResolvedValue(baseRow())
     expect((await (await go()).json()).ok).toBe(true)
     expect(h.actorRefusal).toHaveBeenCalledWith('u1', 'p1', ['recon:scan'])
-    expect(h.dispatchStart).toHaveBeenCalledWith('full_recon', 'p1', { actorUserId: 'u1', payload: {} })
+    expect(h.dispatchStart).toHaveBeenCalledWith('full_recon', 'p1', { actorUserId: 'u1', payload: {}, scheduleId: null })
     expect(h.audit).not.toHaveBeenCalled()
   })
 

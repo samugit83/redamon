@@ -109,6 +109,14 @@ async def run_scheduler_tick(container_manager) -> dict:
             summary["failed"] += 1
             logger.info("[scanScheduler] schedule %s did not start: %s", sched_id, result.get("error"))
 
+    # Best-effort outbox tick: failed webhook deliveries are retried by subsequent ticks.
+    try:
+        await asyncio.to_thread(
+            _request, f"{base}/api/internal/delta-alerts/process", key, "POST", {},
+        )
+    except Exception as e:  # noqa: BLE001 - outbox failure must never break scheduling
+        logger.warning("[scanScheduler] delta alert outbox tick failed: %s", e)
+
     return summary
 
 
