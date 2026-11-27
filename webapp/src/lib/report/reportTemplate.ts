@@ -11,6 +11,7 @@ import type { ReportData, VulnFinding, CveChain, ExploitRecord, JsReconCoverage 
 import { type ScopeGroup, groupLabel, ipHostnameModeOf, resolveScopeGroups, scopeSummary } from '@/lib/scopeGroups'
 import { IP_HOSTNAME_SECTION_LABEL, ipHostnameModeLabel } from '@/lib/ipHostnameModeLabels'
 import { projectTargetLabel } from '@/lib/projectSummary'
+import { evaluateCompliance, evidenceFromReportData, normalizeFrameworkIds } from '@/lib/compliance'
 import { validationLabel } from '@/lib/secrets/validationStatus'
 import { ownershipLabel } from '@/lib/ipOwnership'
 import {
@@ -511,6 +512,7 @@ ${renderAiSurface(data)}
 ${renderOtx(data)}
 ${renderAttackChains(data)}
 ${renderFireteams(data)}
+${renderComplianceMapping(data)}
 ${renderRecommendations(data, n.recommendationsNarrative)}
 ${renderAppendix(data)}
 
@@ -524,6 +526,64 @@ ${renderAppendix(data)}
 }
 
 // ── Section Renderers ───────────────────────────────────────────────────────
+
+function hasComplianceSection(data: ReportData): boolean {
+  return normalizeFrameworkIds(data.project.roeComplianceFrameworks || []).length > 0
+}
+
+function complianceStatusBadge(status: 'fail' | 'pass' | 'no_evidence' | 'out_of_scope'): string {
+  const styles: Record<typeof status, { bg: string; fg: string; label: string }> = {
+    fail: { bg: '#fee2e2', fg: '#991b1b', label: 'FAIL' },
+    pass: { bg: '#d1fae5', fg: '#065f46', label: 'PASS' },
+    no_evidence: { bg: '#fef3c7', fg: '#92400e', label: 'NO EVIDENCE' },
+    out_of_scope: { bg: '#f1f5f9', fg: '#475569', label: 'OUT OF SCOPE' },
+  }
+  const s = styles[status]
+  return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10.5px;font-weight:600;background:${s.bg};color:${s.fg}">${s.label}</span>`
+}
+
+function renderComplianceMapping(data: ReportData): string {
+  const frameworkIds = normalizeFrameworkIds(data.project.roeComplianceFrameworks || [])
+  if (frameworkIds.length === 0) return ''
+
+  const evaluation = evaluateCompliance(evidenceFromReportData(data), frameworkIds)
+  const blocks = evaluation.frameworks.map((fw) => {
+    const rows = fw.controls
+      .map(
+        c => `<tr>
+          <td><strong>${esc(c.code)}</strong></td>
+          <td>${esc(c.title)}</td>
+          <td>${complianceStatusBadge(c.status)}</td>
+          <td>${esc(c.evidence)}</td>
+        </tr>`
+      )
+      .join('')
+    return `
+      <h3>${esc(fw.label)} ${esc(fw.version)}</h3>
+      <p style="font-size:12.5px;color:#475569">
+        Fail: <strong>${fw.counts.fail}</strong> &middot;
+        Pass: <strong>${fw.counts.pass}</strong> &middot;
+        No Evidence: <strong>${fw.counts.no_evidence}</strong> &middot;
+        Out of Scope: <strong>${fw.counts.out_of_scope}</strong>
+      </p>
+      <table class="data-table">
+        <thead><tr><th>Control</th><th>Requirement</th><th>Status</th><th>Observed Evidence</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`
+  }).join('')
+
+  return `
+<div class="page-break"></div>
+<div class="section" id="compliance-mapping">
+  <h2 class="section-title">Compliance Framework Mapping</h2>
+  <p style="font-size:12.5px;color:#475569">
+    Technical control mapping derived from collected assessment evidence. Controls marked
+    <strong>NO EVIDENCE</strong> indicate the relevant check was not executed or recorded and
+    must not be interpreted as compliant.
+  </p>
+  ${blocks}
+</div>`
+}
 
 /**
  * Coverage limitations (circuit breakers): finding sources the recon run could
@@ -617,6 +677,9 @@ function renderTOC(data: ReportData): string {
   }
   if (data.attackChains.chains.length > 0) {
     dynamicSections.push({ id: 'attack-chains', label: 'Attack Chains' })
+  }
+  if (hasComplianceSection(data)) {
+    dynamicSections.push({ id: 'compliance-mapping', label: 'Compliance Framework Mapping' })
   }
   dynamicSections.push(
     { id: 'recommendations', label: 'Recommendations' },

@@ -338,6 +338,7 @@ export const ROUTE_MANIFEST: readonly RouteManifestEntry[] = [
   { path: '/api/projects/[id]/breakglass', guard: 'session', methods: ['POST', 'DELETE'], permission: 'projects:administer', sameOrigin: true, note: '404 with sharing not in force (RBAC_SHARING_ENABLED and the policy), nothing read; projects:administer, an instance permission, so the route reads the project itself (404 for a missing one); never while acting (403 not_while_acting_as); POST {reason, durationMinutes 1-240, stepUpPassword}: the confirmed Root with its own password (requireRootPower), 400 own_project on its own project, opens read access with Raw data & files until the expiry, audited fail closed (project.breakglass) with a notice to the owner; DELETE ends the caller\'s own early, no password (project.breakglass.end; 404 no_break_glass) (SH-18, step 4.14)' },
   { path: '/api/projects/[id]/collaborators', guard: 'project', methods: ['GET', 'POST'], permission: 'project:share', sameOrigin: true },
   { path: '/api/projects/[id]/collaborators/[userId]', guard: 'project', methods: ['PATCH', 'DELETE'], permission: 'project:share', sameOrigin: true },
+  { path: '/api/projects/[id]/compliance', guard: 'project', methods: ['GET'], permission: 'reports:read' },
   { path: '/api/projects/[id]/delta', guard: 'project', methods: ['GET'], permission: 'recon:read' },
   { path: '/api/projects/[id]/export', guard: 'project', methods: ['GET'], permission: 'project:export' },
   { path: '/api/projects/[id]/ip-hostnames', guard: 'project', methods: ['GET'], permission: 'recon:read' },
