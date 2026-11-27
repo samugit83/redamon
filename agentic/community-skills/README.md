@@ -6,6 +6,8 @@ Ready-to-use attack skill workflows contributed by the community. Download any `
 
 | Skill | Author | Description |
 |-------|--------|-------------|
+| [local_privilege_escalation.md](local_privilege_escalation.md) | [@jav1er8](https://github.com/jav1er8) | Existing Linux/Windows foothold to local elevation: selective enumeration, misconfiguration-first selection, identity verification and re-enumeration |
+| [active_directory_attack.md](active_directory_attack.md) | [@jav1er8](https://github.com/jav1er8) | Prerequisite-driven AD routing: anonymous/AS-REP, domain-user Kerberoast/BloodHound/AD-CS, local-admin credential access and verified DCSync; capture/relay excluded |
 | [ade_scoper.md](ade_scoper.md) | [@NikolasBielski](https://github.com/NikolasBielski), [@Koifman](https://github.com/Koifman) | Purple-team emulation planning, SIEM detection-gap analysis, rule-hardening recommendations |
 | [api_testing.md](api_testing.md) | [@Shafranpackeer](https://github.com/Shafranpackeer) | API auth and authz: JWT (alg confusion, kid/jku/x5u, secret cracking, claim tampering), GraphQL (introspection recovery, IDOR, batching), REST 401/403 bypass, BOLA and version drift |
 | [xss_exploitation.md](xss_exploitation.md) | [@Shafranpackeer](https://github.com/Shafranpackeer) | Reflected, stored, DOM-based and blind XSS: context analysis, CSP and WAF bypass, mutation XSS against sanitizers, browser-confirmed DOM sinks |
