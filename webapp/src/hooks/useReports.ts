@@ -6,7 +6,7 @@
  */
 
 import { useCallback } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useFeatureModelGate, type FeatureModelGateApi } from '@/components/shared/FeatureModelGate'
 import { featureModelMessage, GATE_CODES, providerFailureDetail, readFeatureModelCode } from '@/lib/llmFeatures'
 import { fetchJson, fetchOk, readApiError } from '@/lib/apiError'
@@ -57,8 +57,11 @@ async function fetchReports(projectId: string): Promise<ReportMeta[]> {
   return fetchJson<ReportMeta[]>(`/api/projects/${projectId}/reports`, undefined, 'Failed to fetch reports')
 }
 
-async function fetchAllReports(): Promise<ReportMeta[]> {
-  return fetchJson<ReportMeta[]>('/api/reports', undefined, 'Failed to fetch reports')
+async function fetchAllReports(cursor: string | null): Promise<{ reports: ReportMeta[]; nextCursor: string | null }> {
+  const url = cursor ? `/api/reports?${new URLSearchParams({ cursor })}` : '/api/reports'
+  const response = await fetch(url)
+  if (!response.ok) throw await readApiError(response, 'Failed to fetch reports')
+  return { reports: await response.json(), nextCursor: response.headers.get('X-Next-Cursor') }
 }
 
 type ReportGate = Pick<FeatureModelGateApi, 'ensureFeatureModel' | 'fetchWithFeatureModel'>
@@ -164,9 +167,11 @@ export function useAllReports() {
   const queryClient = useQueryClient()
   const gate = useFeatureModelGate()
 
-  const query = useQuery({
+  const query = useInfiniteQuery({
     queryKey: [ALL_REPORTS_KEY],
-    queryFn: fetchAllReports,
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) => fetchAllReports(pageParam),
+    getNextPageParam: (page) => page.nextCursor,
     staleTime: 30_000,
   })
 
@@ -192,7 +197,10 @@ export function useAllReports() {
   )
 
   return {
-    reports: query.data ?? [],
+    reports: query.data?.pages.flatMap((page) => page.reports) ?? [],
+    hasNextPage: query.hasNextPage,
+    loadMore: query.fetchNextPage,
+    isLoadingMore: query.isFetchingNextPage,
     isLoading: query.isLoading,
     error: query.error,
     generate,

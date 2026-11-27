@@ -74,3 +74,32 @@ describe('sharing not in force', () => {
     expect(await reportIds()).toEqual(['r-bob'])
   })
 })
+
+
+test('project and date filters retain the visible-project restriction', async () => {
+  const other = await GET(new NextRequest('http://redamon.test/api/reports?projectId=p-carol'))
+  expect(await other.json()).toEqual([])
+  const shared = await GET(new NextRequest('http://redamon.test/api/reports?projectId=p-alice&from=1970-01-01T00:00:00.002Z&to=1970-01-01T00:00:00.002Z'))
+  expect((await shared.json()).map((r: { id: string }) => r.id)).toEqual(['r-alice'])
+})
+
+test.each(['limit=0', 'limit=201', 'limit=1.5', 'cursor=', 'projectId=', 'from=bad', 'to=2026-02-30'])('rejects invalid query %s', async (query) => {
+  const res = await GET(new NextRequest(`http://redamon.test/api/reports?${query}`))
+  expect(res.status).toBe(400)
+  expect(await res.json()).toEqual({ error: 'Invalid query parameters', code: 'invalid_query' })
+})
+
+test('uses the default and maximum limits and returns a cursor only when more rows exist', async () => {
+  const db = h.db as { report: { findMany: ReturnType<typeof vi.fn> } }
+  const rows = Array.from({ length: 101 }, (_, i) => ({ id: `r-${i}` }))
+  const findMany = vi.spyOn(db.report, 'findMany').mockResolvedValue(rows)
+  const first = await GET(new NextRequest('http://redamon.test/api/reports'))
+  expect(await first.json()).toHaveLength(100)
+  expect(first.headers.get('X-Next-Cursor')).toBe('r-99')
+  expect(findMany).toHaveBeenLastCalledWith(expect.objectContaining({ take: 101, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] }))
+  findMany.mockResolvedValue([{ id: 'last' }])
+  const last = await GET(new NextRequest('http://redamon.test/api/reports?limit=200&cursor=r-99'))
+  expect(await last.json()).toEqual([{ id: 'last' }])
+  expect(last.headers.get('X-Next-Cursor')).toBeNull()
+  expect(findMany).toHaveBeenLastCalledWith(expect.objectContaining({ take: 201, skip: 1, cursor: { id: 'r-99' } }))
+})
