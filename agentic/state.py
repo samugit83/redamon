@@ -2110,7 +2110,7 @@ def format_prior_chains(prior_chains: List[dict]) -> str:
                 if f and f.get("title"):
                     lines.append(f"  • [{f.get('severity', 'info').upper()}] {f['title']}")
 
-        # Key lessons from failures
+        # Bound cross-session prompt growth to three lessons of 200 characters.
         failures = chain.get("failures") or []
         if failures:
             for fl in failures[:3]:

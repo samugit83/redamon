@@ -161,8 +161,8 @@ class TheNodesWriteUnderTheOwner(unittest.IsolatedAsyncioTestCase):
             patcher = mock.patch.object(cg, name, side_effect=record(name))
             patcher.start()
             self.addCleanup(patcher.stop)
-        patcher = mock.patch.object(cg, "query_prior_chains", side_effect=lambda *a: self.calls.append(
-            ("query_prior_chains", a, {})) or [])
+        patcher = mock.patch.object(cg, "query_prior_chains", side_effect=lambda *a, **kw: self.calls.append(
+            ("query_prior_chains", a, kw)) or [])
         patcher.start()
         self.addCleanup(patcher.stop)
         self.tokens = [(var, var.set("")) for var in (current_user_id, current_project_id)]

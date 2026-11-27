@@ -20,6 +20,7 @@ import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from neo4j import GraphDatabase, Query
@@ -1722,6 +1723,49 @@ def _write_chain_attack_path(uri, user, password, *, chain_id, user_id, project_
 # 8. Query prior chains (SYNCHRONOUS — needs result)
 # -------------------------------------------------------------------
 
+def rank_prior_chains(chains, *, current_tech: set[str],
+                      current_attack_path: str | None, now=None):
+    """Rank a snapshot without mutating it or consulting a clock.
+
+    Without an injected clock, age is relative to the newest chain in the snapshot.
+    Relevance points decay multiplicatively with a 30-day half-life.
+    """
+    def timestamp(value):
+        if hasattr(value, "to_native"):
+            value = value.to_native()
+        if isinstance(value, str):
+            try:
+                value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return 0.0
+        if not isinstance(value, datetime):
+            return 0.0
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.timestamp()
+
+    tech = {t.strip().lower() for t in current_tech if t.strip()}
+    dates = [timestamp(c.get("created_at")) for c in chains]
+    reference = timestamp(now) if now is not None else max(dates, default=0.0)
+
+    def key(chain):
+        created = timestamp(chain.get("created_at"))
+        score = 0.0
+        if tech or current_attack_path:
+            prior_tech = {t.strip().lower() for t in
+                          (chain.get("technologies") or []) + (chain.get("services") or [])
+                          if isinstance(t, str) and t.strip()}
+            points = 3 * len(tech & prior_tech)
+            points += 2 * bool(current_attack_path and
+                               chain.get("attack_path_type") == current_attack_path)
+            points += int(chain.get("status") == "completed")
+            age_days = max(0.0, (reference - created) / 86400)
+            score = points * 0.5 ** (age_days / 30)
+        return (-score, -created, str(chain.get("chain_id") or ""))
+
+    return sorted(chains, key=key)
+
+
 def query_prior_chains(
     neo4j_uri: str,
     neo4j_user: str,
@@ -1730,13 +1774,16 @@ def query_prior_chains(
     project_id: str,
     current_chain_id: str,
     limit: int = 5,
+    *,
+    current_tech: set[str] | None = None,
+    current_attack_path: str | None = None,
 ) -> List[Dict[str, Any]]:
     """Query prior completed attack chains for cross-session context.
 
     Returns a list of dicts with chain summary info.
     This is SYNCHRONOUS because we need the result before proceeding.
     """
-    if not neo4j_uri or not neo4j_password:
+    if not neo4j_uri or not neo4j_password or limit <= 0:
         return []
 
     try:
@@ -1745,12 +1792,25 @@ def query_prior_chains(
         MATCH (ac:AttackChain {user_id: $user_id, project_id: $project_id})
         WHERE ac.chain_id <> $current_chain_id
           AND ac.status IN ['completed', 'aborted']
-        OPTIONAL MATCH (ac)-[:HAS_STEP]->(:ChainStep)-[:NEXT_STEP*0..]->(s:ChainStep)-[:PRODUCED]->(f:ChainFinding)
+        WITH ac ORDER BY ac.created_at DESC, ac.chain_id ASC LIMIT $limit
+        OPTIONAL MATCH (ac)-[:HAS_STEP]->(:ChainStep {user_id: $user_id, project_id: $project_id})
+            -[:NEXT_STEP*0..]->(:ChainStep {user_id: $user_id, project_id: $project_id})
+            -[:PRODUCED]->(f:ChainFinding {user_id: $user_id, project_id: $project_id})
         WHERE f.severity IN ['critical', 'high']
-        OPTIONAL MATCH (ac)-[:HAS_STEP]->(:ChainStep)-[:NEXT_STEP*0..]->(s2:ChainStep)-[:FAILED_WITH]->(fl:ChainFailure)
-        WITH ac,
-             collect(DISTINCT {type: f.finding_type, title: f.title, severity: f.severity}) AS findings,
-             collect(DISTINCT {type: fl.failure_type, lesson: fl.lesson_learned}) AS failures
+        WITH ac, collect(DISTINCT {type: f.finding_type, title: f.title, severity: f.severity}) AS findings
+        OPTIONAL MATCH (ac)-[:HAS_STEP]->(:ChainStep {user_id: $user_id, project_id: $project_id})
+            -[:NEXT_STEP*0..]->(:ChainStep {user_id: $user_id, project_id: $project_id})
+            -[:FAILED_WITH]->(fl:ChainFailure {user_id: $user_id, project_id: $project_id})
+        WITH ac, findings, collect(DISTINCT {type: fl.failure_type, lesson: fl.lesson_learned}) AS failures
+        OPTIONAL MATCH (ac)-[:HAS_STEP]->(:ChainStep {user_id: $user_id, project_id: $project_id})
+            -[:NEXT_STEP*0..]->(:ChainStep {user_id: $user_id, project_id: $project_id})
+            -[:STEP_IDENTIFIED]->(tech:Technology {user_id: $user_id, project_id: $project_id})
+        WITH ac, findings, failures, collect(DISTINCT tech.name) AS technologies
+        OPTIONAL MATCH (ac)-[:HAS_STEP]->(:ChainStep {user_id: $user_id, project_id: $project_id})
+            -[:NEXT_STEP*0..]->(:ChainStep {user_id: $user_id, project_id: $project_id})
+            -[:STEP_TARGETED]->(port:Port {user_id: $user_id, project_id: $project_id})
+            -[:RUNS_SERVICE]->(svc:Service {user_id: $user_id, project_id: $project_id})
+        WITH ac, findings, failures, technologies, collect(DISTINCT svc.name) AS services
         RETURN ac.chain_id AS chain_id,
                ac.title AS title,
                ac.objective AS objective,
@@ -1763,8 +1823,10 @@ def query_prior_chains(
                ac.final_outcome AS final_outcome,
                findings,
                failures,
+               technologies,
+               services,
                ac.created_at AS created_at
-        ORDER BY ac.created_at DESC
+        ORDER BY ac.created_at DESC, ac.chain_id ASC
         LIMIT $limit
         """
         with _session(driver) as session:
@@ -1772,9 +1834,13 @@ def query_prior_chains(
                 "user_id": user_id,
                 "project_id": project_id,
                 "current_chain_id": current_chain_id,
-                "limit": limit,
+                "limit": min(4 * limit, 40),
             })
-            return [dict(record) for record in result]
+            chains = [dict(record) for record in result]
+        return rank_prior_chains(
+            chains, current_tech=current_tech or set(),
+            current_attack_path=current_attack_path, now=datetime.now(timezone.utc),
+        )[:limit]
     except Exception as exc:
         logger.error("Failed to query prior chains: %s", exc)
         return []
