@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Compliance framework mapping v1 (#42).** Added `webapp/src/lib/compliance/` (`pci_dss_4_0`, `owasp_asvs_4_0`, `nist_csf_2_0`) with four honest control states (`fail`, `pass`, `no_evidence`, `out_of_scope` — unexecuted scanners never report `pass`), integrated an optional **Compliance Framework Mapping** section into `reportTemplate.ts` when `roeComplianceFrameworks` is configured, and added `GET /api/projects/[id]/compliance` guarded by `reports:read`.
+
 ## [7.10.1] - 2026-11-25
 
 ### Added
