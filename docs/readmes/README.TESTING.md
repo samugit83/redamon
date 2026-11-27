@@ -41,8 +41,8 @@ alias for `unit`).
   Keep the `conftest.py` copies in sync — they are intentionally near-identical.
 - Test deps are `requirements-test.txt` (`pytest`, `pytest-cov`, `pytest-xdist`,
   `pytest-asyncio`). They are **baked** into the daily-driver images
-  (`agentic/requirements.txt`, `recon/requirements.txt`) and **runtime-installed**
-  into the occasional-run slim images by the runner.
+  (`agentic/requirements.txt`, `recon/requirements.txt`). Other images need test
+  dependencies installed at build time; the runner fails if pytest is missing.
 
 ### Section / image map
 
@@ -695,13 +695,15 @@ the bind mount.
 
 Coverage runs **serially with `--cov-append`** (parallel appends can corrupt the
 data file). The floor is enforced with `--cov-fail-under`; set it per section via
-`REDAMON_COV_FLOOR` (or the section spec in `redamon.sh`).
+`REDAMON_COV_FLOOR` (an override for every section), or use the defaults in
+`tooling/coverage-floors.sh`. The agent floor is 79; every other section has
+an explicit 0, pending measurement.
 
 To **ratchet** a floor: run coverage, read the section total, set the floor to
 `floor(total) - 2`. Measured agentic total (unit+integration) is **81%** — once
 the import-time pollution was fixed, real coverage was far above the depressed
 41% the old polluted `discover` run reported — so the agentic floor is **79**
-(`REDAMON_COV_FLOOR`, default in `agentic/run_tests.sh`). supply_chain baseline
+(shared by both runners). supply_chain baseline
 to beat is 72%.
 
 > **The floor guards against rot, not quality.** Because an AI writes these tests,
@@ -755,7 +757,7 @@ missing skip-guard *is* the bug.
 
 ## Future work / next steps
 
-- **CI**: run the unit gate on every PR and the full `all` tier nightly.
+- **CI**: run the full `all` tier nightly.
 - **Mutation testing** on the security-critical modules (supply-chain, auth /
   access control) as the *real* quality gate — coverage alone is not one.
 - **HTTP record/replay** (`respx` / VCR) so the `live` tier shrinks.

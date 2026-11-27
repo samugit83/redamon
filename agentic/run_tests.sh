@@ -28,7 +28,8 @@ MODE="${1:-unit}"
 shift || true
 
 IMAGE="redamon-agent:latest"
-COV_FLOOR="${REDAMON_COV_FLOOR:-79}"     # agentic ratchet floor: measured 81% (unit+integration), floor = total-2. See README.
+source "$REPO_ROOT/tooling/coverage-floors.sh"
+COV_FLOOR="${REDAMON_COV_FLOOR:-$(redamon_coverage_floor agent)}"
 PARALLEL="${REDAMON_TEST_PARALLEL:-8}"
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then

@@ -4,7 +4,7 @@ Whole-implementation deep review (Phases 1-6).
 Tests for bugs that only surface at the seams between phases:
   - Project ID injection (HTTP-attacker-controlled value can have ../)
   - Symlink TOCTOU race
-  - Memory leaks (unbounded caches over agent lifetime)
+  - Memory limits for read snapshots and edit history
   - Contract drift between backend response shape + frontend Entry type
   - ContextVar isolation across concurrent asyncio tasks (fireteam)
   - End-to-end tool visibility: 29 new tools reach the rendered LLM prompt
@@ -21,6 +21,7 @@ import tempfile
 import unittest
 from contextvars import copy_context
 from pathlib import Path
+from unittest.mock import patch
 
 _AGENTIC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _AGENTIC_DIR)
@@ -129,20 +130,11 @@ class TestSymlinkTocTou(unittest.TestCase):
 
 
 # =============================================================================
-# (3) Memory leaks (caches that grow without bound)
+# (3) Bounded caches
 # =============================================================================
 
-class TestUnboundedCaches(unittest.TestCase):
-    """workspace_fs._last_read_contents and _last_read_hashes are populated
-    on every fs_read. There's no eviction. Over a long agent lifetime
-    reading many files, this becomes a memory leak.
-
-    Same for _edit_stack - but that has a per-file cap of 20.
-    Same for JobRegistry._jobs - jobs accumulate forever.
-
-    Locking in current behaviour with a regression test so a future cap
-    addition doesn't accidentally regress to "infinite cap":
-    """
+class TestBoundedCaches(unittest.TestCase):
+    """Read snapshots evict least recently used entries at their limits."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="redamon-leak-")
@@ -159,19 +151,17 @@ class TestUnboundedCaches(unittest.TestCase):
         workspace_fs._last_read_contents.clear()
         workspace_fs._last_read_hashes.clear()
 
-    def test_last_read_cache_grows_with_each_read(self):
-        # Document the current (unbounded) behavior. If a cap is added,
-        # this test needs an update.
-        async def scenario():
-            for i in range(50):
-                await workspace_fs.fs_write(f"f{i}.txt", str(i))
-                await workspace_fs.fs_read(f"f{i}.txt")
-        asyncio.run(scenario())
-        self.assertEqual(
-            len(workspace_fs._last_read_contents), 50,
-            "TODO/regression: _last_read_contents is currently unbounded. "
-            "If you added a cap (LRU? size limit?), update this test."
-        )
+    def test_read_snapshots_evict_least_recently_used(self):
+        with patch.object(workspace_fs, "_SNAPSHOT_MAX_HASHES", 2), \
+             patch.object(workspace_fs, "_SNAPSHOT_MAX_TOTAL", 2):
+            first, second, third = ("project", "first"), ("project", "second"), ("project", "third")
+            workspace_fs._remember_read(first, "a", b"a")
+            workspace_fs._remember_read(second, "b", b"b")
+            workspace_fs._remember_read(first, "a", b"a")
+            workspace_fs._remember_read(third, "c", b"c")
+            self.assertEqual(list(workspace_fs._last_read_hashes), [first, third])
+            self.assertEqual(list(workspace_fs._last_read_contents), [first, third])
+            self.assertEqual(sum(map(len, workspace_fs._last_read_contents.values())), 2)
 
     def test_edit_stack_capped_at_20_per_file(self):
         # This is the existing per-file cap; lock it in.
