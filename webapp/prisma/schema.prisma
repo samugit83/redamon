@@ -1107,11 +1107,12 @@ model Project {
   // Cross-cutting AI classifier — runs after Katana/Hakrawler/GAU/FFuf/jsluice/
   // ParamSpider/Kiterunner/Arjun have produced endpoints. Tags every Endpoint
   // with ai_interface_type / is_ai_rag_ingest and every Parameter with
-  // is_ai_prompt_injectable / ai_tool_arg_path. Pure regex, no extra traffic.
+  // is_ai_prompt_injectable. Pure regex, no extra traffic.
   resourceEnumAiClassifierEnabled         Boolean @default(true) @map("resource_enum_ai_classifier_enabled")
   resourceEnumAiPathClassifierEnabled     Boolean @default(true) @map("resource_enum_ai_path_classifier_enabled")
   resourceEnumAiRagPathFlagEnabled        Boolean @default(true) @map("resource_enum_ai_rag_path_flag_enabled")
   resourceEnumAiParamInjectableFlagEnabled Boolean @default(true) @map("resource_enum_ai_param_injectable_flag_enabled")
+  // Retired (L-17): nothing reads it. Kept so an upgrade or a rollback never drops data.
   resourceEnumAiToolArgPathEnabled        Boolean @default(true) @map("resource_enum_ai_tool_arg_path_enabled")
   resourceEnumJevToolHealth               Boolean @default(false) @map("resource_enum_jev_tool_health")
 

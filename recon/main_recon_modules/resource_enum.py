@@ -169,8 +169,6 @@ def _annotate_ai_endpoint_classifier(
     path_on = settings.get("RESOURCE_ENUM_AI_PATH_CLASSIFIER_ENABLED", True)
     rag_on = settings.get("RESOURCE_ENUM_AI_RAG_PATH_FLAG_ENABLED", True)
     param_on = settings.get("RESOURCE_ENUM_AI_PARAM_INJECTABLE_FLAG_ENABLED", True)
-    # ai_tool_arg_path resolver is a Phase-15 stub — toggle exists for
-    # forward compatibility but no resolution happens until that lap.
 
     parent_ai_map = _build_parent_ai_map(recon_data)
 

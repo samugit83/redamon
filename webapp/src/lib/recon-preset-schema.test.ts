@@ -93,6 +93,7 @@ describe('reconPresetSchema', () => {
       jsReconStandaloneCrawlDepth: 3,
       jsReconStandaloneCrawlScope: 'subdomain',
       aiSurfaceReconCacheEnabled: true,
+      resourceEnumAiToolArgPathEnabled: true,
     })
     expect(result.success).toBe(true)
     expect(result.data).toEqual({ katanaDepth: 3 })

@@ -108,19 +108,6 @@ export function ResourceEnumAiSection({ data, updateField, onRun }: ResourceEnum
                   onChange={(checked) => updateField('resourceEnumAiParamInjectableFlagEnabled', checked)}
                 />
               </div>
-
-              <div className={styles.toggleRow}>
-                <div>
-                  <span className={styles.toggleLabel}>AI Tool-Arg Path Resolver</span>
-                  <p className={styles.toggleDescription}>
-                    Walks discovered OpenAPI / ai-plugin.json / MCP tools/list documents (when present in the graph from a future ai_surface_recon module) and pins each tool argument to its JSON Pointer location. No-op until the central probe module ships; the toggle is reserved here so the contract stays stable.
-                  </p>
-                </div>
-                <Toggle
-                  checked={data.resourceEnumAiToolArgPathEnabled ?? true}
-                  onChange={(checked) => updateField('resourceEnumAiToolArgPathEnabled', checked)}
-                />
-              </div>
             </div>
           )}
 

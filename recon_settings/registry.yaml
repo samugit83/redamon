@@ -7392,18 +7392,20 @@ fields:
       no-op.
   resourceEnumAiToolArgPathEnabled:
     tool: resource_enum_ai
-    runtime_key: "RESOURCE_ENUM_AI_TOOL_ARG_PATH_ENABLED"
+    runtime_key: null
     unit: none
     phase: resource_enum
     traffic: none
     roe_capped: false
-    mcp: settable
-    group: llm
+    mcp: never
+    deny_reason: internal
+    group: retired
+    form_section: null
     meaning: >-
-      Whether Resource enum AI hints runs. Configuration is two levels: this flag
-      decides whether the tool runs INSIDE its phase, and scanModules decides
-      whether the phase runs at all. Setting one without the other is a silent
-      no-op.
+      Retired: nothing reads it. The resource-enum AI tool-arg path resolver
+      never shipped (ai_surface_recon resolves Parameter.ai_tool_arg_path
+      from discovered specs instead). The column is kept so an upgrade or a
+      rollback never drops data; it is closed on every surface and has no input.
   resourceEnumJevToolHealth:
     tool: resource_enum_ai
     runtime_key: "RESOURCE_ENUM_JEV_TOOL_HEALTH"

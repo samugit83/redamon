@@ -159,7 +159,6 @@ export const reconPresetSchema = z.object({
   resourceEnumAiPathClassifierEnabled: bool,
   resourceEnumAiRagPathFlagEnabled: bool,
   resourceEnumAiParamInjectableFlagEnabled: bool,
-  resourceEnumAiToolArgPathEnabled: bool,
   resourceEnumJevToolHealth: bool,
 
   // -- AI Surface Recon (central module: active AI/LLM/MCP fingerprinting) --
@@ -773,7 +772,6 @@ export const RECON_PARAMETER_CATALOG = `
 - resourceEnumAiPathClassifierEnabled: boolean - Stamp Endpoint.ai_interface_type by matching path against the LLM/completion/embedding/tool-call/SSE/MCP/GraphQL catalogue (OpenAI /v1/chat/completions, Anthropic /v1/messages, Ollama /api/chat, Gemini :generateContent, MCP /mcp, LangServe /stream, etc.)
 - resourceEnumAiRagPathFlagEnabled: boolean - Stamp Endpoint.is_ai_rag_ingest=true for known RAG paths (OpenAI Vector Stores, Pinecone /vectors/upsert, Weaviate /v1/objects, Qdrant /collections/.../points). Ambiguous paths (/upload, /search, /query) only fire when parent BaseURL is AI-tagged.
 - resourceEnumAiParamInjectableFlagEnabled: boolean - Stamp Parameter.is_ai_prompt_injectable=true on AI-classified endpoints when the parameter name matches the prompt-injection catalogue (prompt, messages, system, contents, inputs, arguments, etc.)
-- resourceEnumAiToolArgPathEnabled: boolean - Reserved for the future ai_surface_recon central module - resolves Parameter.ai_tool_arg_path against discovered OpenAPI / ai-plugin.json / MCP tools/list specs. No-op today.
 - resourceEnumJevToolHealth: boolean - Ask TypeSafe AI Jev (jev-1.13.0) whether a collection tool's empty result with unexplained error output was a transient failure. Only when aiInPipeline=true; needs a Jev provider selected for the project (jevProviderId). The verdict is kept in the recon output next to the coverage gap; no tool is re-run. Default false.
 
 ## AI Surface Recon (central module, ACTIVE)

@@ -89,7 +89,6 @@ Every AI signal is a property annotation on existing graph nodes (Endpoint, Tech
     resourceEnumAiPathClassifierEnabled: true,
     resourceEnumAiRagPathFlagEnabled: true,
     resourceEnumAiParamInjectableFlagEnabled: true,
-    resourceEnumAiToolArgPathEnabled: true,
 
     // --- JS recon ---
     jsReconEnabled: true,

@@ -74,7 +74,7 @@ AI_OFF = [
     "httpProbeAiHeaderScanEnabled", "httpProbeAiFaviconHashEnabled", "httpProbeAiTitleDetectionEnabled",
     "httpProbeAiWappalyzerEnabled", "resourceEnumAiClassifierEnabled", "resourceEnumAiPathClassifierEnabled",
     "resourceEnumAiRagPathFlagEnabled", "resourceEnumAiParamInjectableFlagEnabled",
-    "resourceEnumAiToolArgPathEnabled", "domainReconAiTxtHintEnabled", "domainReconAiNsHintEnabled",
+    "domainReconAiTxtHintEnabled", "domainReconAiNsHintEnabled",
     "ffufAiExtensions",
 ]
 
