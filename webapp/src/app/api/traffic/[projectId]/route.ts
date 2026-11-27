@@ -5,6 +5,7 @@ import { requirePermission } from '@/lib/authz/guards'
 import { gcOrphanBodies } from '@/lib/captureBodies'
 import type { Prisma } from '@prisma/client'
 import { trafficRows, trafficTenant } from './trafficTenant'
+import { z } from 'zod'
 
 // Summary columns only - bodies are fetched on demand via the [id] detail route,
 // so a large history never materializes in the list response.
@@ -45,6 +46,34 @@ const SORTABLE = new Set([
 ])
 
 const MAX_PAGE_SIZE = 200
+
+const filterDate = z.string().min(1).refine(v => !Number.isNaN(new Date(v).getTime()))
+const DELETE_FILTER = z.strictObject({
+  source: z.string().min(1).optional(),
+  tool: z.string().refine(v => v.split(',').some(t => t.trim())).optional(),
+  sessionId: z.string().min(1).optional(),
+  runId: z.string().min(1).optional(),
+  host: z.string().min(1).optional(),
+  method: z.string().min(1).optional(),
+  statusClass: z.enum(['2xx', '3xx', '4xx', '5xx']).optional(),
+  from: filterDate.optional(),
+  to: filterDate.optional(),
+  hasSetCookie: z.enum(['true', 'false']).optional(),
+  reflected: z.enum(['true', 'false']).optional(),
+  only5xx: z.enum(['true', 'false']).optional(),
+  q: z.string().min(1).optional(),
+  bodyq: z.string().min(1).optional(),
+}).refine(filter => Object.entries(filter).some(([key, value]) =>
+  key === 'source' ? value !== 'both'
+    : ['hasSetCookie', 'reflected', 'only5xx'].includes(key) ? value === 'true'
+      : value !== undefined,
+))
+
+const DELETE_BODY = z.union([
+  z.strictObject({ ids: z.array(z.string().min(1)).min(1).max(1000) }),
+  z.strictObject({ filter: DELETE_FILTER }),
+  z.strictObject({ all: z.literal(true) }),
+])
 
 function statusClassRange(cls: string | null): Prisma.IntFilter | undefined {
   switch (cls) {
@@ -170,7 +199,7 @@ export async function GET(
 }
 
 // DELETE /api/traffic/[projectId] - batch delete (plan §12.2).
-// Body: { ids: [...] } OR { filter: {<same query params as GET>} } (delete-all-matching).
+// Body: { ids: [...] }, { filter: {<same query params as GET>} }, or { all: true }.
 // Tenant-enforced (the project's rows under its owner, trafficRows; a project the caller cannot
 // see -> 404 from the guard), so a collaborator at traffic:delete (W) deletes the project's rows,
 // not nothing (step 5.2), body-GC-aware (ref-counted blob cleanup), and audited. Client tenant
@@ -185,14 +214,18 @@ export async function DELETE(
     if (auth instanceof NextResponse) return auth
     const eff = auth.effective
 
-    const body = await request.json().catch(() => ({}))
+    const parsed = DELETE_BODY.safeParse(await request.json().catch(() => undefined))
+    if (!parsed.success) {
+      return NextResponse.json({ error: 'Provide valid ids, a non-empty filter, or { all: true }', code: 'invalid_delete_body' }, { status: 400 })
+    }
+    const body = parsed.data
     const where: Prisma.CapturedHttpTransactionWhereInput = { ...trafficRows(projectId, auth) }
 
     let mode: string
-    if (Array.isArray(body?.ids) && body.ids.length > 0) {
-      where.id = { in: body.ids.filter((x: unknown) => typeof x === 'string') }
+    if ('ids' in body) {
+      where.id = { in: body.ids }
       mode = `ids(${body.ids.length})`
-    } else if (body?.filter && typeof body.filter === 'object') {
+    } else if ('filter' in body) {
       // Reuse the exact list filter predicate so "delete all matching" deletes
       // precisely what the current view shows.
       const sp = new URLSearchParams()
@@ -202,20 +235,39 @@ export async function DELETE(
       Object.assign(where, buildTrafficWhere(projectId, trafficTenant(auth), sp))
       mode = 'filter'
     } else {
-      return NextResponse.json({ error: 'Provide { ids: [...] } or { filter: {...} }' }, { status: 400 })
+      mode = 'all'
     }
 
-    // Collect the body refs of the doomed rows so we can GC their blobs after.
-    const doomed = await prisma.capturedHttpTransaction.findMany({
-      where, select: { reqBodyRef: true, respBodyRef: true },
-    })
-    const shas = doomed.flatMap(r => [r.reqBodyRef, r.respBodyRef])
+    const batchSize = 500
+    let cursor: string | undefined
+    let deleted = 0
+    let blobsDeleted = 0
+    for (;;) {
+      const doomed = await prisma.capturedHttpTransaction.findMany({
+        // The previous cursor row is deleted, so seek by value rather than skip it.
+        where: cursor ? { AND: [where, { id: { gt: cursor } }] } : where,
+        orderBy: { id: 'asc' },
+        take: batchSize,
+        select: { id: true, reqBodyRef: true, respBodyRef: true },
+      })
+      if (doomed.length === 0) break
+      const res = await prisma.capturedHttpTransaction.deleteMany({
+        where: { ...where, id: { in: doomed.map(r => r.id) } },
+      })
+      deleted += res.count
+      // Delete rows first: failed GC leaves sweepable blobs, never rows pointing at removed bodies.
+      try {
+        const gc = await gcOrphanBodies(doomed.flatMap(r => [r.reqBodyRef, r.respBodyRef]))
+        blobsDeleted += gc.deleted
+      } catch (error) {
+        internalError(error, 'Failed to clean up captured traffic bodies')
+      }
+      cursor = doomed[doomed.length - 1].id
+      if (doomed.length < batchSize) break
+    }
 
-    const res = await prisma.capturedHttpTransaction.deleteMany({ where })
-    const gc = await gcOrphanBodies(shas)
-
-    console.log(`[traffic-delete] user=${eff.userId} project=${projectId} mode=${mode} deleted=${res.count} blobsGC=${gc.deleted}`)
-    return NextResponse.json({ deleted: res.count, blobsDeleted: gc.deleted })
+    console.log(`[traffic-delete] user=${eff.userId} project=${projectId} mode=${mode} deleted=${deleted} blobsGC=${blobsDeleted}`)
+    return NextResponse.json({ deleted, blobsDeleted })
   } catch (error) {
     return internalError(error, 'Failed to delete traffic', { log: 'Failed to delete captured traffic' })
   }

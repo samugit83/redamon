@@ -18,6 +18,21 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 describe('useTrafficData', () => {
+  const selections: [{ ids: string[] } | { filter: Record<string, string> }, unknown][] = [
+    [{ filter: {} }, { all: true }],
+    [{ filter: { host: 'fixture.example' } }, { filter: { host: 'fixture.example' } }],
+    [{ ids: ['a'] }, { ids: ['a'] }],
+  ]
+  test.each(selections)('sends an explicit delete selection for %j', async (body, expected) => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ deleted: 1 })))
+    vi.stubGlobal('fetch', fetch)
+    const { result } = renderHook(() => useDeleteTraffic('p1'), { wrapper })
+    await act(async () => { await result.current.mutateAsync(body) })
+    expect(fetch).toHaveBeenCalledWith('/api/traffic/p1', expect.objectContaining({
+      method: 'DELETE', body: JSON.stringify(expected),
+    }))
+  })
+
   test('a list failure carries code and status and never the filter text', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
       JSON.stringify({ error: 'Failed to list traffic', code: 'P2024' }), { status: 500 })))

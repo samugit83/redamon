@@ -3,6 +3,7 @@ import prisma from '@/lib/prisma'
 import { requirePermission } from '@/lib/authz/guards'
 import { buildTrafficWhere } from '../route'
 import { trafficTenant } from '../trafficTenant'
+import { internalError } from '@/lib/routeErrors'
 
 export const runtime = 'nodejs'
 
@@ -45,56 +46,69 @@ export async function GET(
   const encoder = new TextEncoder()
   let sent = 0
 
-  const stream = new ReadableStream({
-    async start(controller) {
-      // JSON is a wrapper object { rows: [...], truncated, error } so truncation
-      // and mid-stream errors are represented as VALID JSON, not a silent partial
-      // array or an illegal comment.
-      let truncated = false
-      let errored = ''
-      try {
-        if (format === 'csv') {
-          controller.enqueue(encoder.encode(CSV_COLS.join(',') + '\n'))
-        } else {
-          controller.enqueue(encoder.encode('{"rows":[\n'))
-        }
-        let cursor: string | undefined
-        let first = true
-        for (;;) {
-          if (sent >= MAX_EXPORT_ROWS) { truncated = true; break }
-          const take = Math.min(PAGE, MAX_EXPORT_ROWS - sent)
-          const rows = await prisma.capturedHttpTransaction.findMany({
-            where,
-            orderBy: { id: 'asc' },
-            take,
-            ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
-          })
-          if (rows.length === 0) break
-          for (const r of rows) {
-            if (format === 'csv') {
-              controller.enqueue(encoder.encode(CSV_COLS.map(c => csvCell((r as Record<string, unknown>)[c])).join(',') + '\n'))
-            } else {
-              controller.enqueue(encoder.encode((first ? '' : ',\n') + JSON.stringify(r)))
-              first = false
-            }
-          }
-          sent += rows.length
-          cursor = rows[rows.length - 1].id
-          if (rows.length < take) break
-        }
-      } catch (e) {
-        errored = String(e)
-      } finally {
+  let cursor: string | undefined
+  let first = true
+  let opened = false
+  let cancelled = false
+  let done = false
+  let truncated = false
+  const csvSelect = Object.fromEntries(CSV_COLS.map(c => [c, true])) as {
+    [K in typeof CSV_COLS[number]]: true
+  }
+
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (cancelled) return
+      if (!opened) {
+        opened = true
+        controller.enqueue(encoder.encode(format === 'csv' ? CSV_COLS.join(',') + '\n' : '{"rows":[\n'))
+        return
+      }
+      const finish = (errored = false) => {
+        if (cancelled) return
         if (format === 'json') {
-          controller.enqueue(encoder.encode(`\n],"count":${sent},"truncated":${truncated}${errored ? `,"error":${JSON.stringify(errored)}` : ''}}\n`))
+          controller.enqueue(encoder.encode(`\n],"count":${sent},"truncated":${truncated}${errored ? ',"error":"Failed to export traffic","code":"export_failed"' : ''}}\n`))
         } else {
           if (truncated) controller.enqueue(encoder.encode(`# TRUNCATED at ${MAX_EXPORT_ROWS} rows - narrow the filters to export the rest\n`))
-          if (errored) controller.enqueue(encoder.encode(`# export error: ${errored}\n`))
+          if (errored) controller.enqueue(encoder.encode('# export error: Failed to export traffic (export_failed)\n'))
         }
         controller.close()
       }
+      if (done) { finish(); return }
+      try {
+        const take = Math.min(PAGE, MAX_EXPORT_ROWS - sent)
+        const rows = await prisma.capturedHttpTransaction.findMany({
+          where,
+          orderBy: { id: 'asc' },
+          take,
+          ...(format === 'csv' ? { select: csvSelect } : {}),
+          ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+        })
+        // A query already in flight can finish after the consumer cancels.
+        if (cancelled) return
+        if (rows.length === 0) { finish(); return }
+        const chunk = rows.map(r => {
+          if (format === 'csv') {
+            return CSV_COLS.map(c => csvCell(r[c])).join(',') + '\n'
+          }
+          const line = (first ? '' : ',\n') + JSON.stringify(r)
+          first = false
+          return line
+        }).join('')
+        sent += rows.length
+        cursor = rows[rows.length - 1].id
+        truncated = sent >= MAX_EXPORT_ROWS
+        done = truncated || rows.length < take
+        controller.enqueue(encoder.encode(chunk))
+      } catch (e) {
+        internalError(e, 'Failed to export traffic')
+        finish(true)
+      }
     },
-  })
+    cancel() {
+      cancelled = true
+    },
+  }, { highWaterMark: 0 })
 
   return new Response(stream, {
     headers: {
