@@ -56,7 +56,7 @@ describe('gatherReportData', () => {
   const SRC = readFileSync(join(__dirname, 'reportData.ts'), 'utf8')
 
   test('reads the disposition summary and returns it with the report', () => {
-    expect(SRC).toMatch(/withSession\(s => queryDispositionSummary\(s, projectId\)\)\s*\n\s*\.catch\(\(\) => null\)/)
+    expect(SRC).toMatch(/withSession\(s => queryDispositionSummary\(s, projectId, uid\)\)\s*\n\s*\.catch\(\(\) => null\)/)
     expect(SRC).toMatch(/\n\s+disposition,\n/)
   })
 })

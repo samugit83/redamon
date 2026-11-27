@@ -29,6 +29,16 @@ function toNum(val: unknown): number {
   return typeof val === 'number' ? val : 0
 }
 
+// Composite (user_id, project_id) index prefix when the project owner (`uid`) is known;
+// keeps legacy `{project_id: $pid}` fallback for unit callers that omit `uid`.
+function tenantMatch(uid?: string): string {
+  return uid ? 'user_id: $uid, project_id: $pid' : 'project_id: $pid'
+}
+
+function tenantParams(pid: string, uid?: string, extra?: Record<string, unknown>): Record<string, unknown> {
+  return uid ? { uid, pid, ...extra } : { pid, ...extra }
+}
+
 /** A result row as a report query reads it: a neo4j Record and a test's fake both fit. */
 interface ReportRecord { get(key: string): unknown }
 
@@ -610,18 +620,18 @@ export interface ReportData {
  * nobody has looked at it yet.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function queryTriageRisks(session: any, projectId: string) {
+async function queryTriageRisks(session: any, projectId: string, uid?: string) {
   const res = await session.run(
     `MATCH (n:Vulnerability|JsReconFinding|Secret|MultiscannerFinding|GithubSecret
             |GithubSensitiveFile|MalPackageFinding|ExploitGvm)
-     WHERE n.project_id = $projectId AND ${notMuted('n')}
+     WHERE ${uid ? 'n.user_id = $uid AND ' : ''}n.project_id = $projectId AND ${notMuted('n')}
        AND n.triage_risk IS NOT NULL
        AND coalesce(n.triage_state, 'open') = 'open'
        AND coalesce(n.triage_status, '') <> 'likely_noise'
      RETURN n.triage_risk AS risk
      ORDER BY n.triage_risk DESC
      LIMIT ${RISK_TOP_N}`,
-    { projectId }
+    uid ? { uid, projectId } : { projectId }
   )
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return res.records.map((r: any) => ({
@@ -641,13 +651,14 @@ async function queryCoverageLimitations(
   session: any, // eslint-disable-line @typescript-eslint/no-explicit-any
   pid: string,
   roots: ReadonlySet<string> | null = null,
+  uid?: string,
 ): Promise<{ source: string; reason: string }[]> {
   try {
     const res = await session.run(
-      `MATCH (d:Domain {project_id: $pid})
+      `MATCH (d:Domain {${tenantMatch(uid)}})
        WHERE d.recon_coverage_gaps IS NOT NULL
        RETURN d.recon_coverage_gaps AS gaps`,
-      { pid }
+      tenantParams(pid, uid)
     )
     const bySource = new Map<string, string>()
     for (const rec of res.records) {
@@ -724,6 +735,8 @@ export async function gatherReportData(projectId: string): Promise<ReportData> {
     }),
   ])
 
+  const uid = project.userId
+
   // Fetch all Neo4j data - each query group gets its own session
   // (Neo4j doesn't allow concurrent queries on a single session)
   const [
@@ -743,30 +756,30 @@ export async function gatherReportData(projectId: string): Promise<ReportData> {
     aiSurfaceData,
     otxData,
   ] = await Promise.all([
-    withSession(s => queryGraphOverview(s, projectId, project)),
-    withSession(s => queryAttackSurface(s, projectId)),
-    withSession(s => queryVulnerabilities(s, projectId)),
-    withSession(s => queryCveIntelligence(s, projectId)),
-    withSession(s => queryAttackChains(s, projectId)),
-    withSession(s => queryTrufflehog(s, projectId)),
-    withSession(s => querySecrets(s, projectId)),
-    withSession(s => queryJsRecon(s, projectId)),
-    withSession(s => querySupplyChain(s, projectId)),
-    withSession(s => queryGraphql(s, projectId)),
-    withSession(s => queryVhostSni(s, projectId)),
-    withSession(s => queryTlsx(s, projectId)),
-    withSession(s => queryWebCachePoison(s, projectId)),
-    withSession(s => queryAiSurface(s, projectId)),
-    withSession(s => queryOtx(s, projectId)),
+    withSession(s => queryGraphOverview(s, projectId, project, uid)),
+    withSession(s => queryAttackSurface(s, projectId, uid)),
+    withSession(s => queryVulnerabilities(s, projectId, uid)),
+    withSession(s => queryCveIntelligence(s, projectId, uid)),
+    withSession(s => queryAttackChains(s, projectId, uid)),
+    withSession(s => queryTrufflehog(s, projectId, uid)),
+    withSession(s => querySecrets(s, projectId, uid)),
+    withSession(s => queryJsRecon(s, projectId, uid)),
+    withSession(s => querySupplyChain(s, projectId, uid)),
+    withSession(s => queryGraphql(s, projectId, uid)),
+    withSession(s => queryVhostSni(s, projectId, uid)),
+    withSession(s => queryTlsx(s, projectId, uid)),
+    withSession(s => queryWebCachePoison(s, projectId, uid)),
+    withSession(s => queryAiSurface(s, projectId, uid)),
+    withSession(s => queryOtx(s, projectId, uid)),
   ])
 
-  const triageRisks = await withSession(s => queryTriageRisks(s, projectId))
+  const triageRisks = await withSession(s => queryTriageRisks(s, projectId, uid))
     .catch(() => [])
 
-  const disposition = await withSession(s => queryDispositionSummary(s, projectId))
+  const disposition = await withSession(s => queryDispositionSummary(s, projectId, uid))
     .catch(() => null)
 
-  const coverageLimitations = await withSession(s => queryCoverageLimitations(s, projectId, currentScanRoots(project)))
+  const coverageLimitations = await withSession(s => queryCoverageLimitations(s, projectId, currentScanRoots(project), uid))
     .catch(() => [])
 
   const roeProvenance = await queryRoeProvenance(projectId, project)
@@ -1053,25 +1066,27 @@ export async function gatherReportData(projectId: string): Promise<ReportData> {
 
 // Exported for reportData.integration.test.ts, which runs it on a real Neo4j.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function queryGraphOverview(session: any, pid: string, hostnamePolicy?: HostnamePolicyRow | null) {
+export async function queryGraphOverview(session: any, pid: string, hostnamePolicy?: HostnamePolicyRow | null, uid?: string) {
+  const tm = tenantMatch(uid)
+  const tp = tenantParams(pid, uid)
   const nodeRes = await session.run(
-    `MATCH (n {project_id: $pid}) WHERE ${notMuted('n')}
+    `MATCH (n {${tm}}) WHERE ${notMuted('n')}
      RETURN labels(n)[0] AS label, count(n) AS count ORDER BY count DESC`,
-    { pid }
+    tp
   )
   const subRes = await session.run(
-    `MATCH (s:Subdomain {project_id: $pid})
+    `MATCH (s:Subdomain {${tm}})
      OPTIONAL MATCH (s)-[dnsr:RESOLVES_TO]->(i:IP) WHERE ${currentDns('dnsr')}
      RETURN count(DISTINCT s) AS total,
             count(DISTINCT CASE WHEN i IS NOT NULL THEN s END) AS resolved,
             count(DISTINCT i) AS uniqueIps`,
-    { pid }
+    tp
   )
   // Observed only: an endpoint known only from an API specification is counted
   // apart, so the Endpoints card, the posture score and attackSurfaceSize are
   // not inflated by declarations.
   const epRes = await session.run(
-    `MATCH (b:BaseURL {project_id: $pid})
+    `MATCH (b:BaseURL {${tm}})
      OPTIONAL MATCH (b)-[:HAS_ENDPOINT]->(e:Endpoint)
      OPTIONAL MATCH (e)-[:HAS_PARAMETER]->(p:Parameter)
      WITH b, e, p, ${DECLARED_ONLY('e')} AS declared
@@ -1080,14 +1095,14 @@ export async function queryGraphOverview(session: any, pid: string, hostnamePoli
             count(DISTINCT CASE WHEN NOT declared THEN p END) AS parameters,
             count(DISTINCT CASE WHEN declared THEN e END) AS declaredEndpoints,
             count(DISTINCT CASE WHEN declared THEN p END) AS declaredParameters`,
-    { pid }
+    tp
   )
   const certRes = await session.run(
     // Match BOTH anchors (a cert can be IP-anchored by tlsx/OSINT/GVM) and cast
     // the ISO not_after string to datetime, mirroring the graph-overview query.
-    `MATCH (c:Certificate {project_id: $pid})
-     WHERE (:BaseURL {project_id: $pid})-[:HAS_CERTIFICATE]->(c)
-        OR (:IP {project_id: $pid})-[:HAS_CERTIFICATE]->(c)
+    `MATCH (c:Certificate {${tm}})
+     WHERE (:BaseURL {${tm}})-[:HAS_CERTIFICATE]->(c)
+        OR (:IP {${tm}})-[:HAS_CERTIFICATE]->(c)
      WITH DISTINCT c,
           CASE WHEN c.not_after IS NOT NULL
                THEN datetime(replace(c.not_after, 'Z', '+00:00'))
@@ -1098,22 +1113,22 @@ export async function queryGraphOverview(session: any, pid: string, hostnamePoli
                             AND expiry < datetime() + duration('P30D') THEN 1 END) AS expiringSoon,
             count(CASE WHEN c.self_signed = true THEN 1 END) AS selfSigned,
             count(CASE WHEN c.mismatched = true THEN 1 END) AS mismatched`,
-    { pid }
+    tp
   )
   const infraRes = await session.run(
-    `MATCH (ip:IP {project_id: $pid})
+    `MATCH (ip:IP {${tm}})
      RETURN count(ip) AS total,
             count(CASE WHEN ${ipVersionIs('ip', 'ipv4')} THEN 1 END) AS ipv4,
             count(CASE WHEN ${ipVersionIs('ip', 'ipv6')} THEN 1 END) AS ipv6,
             count(CASE WHEN ip.is_cdn = true THEN 1 END) AS cdnCount,
             count(DISTINCT CASE WHEN ip.asn IS NOT NULL THEN ip.asn END) AS uniqueAsns,
             count(DISTINCT CASE WHEN ip.cdn_name IS NOT NULL THEN ip.cdn_name END) AS uniqueCdns`,
-    { pid }
+    tp
   )
 
   // Subdomain → IP detail mapping
   const subDetailRes = await session.run(
-    `MATCH (s:Subdomain {project_id: $pid})
+    `MATCH (s:Subdomain {${tm}})
      OPTIONAL MATCH (s)-[dnsr:RESOLVES_TO]->(ip:IP) WHERE ${currentDns('dnsr')}
      OPTIONAL MATCH (ip)-[:HAS_PORT]->(port:Port)
      RETURN s.name AS subdomain,
@@ -1121,7 +1136,7 @@ export async function queryGraphOverview(session: any, pid: string, hostnamePoli
                               ownership: ip.ownership}) AS ips,
             count(DISTINCT port) AS openPorts
      ORDER BY subdomain`,
-    { pid }
+    tp
   )
   // IP → hostname detail mapping (the IP Target Map, IP mode only). A hostname
   // of an IP is a name the hostname selection scanned there: the dashed
@@ -1130,13 +1145,13 @@ export async function queryGraphOverview(session: any, pid: string, hostnamePoli
   // the RESOLVES_TO it pins (it has just resolved it), so that edge is current
   // DNS here too.
   const ipDetailRes = await session.run(
-    `MATCH (ip:IP {project_id: $pid})
-     OPTIONAL MATCH (s:Subdomain {project_id: $pid, source: 'ip_hostname_selection'})-[dnsr:RESOLVES_TO]->(ip)
+    `MATCH (ip:IP {${tm}})
+     OPTIONAL MATCH (s:Subdomain {${tm}, source: 'ip_hostname_selection'})-[dnsr:RESOLVES_TO]->(ip)
        WHERE s.ip_hostname_reason = 'scanned'
          AND (${currentDns('dnsr')} OR dnsr.source = 'ip_hostname_selection')
      OPTIONAL MATCH (ip)-[:HAS_PORT]->(port:Port)
      WITH ip, collect(DISTINCT s.name) AS hostnames, count(DISTINCT port) AS openPorts
-     OPTIONAL MATCH (ed:ExternalDomain {project_id: $pid})-[:SEEN_ON]->(ip)
+     OPTIONAL MATCH (ed:ExternalDomain {${tm}})-[:SEEN_ON]->(ip)
      WITH ip, hostnames, openPorts, ed ORDER BY ed.domain
      RETURN ip.address AS ip, ip.version AS version, ip.is_cdn AS isCdn,
             ip.cdn_name AS cdnName, ip.asn AS asn, ip.ownership AS ownership,
@@ -1144,13 +1159,13 @@ export async function queryGraphOverview(session: any, pid: string, hostnamePoli
             count(DISTINCT ed) AS recordedCount,
             collect(DISTINCT ed.domain)[0..5] AS recordedSample
      ORDER BY ip`,
-    { pid }
+    tp
   )
   // Distinct across IPs: one name seen on three targets is one recorded name.
   const recordedRes = await session.run(
-    `MATCH (ed:ExternalDomain {project_id: $pid})-[:SEEN_ON]->(:IP {project_id: $pid})
+    `MATCH (ed:ExternalDomain {${tm}})-[:SEEN_ON]->(:IP {${tm}})
      RETURN count(DISTINCT ed) AS recordedHostnames`,
-    { pid }
+    tp
   )
 
   const nodeCounts = nodeRes.records.map((r: ReportRecord) => ({
@@ -1206,14 +1221,14 @@ export async function queryGraphOverview(session: any, pid: string, hostnamePoli
   // A Multi mute is a person's too, and stays inside their count, but it was
   // chosen in bulk from AI suggestions, so it gets its own line as well.
   const suppressedRes = await session.run(
-    `MATCH (n:Muted {project_id: $pid})
+    `MATCH (n:Muted {${tm}})
      WITH coalesce(n.muted_by, '') STARTS WITH 'rule:' AS byRule, n
      WITH byRule, n, (NOT byRule AND coalesce(n.muted_channel, '') = 'mcp') AS byAgent
      WITH byRule, byAgent, n, (NOT byRule AND coalesce(n.muted_channel, '') = 'multi') AS byMulti
      RETURN byRule, byAgent, byMulti,
             CASE WHEN byRule THEN coalesce(n.muted_reason, '') ELSE '' END AS reason,
             count(n) AS total`,
-    { pid }
+    tp
   )
   let suppressedByPeople = 0
   let suppressedByAgents = 0
@@ -1239,7 +1254,7 @@ export async function queryGraphOverview(session: any, pid: string, hostnamePoli
     .sort((a, b) => b.count - a.count)
     .slice(0, 10)
 
-  const judged = await queryJudgedFindings(session, pid)
+  const judged = await queryJudgedFindings(session, pid, uid)
 
   return {
     totalNodes: nodeCounts.reduce((s: number, n: { count: number }) => s + n.count, 0),
@@ -1279,57 +1294,59 @@ export async function queryGraphOverview(session: any, pid: string, hostnamePoli
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function queryAttackSurface(session: any, pid: string) {
+export async function queryAttackSurface(session: any, pid: string, uid?: string) {
+  const tm = tenantMatch(uid)
+  const tp = tenantParams(pid, uid)
   const svcRes = await session.run(
-    `MATCH (:IP {project_id: $pid})-[:HAS_PORT]->(p:Port)-[:RUNS_SERVICE]->(s:Service)
+    `MATCH (:IP {${tm}})-[:HAS_PORT]->(p:Port)-[:RUNS_SERVICE]->(s:Service)
      RETURN s.name AS service, p.number AS port, count(DISTINCT p) AS count
      ORDER BY count DESC LIMIT 25`,
-    { pid }
+    tp
   )
   const portRes = await session.run(
-    `MATCH (:IP {project_id: $pid})-[:HAS_PORT]->(p:Port)
+    `MATCH (:IP {${tm}})-[:HAS_PORT]->(p:Port)
      RETURN p.number AS port, p.protocol AS protocol, count(p) AS count
      ORDER BY count DESC LIMIT 25`,
-    { pid }
+    tp
   )
   const techRes = await session.run(
-    `MATCH (:BaseURL {project_id: $pid})-[:USES_TECHNOLOGY]->(t:Technology)
+    `MATCH (:BaseURL {${tm}})-[:USES_TECHNOLOGY]->(t:Technology)
      OPTIONAL MATCH (t)-[:HAS_KNOWN_CVE]->(c:CVE)
      RETURN t.name AS name, t.version AS version, count(DISTINCT c) AS cveCount
      ORDER BY cveCount DESC, name ASC`,
-    { pid }
+    tp
   )
   const dnsRes = await session.run(
-    `MATCH (:Subdomain {project_id: $pid})-[:HAS_DNS_RECORD]->(d:DNSRecord)
+    `MATCH (:Subdomain {${tm}})-[:HAS_DNS_RECORD]->(d:DNSRecord)
      RETURN d.type AS type, count(d) AS count ORDER BY count DESC`,
-    { pid }
+    tp
   )
   const secHdrRes = await session.run(
-    `MATCH (:BaseURL {project_id: $pid})-[:HAS_HEADER]->(h:Header)
+    `MATCH (:BaseURL {${tm}})-[:HAS_HEADER]->(h:Header)
      RETURN h.name AS name, COALESCE(h.is_security_header, false) AS isSecurity, count(h) AS count
      ORDER BY count DESC`,
-    { pid }
+    tp
   )
   // An endpoint known only from an API specification is documented, not
   // observed: counted apart, so the observed surface is not overstated.
   const epCatRes = await session.run(
-    `MATCH (:BaseURL {project_id: $pid})-[:HAS_ENDPOINT]->(e:Endpoint)
+    `MATCH (:BaseURL {${tm}})-[:HAS_ENDPOINT]->(e:Endpoint)
      WITH e, ${DECLARED_ONLY('e')} AS declared
      RETURN COALESCE(e.category, 'other') AS category,
             count(CASE WHEN NOT declared THEN 1 END) AS count,
             count(CASE WHEN declared THEN 1 END) AS declared
      ORDER BY count + declared DESC`,
-    { pid }
+    tp
   )
   const paramRes = await session.run(
-    `MATCH (:BaseURL {project_id: $pid})-[:HAS_ENDPOINT]->(e:Endpoint)-[:HAS_PARAMETER]->(p:Parameter)
+    `MATCH (:BaseURL {${tm}})-[:HAS_ENDPOINT]->(e:Endpoint)-[:HAS_PARAMETER]->(p:Parameter)
      WITH e, p, ${DECLARED_ONLY('e')} AS declared
      RETURN COALESCE(p.position, 'unknown') AS position,
             count(CASE WHEN NOT declared THEN 1 END) AS total,
             count(CASE WHEN NOT declared AND p.is_injectable = true THEN 1 END) AS injectable,
             count(CASE WHEN declared THEN 1 END) AS declared
      ORDER BY total + declared DESC`,
-    { pid }
+    tp
   )
 
   return {
@@ -1372,16 +1389,18 @@ export async function queryAttackSurface(session: any, pid: string) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function queryVulnerabilities(session: any, pid: string) {
+export async function queryVulnerabilities(session: any, pid: string, uid?: string) {
+  const tm = tenantMatch(uid)
+  const tp = tenantParams(pid, uid)
   const sevRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid})
+    `MATCH (v:Vulnerability {${tm}})
     WHERE ${notMuted('v')} AND ${reportCountable('v')} AND ${agentCandidateConfirmedOrNA('v')}
       AND ${inSeverityBreakdown('v')}
      RETURN v.severity AS severity, count(v) AS count`,
-    { pid }
+    tp
   )
   const findingsRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid})
+    `MATCH (v:Vulnerability {${tm}})
     WHERE ${notMuted('v')} AND ${reportCountable('v')} AND ${agentCandidateConfirmedOrNA('v')}
      OPTIONAL MATCH (parent)-[:HAS_VULNERABILITY]->(v)
      OPTIONAL MATCH (v)-[:FOUND_AT]->(ep:Endpoint)
@@ -1408,25 +1427,25 @@ export async function queryVulnerabilities(session: any, pid: string) {
      ORDER BY CASE v.severity
        WHEN 'critical' THEN 0 WHEN 'high' THEN 1
        WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`,
-    { pid }
+    tp
   )
   const cvssRes = await session.run(
-    `MATCH (:Technology {project_id: $pid})-[:HAS_KNOWN_CVE]->(c:CVE)
+    `MATCH (:Technology {${tm}})-[:HAS_KNOWN_CVE]->(c:CVE)
      WITH toFloat(c.cvss) AS score WHERE score IS NOT NULL
      RETURN floor(score) AS bucket, count(*) AS count ORDER BY bucket`,
-    { pid }
+    tp
   )
   const cveSevRes = await session.run(
-    `MATCH (:Technology {project_id: $pid})-[:HAS_KNOWN_CVE]->(c:CVE)
+    `MATCH (:Technology {${tm}})-[:HAS_KNOWN_CVE]->(c:CVE)
      RETURN c.severity AS severity, count(DISTINCT c) AS count`,
-    { pid }
+    tp
   )
   const gvmRemRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid, source: 'gvm'})
+    `MATCH (v:Vulnerability {${tm}, source: 'gvm'})
     WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN CASE WHEN v.remediated = true THEN 'Remediated' ELSE 'Open' END AS status,
             count(v) AS count`,
-    { pid }
+    tp
   )
 
   return {
@@ -1468,9 +1487,11 @@ export async function queryVulnerabilities(session: any, pid: string) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function queryCveIntelligence(session: any, pid: string) {
+export async function queryCveIntelligence(session: any, pid: string, uid?: string) {
+  const tm = tenantMatch(uid)
+  const tp = tenantParams(pid, uid)
   const chainRes = await session.run(
-    `MATCH (t:Technology {project_id: $pid})-[:HAS_KNOWN_CVE]->(c:CVE)
+    `MATCH (t:Technology {${tm}})-[:HAS_KNOWN_CVE]->(c:CVE)
      OPTIONAL MATCH (c)-[:HAS_CWE]->(m:MitreData)
      OPTIONAL MATCH (m)-[:HAS_CAPEC]->(cap:Capec)
      RETURN t.name AS tech, t.version AS techVersion,
@@ -1478,10 +1499,10 @@ export async function queryCveIntelligence(session: any, pid: string) {
             m.cwe_id AS cweId, m.cwe_name AS cweName,
             cap.capec_id AS capecId, cap.name AS capecName, cap.severity AS capecSeverity
      ORDER BY c.cvss DESC`,
-    { pid }
+    tp
   )
   const exploitRes = await session.run(
-    `MATCH (ex:ExploitGvm {project_id: $pid})
+    `MATCH (ex:ExploitGvm {${tm}})
     WHERE ${notMuted('ex')} AND ${reportCountable('ex')}
      OPTIONAL MATCH (ex)-[:EXPLOITED_CVE]->(c:CVE)
      RETURN ex.name AS name, ex.severity AS severity, ex.target_ip AS targetIp,
@@ -1489,9 +1510,9 @@ export async function queryCveIntelligence(session: any, pid: string) {
             ex.cisa_kev AS cisaKev, ex.evidence AS evidence,
             collect(c.id) AS cveIds
      ORDER BY ex.cvss_score DESC`,
-    { pid }
+    tp
   )
-  const ghRes = await session.run(githubSecretCountsCypher(), { pid })
+  const ghRes = await session.run(githubSecretCountsCypher(uid), tp)
 
   const ghRec = ghRes.records[0]
 
@@ -1523,11 +1544,13 @@ export async function queryCveIntelligence(session: any, pid: string) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function queryAttackChains(session: any, pid: string) {
+export async function queryAttackChains(session: any, pid: string, uid?: string) {
+  const tm = tenantMatch(uid)
+  const tp = tenantParams(pid, uid)
   // A chain id is the agent's session id: the tenant and the project keep another project's step
   // written under the same id out of this chain's counts.
   const chainsRes = await session.run(
-    `MATCH (ac:AttackChain {project_id: $pid})
+    `MATCH (ac:AttackChain {${tm}})
      OPTIONAL MATCH (step:ChainStep {chain_id: ac.chain_id, user_id: ac.user_id, project_id: $pid})
      WITH ac, collect(step) AS allSteps
      UNWIND CASE WHEN size(allSteps) = 0 THEN [null] ELSE allSteps END AS step
@@ -1537,10 +1560,10 @@ export async function queryAttackChains(session: any, pid: string) {
      WITH ac, step, sf, count(fail) AS sfl
      RETURN ac.title AS title, ac.status AS status,
             count(step) AS steps, sum(sf) AS findings, sum(sfl) AS failures`,
-    { pid }
+    tp
   )
   const exploitRes = await session.run(
-    `MATCH (f:ChainFinding {project_id: $pid})
+    `MATCH (f:ChainFinding {${tm}})
      WHERE f.finding_type IN ['exploit_success', 'access_gained', 'privilege_escalation', 'credential_found', 'data_exfiltration', 'lateral_movement', 'persistence_established', 'denial_of_service_success', 'social_engineering_success', 'remote_code_execution', 'session_hijacked']
      OPTIONAL MATCH (f)-[:FINDING_RELATES_CVE]->(cve:CVE)
      WITH f, collect(cve.id) AS cveIds
@@ -1548,21 +1571,21 @@ export async function queryAttackChains(session: any, pid: string) {
             f.metasploit_module AS module,
             f.evidence AS evidence, f.attack_type AS attackType, f.finding_type AS findingType, cveIds
      ORDER BY f.created_at DESC`,
-    { pid }
+    tp
   )
   const topRes = await session.run(
-    `MATCH (f:ChainFinding {project_id: $pid})
+    `MATCH (f:ChainFinding {${tm}})
      OPTIONAL MATCH (f)-[:FOUND_ON]->(target)
      WITH f, COALESCE(target.address, target.name) AS targetHost
      RETURN f.title AS title, f.severity AS severity, f.finding_type AS findingType,
             f.evidence AS evidence, targetHost
      ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END
      LIMIT 20`,
-    { pid }
+    tp
   )
   const countRes = await session.run(
-    `MATCH (f:ChainFinding {project_id: $pid}) RETURN count(f) AS total`,
-    { pid }
+    `MATCH (f:ChainFinding {${tm}}) RETURN count(f) AS total`,
+    tp
   )
 
   return {
@@ -1596,12 +1619,14 @@ export async function queryAttackChains(session: any, pid: string) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function queryTrufflehog(session: any, pid: string) {
+async function queryTrufflehog(session: any, pid: string, uid?: string) {
+  const tm = tenantMatch(uid)
+  const tp = tenantParams(pid, uid)
   // Untyped asset match `(a)` on purpose: assets carry one of five labels
   // (Repository/Image/Model/Bucket/Endpoint) and naming one would silently drop
   // every non-git source from the report.
   const summaryRes = await session.run(
-    `OPTIONAL MATCH (d:Domain {project_id: $pid})-[:HAS_MULTISCANNER_SCAN]->(ts:MultiscannerScan)
+    `OPTIONAL MATCH (d:Domain {${tm}})-[:HAS_MULTISCANNER_SCAN]->(ts:MultiscannerScan)
      OPTIONAL MATCH (ts)-[:HAS_ASSET]->(a)
      OPTIONAL MATCH (a)-[:HAS_FINDING]->(tf:MultiscannerFinding)
        WHERE ${notMuted('tf')} AND ${reportCountable('tf')}
@@ -1609,12 +1634,12 @@ async function queryTrufflehog(session: any, pid: string) {
             count(DISTINCT CASE WHEN tf.verified = true THEN tf END) AS verified,
             count(DISTINCT CASE WHEN tf.validation_status = 'validated' THEN tf END) AS live,
             count(DISTINCT a) AS assets`,
-    { pid }
+    tp
   )
   // DISTINCT: a project has one Domain per org, and a scan reached through two
   // of them would be listed, and its findings counted, twice.
   const bySourceRes = await session.run(
-    `MATCH (:Domain {project_id: $pid})-[:HAS_MULTISCANNER_SCAN]->(ts:MultiscannerScan)
+    `MATCH (:Domain {${tm}})-[:HAS_MULTISCANNER_SCAN]->(ts:MultiscannerScan)
      WITH DISTINCT ts
      OPTIONAL MATCH (ts)-[:HAS_ASSET]->(a)-[:HAS_FINDING]->(tf:MultiscannerFinding)
        WHERE ${notMuted('tf')} AND ${reportCountable('tf')}
@@ -1623,10 +1648,10 @@ async function queryTrufflehog(session: any, pid: string) {
             count(DISTINCT CASE WHEN tf.validation_status = 'validated' THEN tf END) AS live,
             count(DISTINCT a) AS assets
      ORDER BY live DESC, total DESC`,
-    { pid }
+    tp
   )
   const findingsRes = await session.run(
-    `MATCH (:Domain {project_id: $pid})-[:HAS_MULTISCANNER_SCAN]->()-[:HAS_ASSET]->(a)-[:HAS_FINDING]->(tf:MultiscannerFinding)
+    `MATCH (:Domain {${tm}})-[:HAS_MULTISCANNER_SCAN]->()-[:HAS_ASSET]->(a)-[:HAS_FINDING]->(tf:MultiscannerFinding)
     WHERE ${notMuted('tf')} AND ${reportCountable('tf')}
      WITH DISTINCT a, tf
      RETURN tf.detector_name AS detectorName, tf.verified AS verified,
@@ -1640,7 +1665,7 @@ async function queryTrufflehog(session: any, pid: string) {
                 WHEN 'unverified' THEN 2 ELSE 3 END,
               tf.detector_name
      LIMIT 50`,
-    { pid }
+    tp
   )
 
   const sumRec = summaryRes.records[0]
@@ -1680,42 +1705,44 @@ async function queryTrufflehog(session: any, pid: string) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function querySecrets(session: any, pid: string) {
+export async function querySecrets(session: any, pid: string, uid?: string) {
+  const tm = tenantMatch(uid)
+  const tp = tenantParams(pid, uid)
   // A key that is public by design is no exposed secret: it is left out of
   // every count here (and so of the risk weight) and listed apart below.
   const notPublic = `AND NOT ${publicClientKeyCypher('s')}`
   const totalRes = await session.run(
-    `MATCH (s:Secret {project_id: $pid})
+    `MATCH (s:Secret {${tm}})
     WHERE ${notMuted('s')} AND ${reportCountable('s')} ${notPublic}
      RETURN count(s) AS total`,
-    { pid }
+    tp
   )
   const bySevRes = await session.run(
-    `MATCH (s:Secret {project_id: $pid})
+    `MATCH (s:Secret {${tm}})
     WHERE ${notMuted('s')} AND ${reportCountable('s')} ${notPublic}
      RETURN s.severity AS severity, count(s) AS count ORDER BY count DESC`,
-    { pid }
+    tp
   )
   const bySrcRes = await session.run(
-    `MATCH (s:Secret {project_id: $pid})
+    `MATCH (s:Secret {${tm}})
     WHERE ${notMuted('s')} AND ${reportCountable('s')} ${notPublic}
      RETURN s.source AS source, count(s) AS count ORDER BY count DESC`,
-    { pid }
+    tp
   )
   const byTypeRes = await session.run(
-    `MATCH (s:Secret {project_id: $pid})
+    `MATCH (s:Secret {${tm}})
     WHERE ${notMuted('s')} AND ${reportCountable('s')} ${notPublic}
      RETURN s.secret_type AS secretType, count(s) AS count ORDER BY count DESC LIMIT 20`,
-    { pid }
+    tp
   )
   const publicRes = await session.run(
-    `MATCH (s:Secret {project_id: $pid})
+    `MATCH (s:Secret {${tm}})
     WHERE ${notMuted('s')} AND ${reportCountable('s')} AND ${publicClientKeyCypher('s')}
      RETURN s.secret_type AS publicType, count(s) AS count ORDER BY count DESC LIMIT 20`,
-    { pid }
+    tp
   )
   const findingsRes = await session.run(
-    `MATCH (s:Secret {project_id: $pid})
+    `MATCH (s:Secret {${tm}})
     WHERE ${notMuted('s')} AND ${reportCountable('s')} ${notPublic}
      RETURN s.secret_type AS secretType, s.severity AS severity,
             s.source AS source, s.source_url AS sourceUrl,
@@ -1724,7 +1751,7 @@ export async function querySecrets(session: any, pid: string) {
             coalesce(s.secret_value, s.matched_text) AS secretValue
      ORDER BY CASE s.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END
      LIMIT 50`,
-    { pid }
+    tp
   )
 
   return {
@@ -1763,23 +1790,25 @@ export async function querySecrets(session: any, pid: string) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function querySupplyChain(session: any, pid: string) {
-  // Tenant-scoped: every match filters {project_id: $pid}.
+async function querySupplyChain(session: any, pid: string, uid?: string) {
+  const tm = tenantMatch(uid)
+  const tp = tenantParams(pid, uid)
+  // Tenant-scoped: every match filters {user_id: $uid, project_id: $pid} when uid is known.
   const pkgRes = await session.run(
-    `MATCH (p:Package {project_id: $pid})
+    `MATCH (p:Package {${tm}})
      RETURN p.ecosystem AS ecosystem, count(p) AS count ORDER BY count DESC`,
-    { pid }
+    tp
   )
   const verdictRes = await session.run(
-    `MATCH (:Package {project_id: $pid})-[:FLAGGED_AS]->(f:MalPackageFinding {project_id: $pid})
+    `MATCH (:Package {${tm}})-[:FLAGGED_AS]->(f:MalPackageFinding {${tm}})
     WHERE ${notMuted('f')} AND ${reportCountable('f')}
      RETURN f.verdict AS verdict, count(f) AS count`,
-    { pid }
+    tp
   )
   const findingsRes = await session.run(
-    `MATCH (p:Package {project_id: $pid})-[:FLAGGED_AS]->(f:MalPackageFinding {project_id: $pid})
+    `MATCH (p:Package {${tm}})-[:FLAGGED_AS]->(f:MalPackageFinding {${tm}})
     WHERE ${notMuted('f')} AND ${reportCountable('f')}
-     OPTIONAL MATCH (b:BaseURL {project_id: $pid})-[:DEPENDS_ON]->(p)
+     OPTIONAL MATCH (b:BaseURL {${tm}})-[:DEPENDS_ON]->(p)
      RETURN p.purl AS purl, p.name AS name, p.version AS version,
             p.ecosystem AS ecosystem, f.verdict AS verdict,
             f.source_tool AS sourceTool, f.advisory_id AS advisoryId,
@@ -1787,7 +1816,7 @@ async function querySupplyChain(session: any, pid: string) {
      ORDER BY CASE f.verdict WHEN 'malicious' THEN 0 ELSE 1 END,
               CASE f.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END
      LIMIT 50`,
-    { pid }
+    tp
   )
 
   const verdictCounts = new Map<string, number>(
@@ -1817,21 +1846,23 @@ async function querySupplyChain(session: any, pid: string) {
   }
 }
 
-export async function queryJsRecon(session: ReportSession, pid: string) {
+export async function queryJsRecon(session: ReportSession, pid: string, uid?: string) {
+  const tm = tenantMatch(uid)
+  const tp = tenantParams(pid, uid)
   const bySevRes = await session.run(
-    `MATCH (jf:JsReconFinding {project_id: $pid})
+    `MATCH (jf:JsReconFinding {${tm}})
     WHERE ${notMuted('jf')} AND ${reportCountable('jf')}
      RETURN jf.severity AS severity, count(jf) AS count ORDER BY count DESC`,
-    { pid }
+    tp
   )
   const byTypeRes = await session.run(
-    `MATCH (jf:JsReconFinding {project_id: $pid})
+    `MATCH (jf:JsReconFinding {${tm}})
     WHERE ${notMuted('jf')} AND ${reportCountable('jf')}
      RETURN jf.finding_type AS findingType, count(jf) AS count ORDER BY count DESC`,
-    { pid }
+    tp
   )
   const findingsRes = await session.run(
-    `MATCH (jf:JsReconFinding {project_id: $pid})
+    `MATCH (jf:JsReconFinding {${tm}})
     WHERE ${notMuted('jf')} AND ${reportCountable('jf')}
      RETURN jf.finding_type AS findingType, jf.severity AS severity,
             jf.confidence AS confidence, jf.title AS title,
@@ -1839,15 +1870,15 @@ export async function queryJsRecon(session: ReportSession, pid: string) {
             jf.source_url AS sourceUrl
      ORDER BY CASE jf.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END
      LIMIT 50`,
-    { pid }
+    tp
   )
 
   // A live host is one http_probe answered (it rewrites `source` on every write).
   const coverageRes = await session.run(
-    `MATCH (bu:BaseURL {project_id: $pid})
+    `MATCH (bu:BaseURL {${tm}})
      RETURN bu.js_recon_status AS status, bu.js_recon_reason AS reason,
             (bu.js_recon_status IS NULL AND bu.source = 'http_probe') AS live, count(bu) AS hosts`,
-    { pid }
+    tp
   )
 
   const totalFindings = bySevRes.records.reduce((s: number, r: ReportRecord) => s + toNum(r.get('count')), 0)
@@ -1912,9 +1943,11 @@ function jsReconCoverage(records: any[]): JsReconCoverage {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function queryGraphql(session: any, pid: string) {
+async function queryGraphql(session: any, pid: string, uid?: string) {
+  const tm = tenantMatch(uid)
+  const tp = tenantParams(pid, uid)
   const endpointsRes = await session.run(
-    `MATCH (e:Endpoint {project_id: $pid, is_graphql: true})
+    `MATCH (e:Endpoint {${tm}, is_graphql: true})
      RETURN e.full_url AS url,
             coalesce(e.graphql_introspection_enabled, false) AS introspectionEnabled,
             coalesce(e.graphql_schema_extracted, false) AS schemaExtracted,
@@ -1924,20 +1957,20 @@ async function queryGraphql(session: any, pid: string) {
             e.graphql_schema_hash AS schemaHash
      ORDER BY introspectionEnabled DESC, queriesCount DESC
      LIMIT 50`,
-    { pid }
+    tp
   )
   const bySevRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source IN ['graphql_scan', 'graphql_cop'] AND ${notMuted('v')} AND ${reportCountable('v')}
+    `MATCH (v:Vulnerability {${tm}}) WHERE v.source IN ['graphql_scan', 'graphql_cop'] AND ${notMuted('v')} AND ${reportCountable('v')}
      RETURN v.severity AS severity, count(v) AS count ORDER BY count DESC`,
-    { pid }
+    tp
   )
   const byTypeRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source IN ['graphql_scan', 'graphql_cop'] AND ${notMuted('v')} AND ${reportCountable('v')}
+    `MATCH (v:Vulnerability {${tm}}) WHERE v.source IN ['graphql_scan', 'graphql_cop'] AND ${notMuted('v')} AND ${reportCountable('v')}
      RETURN v.vulnerability_type AS vulnerabilityType, count(v) AS count ORDER BY count DESC`,
-    { pid }
+    tp
   )
   const findingsRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid}) WHERE v.source IN ['graphql_scan', 'graphql_cop'] AND ${notMuted('v')} AND ${reportCountable('v')}
+    `MATCH (v:Vulnerability {${tm}}) WHERE v.source IN ['graphql_scan', 'graphql_cop'] AND ${notMuted('v')} AND ${reportCountable('v')}
      OPTIONAL MATCH (e:Endpoint)-[:HAS_VULNERABILITY]->(v)
      RETURN coalesce(e.full_url, v.endpoint, '') AS endpoint,
             v.vulnerability_type AS vulnerabilityType,
@@ -1948,7 +1981,7 @@ async function queryGraphql(session: any, pid: string) {
             v.evidence AS evidence
      ORDER BY CASE v.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END
      LIMIT 50`,
-    { pid }
+    tp
   )
 
   const endpoints: GraphqlEndpointRecord[] = endpointsRes.records.map((r: ReportRecord) => ({
@@ -2002,34 +2035,36 @@ async function queryGraphql(session: any, pid: string) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function queryVhostSni(session: any, pid: string) {
+async function queryVhostSni(session: any, pid: string, uid?: string) {
+  const tm = tenantMatch(uid)
+  const tp = tenantParams(pid, uid)
   const bySevRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid, source: 'vhost_sni_enum'})
+    `MATCH (v:Vulnerability {${tm}, source: 'vhost_sni_enum'})
     WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN v.severity AS severity, count(v) AS count ORDER BY count DESC`,
-    { pid }
+    tp
   )
   const byLayerRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid, source: 'vhost_sni_enum'})
+    `MATCH (v:Vulnerability {${tm}, source: 'vhost_sni_enum'})
     WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN coalesce(v.layer, 'unknown') AS layer, count(v) AS count ORDER BY count DESC`,
-    { pid }
+    tp
   )
   const byTypeRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid, source: 'vhost_sni_enum'})
+    `MATCH (v:Vulnerability {${tm}, source: 'vhost_sni_enum'})
     WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN coalesce(v.type, 'unknown') AS findingType, count(v) AS count ORDER BY count DESC`,
-    { pid }
+    tp
   )
   const ipsRes = await session.run(
-    `MATCH (i:IP {project_id: $pid, vhost_sni_tested: true})
+    `MATCH (i:IP {${tm}, vhost_sni_tested: true})
      RETURN count(i) AS ipsTested,
             sum(coalesce(i.hidden_vhost_count, 0)) AS candidatesAnomalies,
             sum(CASE WHEN coalesce(i.is_reverse_proxy, false) THEN 1 ELSE 0 END) AS reverseProxies`,
-    { pid }
+    tp
   )
   const findingsRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid, source: 'vhost_sni_enum'})
+    `MATCH (v:Vulnerability {${tm}, source: 'vhost_sni_enum'})
     WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN v.hostname AS hostname,
             v.ip AS ip,
@@ -2049,7 +2084,7 @@ async function queryVhostSni(session: any, pid: string) {
      ORDER BY CASE v.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
               v.hostname
      LIMIT 50`,
-    { pid }
+    tp
   )
 
   const totalFindings = bySevRes.records.reduce((s: number, r: ReportRecord) => s + toNum(r.get('count')), 0)
@@ -2095,7 +2130,9 @@ async function queryVhostSni(session: any, pid: string) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function queryTlsx(session: any, pid: string) {
+export async function queryTlsx(session: any, pid: string, uid?: string) {
+  const tm = tenantMatch(uid)
+  const tp = tenantParams(pid, uid)
   // Reads the FIXED anchors from Phase 0 (BaseURL OR IP), or it reproduces the
   // empty-certificate-health bug this work exists to fix.
   //
@@ -2103,9 +2140,9 @@ export async function queryTlsx(session: any, pid: string) {
   // this file. Pulling every Certificate row and slicing in JS made report
   // generation scale with the certificate population -- exactly the population
   // tlsx exists to grow.
-  const ANCHORED = `MATCH (c:Certificate {project_id: $pid})
-     WHERE (:BaseURL {project_id: $pid})-[:HAS_CERTIFICATE]->(c)
-        OR (:IP {project_id: $pid})-[:HAS_CERTIFICATE]->(c)
+  const ANCHORED = `MATCH (c:Certificate {${tm}})
+     WHERE (:BaseURL {${tm}})-[:HAS_CERTIFICATE]->(c)
+        OR (:IP {${tm}})-[:HAS_CERTIFICATE]->(c)
      WITH DISTINCT c,
           CASE WHEN c.not_after IS NOT NULL
                THEN datetime(replace(c.not_after, 'Z', '+00:00'))
@@ -2126,7 +2163,7 @@ export async function queryTlsx(session: any, pid: string) {
             count(CASE WHEN mismatched THEN 1 END) AS mismatched,
             count(CASE WHEN wildcard THEN 1 END) AS wildcard,
             count(CASE WHEN expiringSoon THEN 1 END) AS expiringSoon`,
-    { pid }
+    tp
   )
   const t = totalsRes.records[0]
 
@@ -2134,7 +2171,7 @@ export async function queryTlsx(session: any, pid: string) {
     `${ANCHORED}
      WITH coalesce(c.issuer, 'Unknown') AS issuer, count(*) AS count
      RETURN issuer, count ORDER BY count DESC LIMIT 10`,
-    { pid }
+    tp
   )
 
   // Posture problems first, then a stable tiebreak so the capped list does not
@@ -2149,7 +2186,7 @@ export async function queryTlsx(session: any, pid: string) {
             expired, selfSigned, mismatched, wildcard
      ORDER BY notable DESC, coalesce(c.subject_cn, c.cert_key) ASC
      LIMIT 50`,
-    { pid }
+    tp
   )
 
   const num = (v: unknown) => toNum(v)
@@ -2185,27 +2222,29 @@ export async function queryTlsx(session: any, pid: string) {
 
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function queryWebCachePoison(session: any, pid: string) {
+async function queryWebCachePoison(session: any, pid: string, uid?: string) {
+  const tm = tenantMatch(uid)
+  const tp = tenantParams(pid, uid)
   const bySevRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid, source: 'cache_poisoning'})
+    `MATCH (v:Vulnerability {${tm}, source: 'cache_poisoning'})
     WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN v.severity AS severity, count(v) AS count ORDER BY count DESC`,
-    { pid }
+    tp
   )
   const byImpactRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid, source: 'cache_poisoning'})
+    `MATCH (v:Vulnerability {${tm}, source: 'cache_poisoning'})
     WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN coalesce(v.cache_impact, 'unknown') AS impact, count(v) AS count ORDER BY count DESC`,
-    { pid }
+    tp
   )
   const tierRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid, source: 'cache_poisoning'})
+    `MATCH (v:Vulnerability {${tm}, source: 'cache_poisoning'})
     WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN coalesce(v.confidence_tier, 'Tentative') AS tier, count(v) AS count`,
-    { pid }
+    tp
   )
   const findingsRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid, source: 'cache_poisoning'})
+    `MATCH (v:Vulnerability {${tm}, source: 'cache_poisoning'})
     WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN coalesce(v.endpoint, v.matched_at) AS endpoint,
             v.cache_header AS cacheHeader,
@@ -2221,7 +2260,7 @@ async function queryWebCachePoison(session: any, pid: string) {
      ORDER BY CASE v.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
               v.confidence DESC
      LIMIT 50`,
-    { pid }
+    tp
   )
 
   const totalFindings = bySevRes.records.reduce((s: number, r: ReportRecord) => s + toNum(r.get('count')), 0)
@@ -2258,16 +2297,18 @@ async function queryWebCachePoison(session: any, pid: string) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function queryAiSurface(session: any, pid: string) {
+async function queryAiSurface(session: any, pid: string, uid?: string) {
+  const tm = tenantMatch(uid)
+  const tp = tenantParams(pid, uid)
   // Rollup of Endpoint nodes carrying AI annotations from the resource_enum
   // classifier (lap-2). Excludes 'non-llm' (the explicit "matched nothing"
   // sentinel) since that would dilute the summary.
   const rollup = await session.run(
-    `MATCH (e:Endpoint {project_id: $pid})
+    `MATCH (e:Endpoint {${tm}})
      WHERE e.ai_interface_type IS NOT NULL AND e.ai_interface_type <> 'non-llm'
      RETURN e.ai_interface_type AS interfaceType, count(*) AS count
      ORDER BY count DESC`,
-    { pid }
+    tp
   )
   const byInterfaceType = rollup.records.map((r: { get(k: string): unknown }) => ({
     interfaceType: r.get('interfaceType') as string,
@@ -2276,22 +2317,22 @@ async function queryAiSurface(session: any, pid: string) {
   const totalAiEndpoints = byInterfaceType.reduce((s: number, x: { count: number }) => s + x.count, 0)
 
   const ragRes = await session.run(
-    `MATCH (e:Endpoint {project_id: $pid}) WHERE e.is_ai_rag_ingest = true
+    `MATCH (e:Endpoint {${tm}}) WHERE e.is_ai_rag_ingest = true
      RETURN count(e) AS n`,
-    { pid }
+    tp
   )
   const ragIngestEndpoints = ((ragRes.records[0]?.get('n') as { toNumber?: () => number })?.toNumber?.()) ?? (ragRes.records[0]?.get('n') as number) ?? 0
 
   const paramRes = await session.run(
-    `MATCH (p:Parameter {project_id: $pid}) WHERE p.is_ai_prompt_injectable = true
+    `MATCH (p:Parameter {${tm}}) WHERE p.is_ai_prompt_injectable = true
      RETURN count(p) AS n`,
-    { pid }
+    tp
   )
   const promptInjectableParams = ((paramRes.records[0]?.get('n') as { toNumber?: () => number })?.toNumber?.()) ?? (paramRes.records[0]?.get('n') as number) ?? 0
 
   // Per-endpoint detail (cap 50)
   const detail = await session.run(
-    `MATCH (b:BaseURL {project_id: $pid})-[:HAS_ENDPOINT]->(e:Endpoint)
+    `MATCH (b:BaseURL {${tm}})-[:HAS_ENDPOINT]->(e:Endpoint)
      WHERE (e.ai_interface_type IS NOT NULL AND e.ai_interface_type <> 'non-llm')
         OR e.is_ai_rag_ingest = true
      OPTIONAL MATCH (e)-[:HAS_PARAMETER]->(p:Parameter)
@@ -2301,7 +2342,7 @@ async function queryAiSurface(session: any, pid: string) {
             COALESCE(e.is_ai_rag_ingest, false) AS isRagIngest, promptParams
      ORDER BY interfaceType, baseUrl, path
      LIMIT 50`,
-    { pid }
+    tp
   )
   const findings: AiSurfaceRecord[] = detail.records.map((r: { get(k: string): unknown }) => {
     const promptParams = (r.get('promptParams') as string[]) || []
@@ -2318,31 +2359,31 @@ async function queryAiSurface(session: any, pid: string) {
   // Central ai_surface_recon lap: MCP servers, MCP tool-poisoning findings,
   // confirmed vector DBs, and model families discovered by active probing.
   const mcpRes = await session.run(
-    `MATCH (e:Endpoint {project_id: $pid}) WHERE e.ai_interface_type = 'mcp'
+    `MATCH (e:Endpoint {${tm}}) WHERE e.ai_interface_type = 'mcp'
      RETURN count(e) AS n`,
-    { pid }
+    tp
   )
   const mcpServers = ((mcpRes.records[0]?.get('n') as { toNumber?: () => number })?.toNumber?.()) ?? (mcpRes.records[0]?.get('n') as number) ?? 0
 
   const mcpVulnRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid, source: 'ai_surface_recon'})
+    `MATCH (v:Vulnerability {${tm}, source: 'ai_surface_recon'})
     WHERE ${notMuted('v')} AND ${reportCountable('v')}
      RETURN count(v) AS n`,
-    { pid }
+    tp
   )
   const mcpPoisoningFindings = ((mcpVulnRes.records[0]?.get('n') as { toNumber?: () => number })?.toNumber?.()) ?? (mcpVulnRes.records[0]?.get('n') as number) ?? 0
 
   const vdbRes = await session.run(
-    `MATCH (t:Technology {project_id: $pid, category: 'ai-vector-db'})
+    `MATCH (t:Technology {${tm}, category: 'ai-vector-db'})
      RETURN count(DISTINCT t) AS n`,
-    { pid }
+    tp
   )
   const vectorDbs = ((vdbRes.records[0]?.get('n') as { toNumber?: () => number })?.toNumber?.()) ?? (vdbRes.records[0]?.get('n') as number) ?? 0
 
   const famRes = await session.run(
-    `MATCH (e:Endpoint {project_id: $pid}) WHERE e.ai_model_family_guess IS NOT NULL
+    `MATCH (e:Endpoint {${tm}}) WHERE e.ai_model_family_guess IS NOT NULL
      RETURN DISTINCT e.ai_model_family_guess AS fam`,
-    { pid }
+    tp
   )
   const modelFamilies = famRes.records.map((r: { get(k: string): unknown }) => r.get('fam') as string).filter(Boolean)
 
@@ -2356,7 +2397,7 @@ async function queryAiSurface(session: any, pid: string) {
     return o.toNumber?.() ?? o.low ?? null
   }
   const attackRes = await session.run(
-    `MATCH (v:Vulnerability {project_id: $pid})
+    `MATCH (v:Vulnerability {${tm}})
      WHERE v.source IN ['garak', 'pyrit', 'giskard', 'promptfoo'] AND ${notMuted('v')} AND ${reportCountable('v')}
      OPTIONAL MATCH (parent)-[:HAS_VULNERABILITY]->(v)
      WITH v, parent
@@ -2369,7 +2410,7 @@ async function queryAiSurface(session: any, pid: string) {
             v.updated_at AS updatedAt
      ORDER BY v.ai_asr DESC
      LIMIT 2000`,
-    { pid }
+    tp
   )
   const rawAttack: RawAttackRow[] = attackRes.records.map((r: { get(k: string): unknown }) => ({
     source: (r.get('source') as string) || '',
@@ -2406,16 +2447,18 @@ async function queryAiSurface(session: any, pid: string) {
 
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function queryOtx(session: any, pid: string) {
+async function queryOtx(session: any, pid: string, uid?: string) {
+  const tm = tenantMatch(uid)
+  const tp = tenantParams(pid, uid)
   const pulseRes = await session.run(
-    `MATCH (ip:IP {project_id: $pid})-[:APPEARS_IN_PULSE]->(tp:ThreatPulse)
+    `MATCH (ip:IP {${tm}})-[:APPEARS_IN_PULSE]->(tp:ThreatPulse)
      RETURN tp.name AS name, tp.adversary AS adversary,
             tp.malware_families AS malwareFamilies,
             tp.attack_ids AS attackIds, tp.tlp AS tlp,
             tp.targeted_countries AS targetedCountries,
             ip.address AS indicator
      UNION
-     MATCH (d:Domain {project_id: $pid})-[:APPEARS_IN_PULSE]->(tp:ThreatPulse)
+     MATCH (d:Domain {${tm}})-[:APPEARS_IN_PULSE]->(tp:ThreatPulse)
      RETURN tp.name AS name, tp.adversary AS adversary,
             tp.malware_families AS malwareFamilies,
             tp.attack_ids AS attackIds, tp.tlp AS tlp,
@@ -2423,26 +2466,26 @@ async function queryOtx(session: any, pid: string) {
             d.domain AS indicator
      ORDER BY name
      LIMIT 30`,
-    { pid }
+    tp
   )
   const malwareRes = await session.run(
-    `MATCH (ip:IP {project_id: $pid})-[:ASSOCIATED_WITH_MALWARE]->(m:Malware)
+    `MATCH (ip:IP {${tm}})-[:ASSOCIATED_WITH_MALWARE]->(m:Malware)
      RETURN m.hash AS hash, m.hash_type AS hashType,
             m.file_type AS fileType, m.file_name AS fileName,
             m.source AS source, ip.address AS indicator
      UNION
-     MATCH (d:Domain {project_id: $pid})-[:ASSOCIATED_WITH_MALWARE]->(m:Malware)
+     MATCH (d:Domain {${tm}})-[:ASSOCIATED_WITH_MALWARE]->(m:Malware)
      RETURN m.hash AS hash, m.hash_type AS hashType,
             m.file_type AS fileType, m.file_name AS fileName,
             m.source AS source, d.domain AS indicator
      LIMIT 30`,
-    { pid }
+    tp
   )
   const enrichedRes = await session.run(
-    `MATCH (ip:IP {project_id: $pid})
+    `MATCH (ip:IP {${tm}})
      WHERE ip.otx_enriched = true
      RETURN count(ip) AS enrichedIps`,
-    { pid }
+    tp
   )
 
   const pulses = pulseRes.records.map((r: ReportRecord) => ({

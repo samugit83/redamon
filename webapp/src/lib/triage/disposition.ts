@@ -295,14 +295,16 @@ function toCount(val: unknown): number {
  * never zeros, when the query fails: "0 reportable" would be a claim.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function queryDispositionSummary(session: any, pid: string): Promise<DispositionSummary | null> {
+export async function queryDispositionSummary(session: any, pid: string, uid?: string): Promise<DispositionSummary | null> {
   try {
+    const tenantWhere = uid ? 'n.user_id = $uid AND n.project_id = $pid' : 'n.project_id = $pid'
+    const params = uid ? { pid, uid } : { pid }
     const res = await session.run(
       `MATCH (n:${MUTEABLE_FINDING_LABELS.join('|')})
-       WHERE n.project_id = $pid AND ${notMuted('n')} AND ${agentCandidateConfirmedOrNA('n')}
+       WHERE ${tenantWhere} AND ${notMuted('n')} AND ${agentCandidateConfirmedOrNA('n')}
        WITH ${dispositionCypher('n')} AS disposition, ${blockerCypher('n')} AS blocker
        RETURN disposition, blocker, count(*) AS total`,
-      { pid }
+      params
     )
     const summary: DispositionSummary = { reportable: 0, candidate: 0, info: 0, excluded: 0, blockers: [] }
     const byBlocker = new Map<string, number>()
