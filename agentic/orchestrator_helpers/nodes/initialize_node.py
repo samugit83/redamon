@@ -585,6 +585,10 @@ async def _initialize(state: AgentState, config, *, llm, neo4j_creds) -> dict:
                 target_cves=target_cves,
             )
 
+            prior_context = await _load_prior_context(
+                state, neo4j_creds, tenant_id, project_id, session_id, attack_path,
+            )
+
             # CRITICAL: Preserve ALL context (user preference)
             return {
                 "conversation_objectives": objectives,
@@ -613,7 +617,7 @@ async def _initialize(state: AgentState, config, *, llm, neo4j_creds) -> dict:
                 "chain_decisions_memory": state.get("chain_decisions_memory", []),
                 "chain_waves_memory": state.get("chain_waves_memory", []),
                 "_last_chain_step_id": state.get("_last_chain_step_id"),
-                "_prior_chain_context": state.get("_prior_chain_context"),
+                "_prior_chain_context": prior_context,
             }
 
     # Otherwise, continue with current objective
@@ -665,7 +669,16 @@ async def _initialize(state: AgentState, config, *, llm, neo4j_creds) -> dict:
         "_prior_chain_context": state.get("_prior_chain_context"),
     }
 
-    # Load prior chain context on first invocation (empty trace)
+    updates["_prior_chain_context"] = await _load_prior_context(
+        state, neo4j_creds, tenant_id, project_id, session_id,
+        state.get("attack_path_type"),
+    )
+
+    return updates
+
+
+async def _load_prior_context(state, neo4j_creds, tenant_id, project_id, session_id, attack_path):
+    target = state.get("target_info") or {}
     if not state.get("execution_trace"):
         try:
             # Off the event loop and bounded: this read runs before the first
@@ -674,14 +687,16 @@ async def _initialize(state: AgentState, config, *, llm, neo4j_creds) -> dict:
             prior_chains = await asyncio.wait_for(
                 run_neo4j_read(
                     chain_graph.query_prior_chains,
-                    neo4j_uri, neo4j_user, neo4j_password,
+                    *neo4j_creds,
                     tenant_id, project_id, session_id,
+                    current_tech=set(target.get("technologies") or []) | set(target.get("services") or []),
+                    current_attack_path=attack_path,
                 ),
                 timeout=PRIOR_CHAINS_WAIT_S,
             )
             if prior_chains:
-                updates["_prior_chain_context"] = format_prior_chains(prior_chains)
+                return format_prior_chains(prior_chains)
         except Exception as exc:
             logger.warning("Failed to load prior chain context: %s", exc)
 
-    return updates
+    return state.get("_prior_chain_context")

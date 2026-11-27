@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Prior attack chains ranked by shared technologies/services and attack path, with success weighting and a 30-day age half-life (#51). Reads remain tenant/project scoped and fall back to recency without a signal.
+
 ## [7.10.1] - 2026-11-25
 
 ### Added
