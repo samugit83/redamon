@@ -125,7 +125,7 @@ async function deleteTraffic(projectId: string, body: { ids: string[] } | { filt
   return fetchJson<{ deleted: number }>(`/api/traffic/${projectId}`, {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify('filter' in body && Object.keys(body.filter).length === 0 ? { all: true } : body),
   }, 'Delete failed')
 }
 

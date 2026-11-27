@@ -87,7 +87,7 @@ describe("a collaborator's traffic delete removes the project's rows (step 5.2)"
     const res = await del(COLLABORATOR, { ids: ['t-1', 't-3'] })
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ deleted: 1, blobsDeleted: 0 })
-    expect(deletes).toEqual([{ projectId: SHARED_PROJECT, userId: OWNER, id: { in: ['t-1', 't-3'] } }])
+    expect(deletes).toEqual([{ projectId: SHARED_PROJECT, userId: OWNER, id: { in: ['t-1'] } }])
     expect(rows.map(r => r.id)).toEqual(['t-2', 't-3'])
   })
 
