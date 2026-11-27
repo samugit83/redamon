@@ -35,6 +35,26 @@ export interface DrawerProps {
   onResizeEnd?: (widthPx: number) => void
 }
 
+interface ActiveDrag {
+  pointerId: number
+  startClientX: number
+  startWidth: number
+  prevUserSelect: string
+  prevCursor: string
+}
+
+function clampWidth(value: number, minWidth: number, maxWidth: number): number {
+  return Math.min(Math.max(value, minWidth), maxWidth)
+}
+
+function parseWidthPx(width: string, minWidth: number, maxWidth: number): number {
+  const match = width.trim().match(/^(\d+(?:\.\d+)?)px$/i)
+  if (!match) return clampWidth(minWidth, minWidth, maxWidth)
+  const parsed = Number.parseFloat(match[1])
+  if (!Number.isFinite(parsed)) return clampWidth(minWidth, minWidth, maxWidth)
+  return clampWidth(parsed, minWidth, maxWidth)
+}
+
 export function Drawer({
   isOpen,
   onClose,
@@ -56,61 +76,172 @@ export function Drawer({
   const drawerRef = useRef<HTMLDivElement | null>(null)
   // AI Navigator steps aside while this drawer is open (components/navigator/obstacles.ts).
   useNavigatorObstacle(drawerRef, isOpen)
+
+  const parsedPropWidth = parseWidthPx(width, minWidth, maxWidth)
+  const [overrideWidth, setOverrideWidth] = useState<{ propWidth: number; value: number } | null>(null)
+  const hasLocalOverride = overrideWidth !== null && overrideWidth.propWidth === parsedPropWidth
+  const currentWidth = hasLocalOverride
+    ? clampWidth(overrideWidth.value, minWidth, maxWidth)
+    : parsedPropWidth
+
   const [isResizing, setIsResizing] = useState(false)
+  const currentWidthRef = useRef<number>(currentWidth)
+  const activeDragRef = useRef<ActiveDrag | null>(null)
   const lastWidthRef = useRef<number | null>(null)
 
-  const handleResizeStart = useCallback(
-    (e: React.MouseEvent) => {
-      if (!resizable) return
-      e.preventDefault()
-      lastWidthRef.current = null
-      setIsResizing(true)
-    },
-    [resizable],
-  )
+  useEffect(() => {
+    currentWidthRef.current = currentWidth
+  }, [currentWidth])
 
   useEffect(() => {
-    if (!isResizing) return
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const el = drawerRef.current
-      if (!el) return
-      const rect = el.getBoundingClientRect()
-      const raw = position === 'left' ? e.clientX - rect.left : rect.right - e.clientX
-      const clamped = Math.min(Math.max(raw, minWidth), maxWidth)
-      lastWidthRef.current = clamped
-      onResize?.(clamped)
+    if (!isOpen && activeDragRef.current) {
+      const drag = activeDragRef.current
+      document.body.style.userSelect = drag.prevUserSelect
+      document.body.style.cursor = drag.prevCursor
+      activeDragRef.current = null
+      lastWidthRef.current = null
     }
+  }, [isOpen])
 
-    const handleMouseUp = () => {
-      setIsResizing(false)
-      if (lastWidthRef.current != null) {
-        onResizeEnd?.(lastWidthRef.current)
+  useEffect(() => {
+    return () => {
+      const drag = activeDragRef.current
+      if (drag) {
+        document.body.style.userSelect = drag.prevUserSelect
+        document.body.style.cursor = drag.prevCursor
+        activeDragRef.current = null
       }
     }
+  }, [])
 
-    document.addEventListener('mousemove', handleMouseMove)
-    document.addEventListener('mouseup', handleMouseUp)
-    const prevUserSelect = document.body.style.userSelect
-    const prevCursor = document.body.style.cursor
-    document.body.style.userSelect = 'none'
-    document.body.style.cursor = 'col-resize'
-
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove)
-      document.removeEventListener('mouseup', handleMouseUp)
-      document.body.style.userSelect = prevUserSelect
-      document.body.style.cursor = prevCursor
+  const getMeasuredWidth = useCallback(() => {
+    const rectWidth = drawerRef.current?.getBoundingClientRect().width ?? 0
+    if (rectWidth > 0) {
+      return clampWidth(rectWidth, minWidth, maxWidth)
     }
-  }, [isResizing, position, minWidth, maxWidth, onResize, onResizeEnd])
+    return currentWidthRef.current
+  }, [minWidth, maxWidth])
+
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!resizable) return
+      if (e.pointerType === 'mouse' && e.button !== 0) return
+
+      e.preventDefault()
+      e.currentTarget.setPointerCapture?.(e.pointerId)
+
+      const startWidth = getMeasuredWidth()
+      activeDragRef.current = {
+        pointerId: e.pointerId ?? 0,
+        startClientX: e.clientX,
+        startWidth,
+        prevUserSelect: document.body.style.userSelect,
+        prevCursor: document.body.style.cursor,
+      }
+      lastWidthRef.current = null
+      setIsResizing(true)
+      document.body.style.userSelect = 'none'
+      document.body.style.cursor = 'col-resize'
+    },
+    [resizable, getMeasuredWidth]
+  )
+
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const drag = activeDragRef.current
+      if (!drag) return
+      if (e.pointerId !== undefined && drag.pointerId !== e.pointerId) return
+
+      const el = drawerRef.current
+      if (!el) return
+
+      const rect = el.getBoundingClientRect()
+      const raw =
+        rect.width > 0
+          ? position === 'left'
+            ? e.clientX - rect.left
+            : rect.right - e.clientX
+          : position === 'left'
+            ? drag.startWidth + (e.clientX - drag.startClientX)
+            : drag.startWidth - (e.clientX - drag.startClientX)
+
+      const clamped = clampWidth(raw, minWidth, maxWidth)
+      lastWidthRef.current = clamped
+      currentWidthRef.current = clamped
+      setOverrideWidth({ propWidth: parsedPropWidth, value: clamped })
+      onResize?.(clamped)
+    },
+    [position, minWidth, maxWidth, parsedPropWidth, onResize]
+  )
+
+  const finishResize = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const drag = activeDragRef.current
+      if (!drag) return
+      if (e.pointerId !== undefined && drag.pointerId !== e.pointerId) return
+
+      activeDragRef.current = null
+      document.body.style.userSelect = drag.prevUserSelect
+      document.body.style.cursor = drag.prevCursor
+
+      if (e.currentTarget.releasePointerCapture) {
+        try {
+          if (!e.currentTarget.hasPointerCapture || e.currentTarget.hasPointerCapture(drag.pointerId)) {
+            e.currentTarget.releasePointerCapture(drag.pointerId)
+          }
+        } catch {
+          // Capture may already be released on pointerup/cancel.
+        }
+      }
+
+      setIsResizing(false)
+      const finalWidth = lastWidthRef.current
+      lastWidthRef.current = null
+      if (finalWidth != null) {
+        onResizeEnd?.(finalWidth)
+      }
+    },
+    [onResizeEnd]
+  )
+
+  const handleResizeKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (!resizable) return
+
+      const step = e.shiftKey ? 64 : 16
+      const baseWidth = getMeasuredWidth()
+      let next: number | null = null
+
+      if (e.key === 'ArrowRight') {
+        next = baseWidth + (position === 'left' ? step : -step)
+      } else if (e.key === 'ArrowLeft') {
+        next = baseWidth + (position === 'left' ? -step : step)
+      } else if (e.key === 'Home') {
+        next = minWidth
+      } else if (e.key === 'End') {
+        next = maxWidth
+      }
+
+      if (next === null) return
+
+      e.preventDefault()
+      const clamped = clampWidth(next, minWidth, maxWidth)
+      currentWidthRef.current = clamped
+      setOverrideWidth({ propWidth: parsedPropWidth, value: clamped })
+      onResize?.(clamped)
+      onResizeEnd?.(clamped)
+    },
+    [resizable, getMeasuredWidth, position, minWidth, maxWidth, parsedPropWidth, onResize, onResizeEnd]
+  )
 
   const handleClass = position === 'left' ? styles.resizeHandleRight : styles.resizeHandleLeft
+  const activelyResizing = isResizing && isOpen && resizable
 
   return (
     <div
       ref={drawerRef}
-      className={`${styles.drawer} ${positionClass} ${modeClass} ${isOpen ? styles.drawerOpen : ''} ${isResizing ? styles.drawerResizing : ''} ${className}`}
-      style={{ '--drawer-custom-width': width } as React.CSSProperties}
+      className={`${styles.drawer} ${positionClass} ${modeClass} ${isOpen ? styles.drawerOpen : ''} ${activelyResizing ? styles.drawerResizing : ''} ${className}`}
+      style={{ '--drawer-custom-width': hasLocalOverride ? `${currentWidth}px` : width } as React.CSSProperties}
     >
       {title && (
         <div className={styles.drawerHeader}>
@@ -119,6 +250,7 @@ export function Drawer({
             <div className={styles.drawerHeaderActions}>{headerActions}</div>
           )}
           <button
+            type="button"
             className={styles.drawerClose}
             onClick={onClose}
             aria-label="Close drawer"
@@ -130,11 +262,20 @@ export function Drawer({
       <div className={styles.drawerContent}>{children}</div>
       {resizable && isOpen && (
         <div
-          className={`${styles.resizeHandle} ${handleClass} ${isResizing ? styles.resizeHandleActive : ''}`}
-          onMouseDown={handleResizeStart}
+          className={`${styles.resizeHandle} ${handleClass} ${activelyResizing ? styles.resizeHandleActive : ''}`}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={finishResize}
+          onPointerCancel={finishResize}
+          onLostPointerCapture={finishResize}
+          onKeyDown={handleResizeKeyDown}
           role="separator"
           aria-orientation="vertical"
           aria-label="Resize drawer"
+          tabIndex={0}
+          aria-valuemin={minWidth}
+          aria-valuemax={maxWidth}
+          aria-valuenow={Math.round(currentWidth)}
         />
       )}
     </div>

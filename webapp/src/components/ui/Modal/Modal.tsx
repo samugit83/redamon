@@ -1,9 +1,119 @@
 'use client'
 
-import { useEffect, useCallback, useId, useRef, ReactNode, KeyboardEvent } from 'react'
+import { createContext, useContext, useEffect, useCallback, useId, useRef, ReactNode, KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import styles from './Modal.module.css'
+
+interface OpenModalEntry {
+  id: symbol
+  depth: number
+  seq: number
+}
+
+const ModalDepthContext = createContext(0)
+const openModalStack: OpenModalEntry[] = []
+let nextModalSeq = 0
+const inertBeforeModal = new Map<HTMLElement, boolean>()
+let savedBodyOverflow: string | null = null
+
+const INERT_SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'TEMPLATE', 'LINK', 'NOSCRIPT'])
+const LIVE_OR_OVERLAY_SELECTOR =
+  '[role="alert"], [role="status"], [aria-live], [role="tooltip"], [role="menu"]'
+
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'area[href]',
+  'button:not([disabled])',
+  'input:not([disabled]):not([type="hidden"])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  'iframe',
+  'object',
+  'embed',
+  '[contenteditable="true"]',
+  '[tabindex]:not([tabindex="-1"])',
+].join(', ')
+
+function isTopmost(id: symbol): boolean {
+  if (openModalStack.length === 0) return false
+  // React mounts nested child effects before parents, so deeper JSX nesting wins ties over mount order.
+  let top = openModalStack[0]
+  for (let i = 1; i < openModalStack.length; i++) {
+    const cur = openModalStack[i]
+    if (cur.depth > top.depth || (cur.depth === top.depth && cur.seq > top.seq)) {
+      top = cur
+    }
+  }
+  return top.id === id
+}
+
+function lockBackground(): void {
+  savedBodyOverflow = document.body.style.overflow
+  document.body.style.overflow = 'hidden'
+
+  for (const child of Array.from(document.body.children)) {
+    if (!(child instanceof HTMLElement)) continue
+    if (child.matches('[data-modal-overlay="true"]')) continue
+    if (INERT_SKIP_TAGS.has(child.tagName)) continue
+    if (child.matches(LIVE_OR_OVERLAY_SELECTOR)) continue
+
+    const prevInert = Boolean(child.inert || child.hasAttribute('inert'))
+    inertBeforeModal.set(child, prevInert)
+    child.inert = true
+    child.setAttribute('inert', '')
+  }
+}
+
+function unlockBackground(): void {
+  document.body.style.overflow = savedBodyOverflow ?? ''
+  savedBodyOverflow = null
+
+  inertBeforeModal.forEach((prev, el) => {
+    el.inert = prev
+    if (!prev) {
+      el.removeAttribute('inert')
+    }
+  })
+  inertBeforeModal.clear()
+}
+
+function getFocusableElements(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter((el) => {
+    if (el.hidden || el.hasAttribute('hidden')) return false
+    if (el.closest('[inert]')) return false
+    const style = window.getComputedStyle(el)
+    if (style.display === 'none' || style.visibility === 'hidden') return false
+    return true
+  })
+}
+
+function handleModalTabKey(
+  e: { shiftKey: boolean; preventDefault: () => void },
+  modalEl: HTMLElement | null
+): void {
+  if (!modalEl) return
+  const focusables = getFocusableElements(modalEl)
+  if (focusables.length === 0) {
+    e.preventDefault()
+    modalEl.focus()
+    return
+  }
+
+  const first = focusables[0]
+  const last = focusables[focusables.length - 1]
+  const active = document.activeElement
+
+  if (e.shiftKey) {
+    if (active === first || active === modalEl || !modalEl.contains(active)) {
+      e.preventDefault()
+      last.focus()
+    }
+  } else if (active === last || !modalEl.contains(active)) {
+    e.preventDefault()
+    first.focus()
+  }
+}
 
 interface ModalProps {
   /** Whether the modal is open */
@@ -46,16 +156,42 @@ export function Modal({
   // Per instance: modals can be open together (an alert over a dialog), and a shared id
   // would name every one of them after the first title in the page.
   const titleId = useId()
+  const depth = useContext(ModalDepthContext) + 1
+  const overlayRef = useRef<HTMLDivElement>(null)
   const modalRef = useRef<HTMLDivElement>(null)
+  const modalIdRef = useRef<symbol | null>(null)
   const previousActiveElement = useRef<HTMLElement | null>(null)
   const pressStartedOnOverlay = useRef(false)
+  const onCloseRef = useRef(onClose)
+  const closeOnEscapeRef = useRef(closeOnEscape)
+  const depthRef = useRef(depth)
 
-  // Handle escape key
+  useEffect(() => {
+    onCloseRef.current = onClose
+    closeOnEscapeRef.current = closeOnEscape
+    depthRef.current = depth
+  }, [onClose, closeOnEscape, depth])
+
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
-      if (closeOnEscape && e.key === 'Escape') {
-        e.preventDefault()
-        onClose()
+      // React bubbles portal synthetic events up the JSX tree; ignore events from nested portals.
+      if (e.target instanceof Node && overlayRef.current && !overlayRef.current.contains(e.target)) {
+        return
+      }
+      const modalId = modalIdRef.current
+      if (!modalId || !isTopmost(modalId) || e.defaultPrevented) return
+
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        if (closeOnEscape) {
+          e.preventDefault()
+          onClose()
+        }
+        return
+      }
+
+      if (e.key === 'Tab') {
+        handleModalTabKey(e, modalRef.current)
       }
     },
     [closeOnEscape, onClose]
@@ -81,26 +217,60 @@ export function Modal({
     [closeOnOverlayClick, onClose]
   )
 
-  // Focus trap and body scroll lock
+  // Focus trap, modal stack coordination, and body scroll/inert lock
   useEffect(() => {
-    if (isOpen) {
-      // Store the currently focused element
-      previousActiveElement.current = document.activeElement as HTMLElement
+    if (!isOpen) return
 
-      // An autoFocus field inside has already taken focus by now; keep it there.
-      if (!modalRef.current?.contains(document.activeElement)) {
-        modalRef.current?.focus()
+    if (!modalIdRef.current) {
+      modalIdRef.current = Symbol('modal')
+    }
+    const modalId = modalIdRef.current
+
+    previousActiveElement.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null
+
+    openModalStack.push({ id: modalId, depth: depthRef.current, seq: ++nextModalSeq })
+    if (openModalStack.length === 1) {
+      lockBackground()
+    }
+
+    // An autoFocus field inside has already taken focus by now; keep it there.
+    if (!modalRef.current?.contains(document.activeElement)) {
+      modalRef.current?.focus()
+    }
+
+    const handleDocumentKeyDown = (e: globalThis.KeyboardEvent) => {
+      if (!isTopmost(modalId) || e.defaultPrevented) return
+      if (e.target instanceof Node && overlayRef.current?.contains(e.target)) return
+
+      if (e.key === 'Escape') {
+        if (closeOnEscapeRef.current) {
+          e.preventDefault()
+          onCloseRef.current()
+        }
+        return
       }
 
-      // Lock body scroll
-      document.body.style.overflow = 'hidden'
+      if (e.key === 'Tab') {
+        handleModalTabKey(e, modalRef.current)
+      }
+    }
 
-      return () => {
-        // Restore body scroll
-        document.body.style.overflow = ''
+    document.addEventListener('keydown', handleDocumentKeyDown)
 
-        // Restore focus
-        previousActiveElement.current?.focus()
+    return () => {
+      document.removeEventListener('keydown', handleDocumentKeyDown)
+
+      const idx = openModalStack.findIndex((entry) => entry.id === modalId)
+      if (idx !== -1) {
+        openModalStack.splice(idx, 1)
+        if (openModalStack.length === 0) {
+          unlockBackground()
+        }
+      }
+
+      if (previousActiveElement.current?.isConnected) {
+        previousActiveElement.current.focus()
       }
     }
   }, [isOpen])
@@ -117,6 +287,8 @@ export function Modal({
 
   const modalContent = (
     <div
+      ref={overlayRef}
+      data-modal-overlay="true"
       className={styles.overlay}
       onMouseDown={handleOverlayMouseDown}
       onClick={handleOverlayClick}
@@ -161,7 +333,10 @@ export function Modal({
 
   // Render in portal
   if (typeof document !== 'undefined') {
-    return createPortal(modalContent, document.body)
+    return createPortal(
+      <ModalDepthContext.Provider value={depth}>{modalContent}</ModalDepthContext.Provider>,
+      document.body
+    )
   }
 
   return null

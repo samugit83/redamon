@@ -73,6 +73,7 @@ export default function TrafficPage() {
 
   const [filters, setFilters] = useState<TrafficFilters>(DEFAULT_FILTERS)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [drawerWidth, setDrawerWidth] = useState(620)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [settingsOpen, setSettingsOpen] = useState(false)
   // Bumped when the settings dialog closes: its matrix may have switched this project's capture,
@@ -449,8 +450,9 @@ export default function TrafficPage() {
         onClose={() => setSelectedId(null)}
         position="right"
         mode="overlay"
-        width="620px"
+        width={`${drawerWidth}px`}
         resizable
+        onResize={setDrawerWidth}
         title="Transaction detail"
       >
         {detail.isLoading && <div className={styles.loading}>Loading…</div>}
