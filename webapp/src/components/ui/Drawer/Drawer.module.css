@@ -45,8 +45,16 @@
   opacity: 0.6;
 }
 
+.resizeHandle:focus-visible {
+  background: var(--border-focus);
+  opacity: 0.85;
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+}
+
 /* Push mode - uses width transition */
 .drawerPush {
+  position: relative;
   width: 0;
 }
 
