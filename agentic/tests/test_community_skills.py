@@ -40,6 +40,8 @@ _REPO_ROOT = _AGENTIC_DIR.parent
 # (overview paragraph, "When to Classify Here", phase-numbered Workflow,
 #  Reporting Guidelines, Important Notes, phase-transition cue).
 _CANONICAL_SKILLS = {
+    "local_privilege_escalation",
+    "active_directory_attack",
     "ssti",
     "xxe",
     "idor_bola_exploitation",
