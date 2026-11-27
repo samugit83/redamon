@@ -53,7 +53,7 @@ export default function ReportsPage() {
   const toast = useToast()
   const {
     reports, isLoading, error: listError, generate, isGenerating, generateError,
-    deleteReportAsync, isDeleting,
+    deleteReportAsync, isDeleting, hasNextPage, loadMore, isLoadingMore,
   } = useAllReports()
 
   const { data: projects } = useProjects(userId || undefined)
@@ -219,6 +219,7 @@ export default function ReportsPage() {
         </div>
       ) : (
         <div className={styles.list}>
+          {listError && <div className={styles.error} role="alert">{errorMessage(listError, 'Failed to fetch reports')}</div>}
           {reports.map(report => {
             const deleteRefusal = refusalCheck('reports:delete', accessOf(report.projectId))?.text ?? null
             return (
@@ -330,6 +331,11 @@ export default function ReportsPage() {
             </div>
             )
           })}
+          {hasNextPage && (
+            <button className={styles.generateBtn} onClick={() => loadMore()} disabled={isLoadingMore}>
+              {isLoadingMore ? 'Loading...' : 'Load more'}
+            </button>
+          )}
         </div>
       )}
     </div>
