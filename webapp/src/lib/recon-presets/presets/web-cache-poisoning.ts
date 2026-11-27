@@ -167,7 +167,6 @@ Use \`Web App Pentester\` or \`Full Active Scan\` if you want WCP as one tool am
     resourceEnumAiPathClassifierEnabled: false,
     resourceEnumAiRagPathFlagEnabled: false,
     resourceEnumAiParamInjectableFlagEnabled: false,
-    resourceEnumAiToolArgPathEnabled: false,
     httpProbeAiHeaderScanEnabled: false,
     httpProbeAiFaviconHashEnabled: false,
     httpProbeAiTitleDetectionEnabled: false,

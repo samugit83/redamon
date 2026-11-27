@@ -76,7 +76,6 @@ determinism:
   resourceEnumAiPathClassifierEnabled: false
   resourceEnumAiRagPathFlagEnabled: false
   resourceEnumAiParamInjectableFlagEnabled: false
-  resourceEnumAiToolArgPathEnabled: false
   resourceEnumJevToolHealth: false
   domainReconAiTxtHintEnabled: false
   domainReconAiNsHintEnabled: false

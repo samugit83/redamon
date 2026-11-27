@@ -428,6 +428,7 @@ describe('T16 exactly the documented columns are closed', () => {
     jsReconStandaloneCrawlDepth: 'internal',
     jsReconStandaloneCrawlScope: 'internal',
     aiSurfaceReconCacheEnabled: 'internal',
+    resourceEnumAiToolArgPathEnabled: 'internal',
   }
 
   test('the never set is exactly this list, plus the engagement record', () => {

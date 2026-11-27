@@ -37,6 +37,7 @@ const RETIRED = {
   jsReconStandaloneCrawlDepth: 3,
   jsReconStandaloneCrawlScope: 'subdomain',
   aiSurfaceReconCacheEnabled: true,
+  resourceEnumAiToolArgPathEnabled: true,
 }
 
 async function bundle(project: Record<string, unknown>): Promise<NextRequest> {

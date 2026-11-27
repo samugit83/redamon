@@ -46,7 +46,6 @@ ON = {
     "RESOURCE_ENUM_AI_PATH_CLASSIFIER_ENABLED": True,
     "RESOURCE_ENUM_AI_RAG_PATH_FLAG_ENABLED": True,
     "RESOURCE_ENUM_AI_PARAM_INJECTABLE_FLAG_ENABLED": True,
-    "RESOURCE_ENUM_AI_TOOL_ARG_PATH_ENABLED": True,
 }
 
 
@@ -715,23 +714,23 @@ def test_every_cited_vendor_pattern_fires_with_expected_enum():
 # ===========================================================================
 
 def test_settings_default_settings_has_all_5_keys():
-    """DEFAULT_SETTINGS must contain all 5 keys the annotator reads, all True."""
+    """DEFAULT_SETTINGS must contain the 4 active keys the annotator reads, all True."""
     from recon.project_settings import DEFAULT_SETTINGS
     for key in (
         "RESOURCE_ENUM_AI_CLASSIFIER_ENABLED",
         "RESOURCE_ENUM_AI_PATH_CLASSIFIER_ENABLED",
         "RESOURCE_ENUM_AI_RAG_PATH_FLAG_ENABLED",
         "RESOURCE_ENUM_AI_PARAM_INJECTABLE_FLAG_ENABLED",
-        "RESOURCE_ENUM_AI_TOOL_ARG_PATH_ENABLED",
     ):
         assert key in DEFAULT_SETTINGS, f"missing default: {key}"
         assert DEFAULT_SETTINGS[key] is True, f"default should be True, got {DEFAULT_SETTINGS[key]!r}"
+    assert "RESOURCE_ENUM_AI_TOOL_ARG_PATH_ENABLED" not in DEFAULT_SETTINGS
 
 
 def test_settings_fetch_mapping_lines_exist_in_source():
     """fetch_project_settings is an HTTP-fetching function — too heavy to unit
     test. Instead, verify the source contains the camelCase→SCREAMING_SNAKE_CASE
-    mapping lines for all 5 keys. Regression guard against accidental
+    mapping lines for all 4 active keys. Regression guard against accidental
     deletion of the mapping rows."""
     source = (PROJECT_ROOT / "recon" / "project_settings.py").read_text()
     mappings = [
@@ -739,11 +738,11 @@ def test_settings_fetch_mapping_lines_exist_in_source():
         ("resourceEnumAiPathClassifierEnabled",     "RESOURCE_ENUM_AI_PATH_CLASSIFIER_ENABLED"),
         ("resourceEnumAiRagPathFlagEnabled",        "RESOURCE_ENUM_AI_RAG_PATH_FLAG_ENABLED"),
         ("resourceEnumAiParamInjectableFlagEnabled", "RESOURCE_ENUM_AI_PARAM_INJECTABLE_FLAG_ENABLED"),
-        ("resourceEnumAiToolArgPathEnabled",        "RESOURCE_ENUM_AI_TOOL_ARG_PATH_ENABLED"),
     ]
     for camel, snake in mappings:
         assert camel in source, f"camelCase field {camel!r} missing from project_settings.py"
         assert snake in source, f"SCREAMING_SNAKE_CASE key {snake!r} missing from project_settings.py"
+    assert "RESOURCE_ENUM_AI_TOOL_ARG_PATH_ENABLED" not in source
 
 
 def test_prisma_schema_has_all_5_columns():

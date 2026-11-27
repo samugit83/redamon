@@ -3,4 +3,4 @@
 //
 // SHA-256 of the built registry.json. The RoE parse route refuses an agent
 // whose prompt was generated from any other registry.
-export const REGISTRY_DIGEST = '16f5c0b4c65f0239f89fe06fc96c37418e83f2d56a4c2fe0dd219dfff84f069e'
+export const REGISTRY_DIGEST = '832f77b5e0fef742dacaa2110608c4903d6baa828dd7579944f3ec18913c5fd0'

@@ -3,13 +3,24 @@ Unit tests for WPScan API token integration.
 Validates the full key lifecycle: DB schema, API route, settings UI,
 Tool Matrix, chat drawer, tool cards, executor injection, and orchestrator.
 """
-import pytest
-import re
+import asyncio
 import os
-import ast
+import re
+import sys
 import unittest
+from subprocess import CompletedProcess
+from unittest import mock
 
 BASE_DIR = os.path.join(os.path.dirname(__file__), '..')
+for _extra in (
+    os.path.join(BASE_DIR, 'agentic'),
+    os.path.join(BASE_DIR, 'agentic', 'tests'),
+    os.path.join(BASE_DIR, 'mcp', 'servers'),
+):
+    if _extra not in sys.path:
+        sys.path.insert(0, _extra)
+
+import pytest
 
 
 class TestPrismaSchemaWPScanToken(unittest.TestCase):
@@ -217,118 +228,164 @@ class TestToolExecutionCard(unittest.TestCase):
 
 
 class TestExecutorTokenInjection(unittest.TestCase):
-    """Verify PhaseAwareToolExecutor injects WPScan API token."""
+    """Verify PhaseAwareToolExecutor injects WPScan API token safely via api_token kwarg."""
 
-    def setUp(self):
-        path = os.path.join(BASE_DIR, 'agentic', 'tools.py')
-        with open(path) as f:
-            self.content = f.read()
+    def _executor(self, fallback_token=""):
+        from one_sandbox import route_to
+        from tools import PhaseAwareToolExecutor
 
-    def test_set_wpscan_api_token_method_exists(self):
-        """set_wpscan_api_token method must exist on PhaseAwareToolExecutor."""
-        self.assertIn('def set_wpscan_api_token(self, token: str)', self.content)
+        ex = PhaseAwareToolExecutor(mcp_manager=mock.MagicMock(), graph_tool=None)
+        tool = mock.AsyncMock()
+        tool.name = "execute_wpscan"
+        tool.ainvoke.return_value = "ok"
+        route_to(self, {"execute_wpscan": tool})
+        if fallback_token:
+            ex.set_wpscan_api_token(fallback_token)
+        return ex, tool
 
-    def test_execute_wpscan_elif_branch(self):
-        """execute() must have an elif branch for execute_wpscan."""
-        self.assertIn('elif tool_name == "execute_wpscan":', self.content)
+    def _run(self, ex, tool_args, user_settings=None):
+        import project_settings
 
-    def test_token_injection_checks_existing(self):
-        """Token injection must not override user-provided --api-token."""
-        self.assertIn("'--api-token' not in args", self.content)
+        async def _invoke():
+            ctx_token = None
+            if user_settings is not None:
+                ctx_token = project_settings._settings_ctx.set({"USER_SETTINGS": user_settings})
+            try:
+                with mock.patch("tools.is_tool_allowed_in_phase", return_value=True):
+                    return await ex.execute("execute_wpscan", tool_args, phase="informational")
+            finally:
+                if ctx_token is not None:
+                    project_settings._settings_ctx.reset(ctx_token)
 
-    def test_token_injection_uses_getattr(self):
-        """Token injection must safely access _wpscan_api_token with getattr."""
-        self.assertIn("getattr(self, '_wpscan_api_token', '')", self.content)
+        return asyncio.run(_invoke())
 
-    @pytest.mark.xfail(strict=True, reason="Part H (bucket-1/anti-pattern): wpscan token-injection feature still exists (tools.py:2169) but these pin exact source strings that drifted; should be rewritten to assert behavior not source - see green-up report")
-    def test_token_prepended_to_args(self):
-        """Token must be prepended to args string."""
-        self.assertIn('f"--api-token {self._wpscan_api_token} {args}"', self.content)
+    def test_token_from_user_settings_travels_as_api_token_kwarg(self):
+        """USER_SETTINGS token is passed via api_token kwarg, never in CLI args, without mutating input."""
+        ex, tool = self._executor()
+        original = {"args": "--url https://wp.example --format json"}
+        self._run(ex, original, user_settings={"wpscanApiToken": "user-ctx-token"})
 
-    @pytest.mark.xfail(strict=True, reason="Part H (bucket-1/anti-pattern): wpscan token-injection feature still exists (tools.py:2169) but these pin exact source strings that drifted; should be rewritten to assert behavior not source - see green-up report")
-    def test_original_tool_args_not_mutated(self):
-        """Original tool_args dict must not be mutated (use spread)."""
-        # Should create a new dict, not modify in place
-        self.assertIn('{**tool_args, "args": args}', self.content)
+        sent = tool.ainvoke.call_args.args[0]
+        self.assertEqual(sent["api_token"], "user-ctx-token")
+        self.assertEqual(sent["args"], "--url https://wp.example --format json")
+        self.assertNotIn("user-ctx-token", sent["args"])
+        self.assertNotIn("--api-token", sent["args"])
+        self.assertEqual(original, {"args": "--url https://wp.example --format json"})
+
+    def test_explicit_cli_token_suppresses_injection(self):
+        """An explicit --api-token in args is left intact without adding api_token."""
+        ex, tool = self._executor(fallback_token="fallback-tok")
+        self._run(
+            ex,
+            {"args": "--url https://wp.example --api-token MANUAL_TOK"},
+            user_settings={"wpscanApiToken": "user-ctx-token"},
+        )
+        sent = tool.ainvoke.call_args.args[0]
+        self.assertNotIn("api_token", sent)
+        self.assertEqual(sent["args"], "--url https://wp.example --api-token MANUAL_TOK")
+
+    def test_fallback_attribute_used_when_user_settings_empty(self):
+        """set_wpscan_api_token acts as fallback when USER_SETTINGS has no wpscanApiToken."""
+        ex, tool = self._executor(fallback_token="fallback-tok")
+        self._run(ex, {"args": "--url https://wp.example"}, user_settings={})
+        self.assertEqual(tool.ainvoke.call_args.args[0]["api_token"], "fallback-tok")
+
+    def test_user_settings_overrides_fallback_and_empty_sends_none(self):
+        """Task USER_SETTINGS overrides fallback; when both are empty, api_token is omitted."""
+        ex, tool = self._executor(fallback_token="fallback-tok")
+        self._run(ex, {"args": "--url https://wp.example"}, user_settings={"wpscanApiToken": "ctx-wins"})
+        self.assertEqual(tool.ainvoke.call_args.args[0]["api_token"], "ctx-wins")
+
+        ex_empty, tool_empty = self._executor(fallback_token="")
+        self._run(ex_empty, {"args": "--url https://wp.example"}, user_settings={})
+        self.assertNotIn("api_token", tool_empty.ainvoke.call_args.args[0])
+
+    def test_concurrent_sessions_do_not_leak_tokens(self):
+        """RBAC T17: concurrent tasks read isolated ContextVar USER_SETTINGS, never shared state."""
+        import project_settings
+        from one_sandbox import route_to
+        from tools import PhaseAwareToolExecutor
+
+        ex = PhaseAwareToolExecutor(mcp_manager=mock.MagicMock(), graph_tool=None)
+        observed = []
+
+        async def _fake_ainvoke(payload):
+            await asyncio.sleep(0)
+            observed.append(dict(payload))
+            return "ok"
+
+        tool = mock.MagicMock()
+        tool.name = "execute_wpscan"
+        tool.ainvoke = _fake_ainvoke
+        route_to(self, {"execute_wpscan": tool})
+
+        async def _session(user_settings):
+            tok = project_settings._settings_ctx.set({"USER_SETTINGS": user_settings})
+            try:
+                with mock.patch("tools.is_tool_allowed_in_phase", return_value=True):
+                    await ex.execute("execute_wpscan", {"args": "--url https://wp.example"}, phase="informational")
+            finally:
+                project_settings._settings_ctx.reset(tok)
+
+        async def _run_both():
+            await asyncio.gather(
+                _session({"wpscanApiToken": "tenant-alpha-token"}),
+                _session({}),
+            )
+
+        asyncio.run(_run_both())
+        tokens = sorted(item.get("api_token", "") for item in observed)
+        self.assertEqual(tokens, ["", "tenant-alpha-token"])
 
 
-class TestOrchestratorWPScanKey(unittest.TestCase):
-    """Verify orchestrator reads and passes WPScan API token."""
+class TestMCPWPScanEnvPassing(unittest.TestCase):
+    """Verify network_recon_server.execute_wpscan passes api_token via env, not CLI argv."""
 
-    def setUp(self):
-        path = os.path.join(BASE_DIR, 'agentic', 'orchestrator.py')
-        with open(path) as f:
-            self.content = f.read()
+    @staticmethod
+    def _import_server():
+        if "fastmcp" not in sys.modules:
+            class _FakeMCP:
+                def __init__(self, *a, **kw):
+                    pass
 
-    @pytest.mark.xfail(strict=True, reason="Part H (bucket-1/anti-pattern): wpscan token-injection feature still exists (tools.py:2169) but these pin exact source strings that drifted; should be rewritten to assert behavior not source - see green-up report")
-    def test_reads_wpscan_token_from_settings(self):
-        """Orchestrator must read wpscanApiToken from user settings."""
-        self.assertIn("user_settings.get('wpscanApiToken', '')", self.content)
+                def tool(self, *a, **kw):
+                    def _identity(fn):
+                        return fn
+                    return _identity
 
-    @pytest.mark.xfail(strict=True, reason="Part H (bucket-1/anti-pattern): wpscan token-injection feature still exists (tools.py:2169) but these pin exact source strings that drifted; should be rewritten to assert behavior not source - see green-up report")
-    def test_calls_set_wpscan_api_token(self):
-        """Orchestrator must call set_wpscan_api_token on executor."""
-        self.assertIn('self.tool_executor.set_wpscan_api_token(wpscan_token)', self.content)
+                def __getattr__(self, name):
+                    return mock.MagicMock()
 
-    @pytest.mark.xfail(strict=True, reason="Part H (bucket-1/anti-pattern): wpscan token-injection feature still exists (tools.py:2169) but these pin exact source strings that drifted; should be rewritten to assert behavior not source - see green-up report")
-    def test_wpscan_block_position(self):
-        """WPScan block must be in _apply_project_settings (near Shodan block)."""
-        wpscan_pos = self.content.index("wpscanApiToken")
-        shodan_pos = self.content.index("shodanApiKey")
-        # WPScan should be near Shodan (within _apply_project_settings)
-        self.assertLess(abs(wpscan_pos - shodan_pos), 1000,
-                       "WPScan and Shodan key handling should be in the same method")
+            fastmcp_mod = mock.MagicMock()
+            fastmcp_mod.FastMCP = _FakeMCP
+            sys.modules["fastmcp"] = fastmcp_mod
+        import network_recon_server
+        return network_recon_server
 
-    @pytest.mark.xfail(strict=True, reason="Part H (bucket-1/anti-pattern): wpscan token-injection feature still exists (tools.py:2169) but these pin exact source strings that drifted; should be rewritten to assert behavior not source - see green-up report")
-    def test_conditional_on_token_and_executor(self):
-        """Token should only be set if both token exists and executor exists."""
-        self.assertIn('if wpscan_token and self.tool_executor:', self.content)
+    def test_api_token_passed_in_env_not_command_argv(self):
+        nrs = self._import_server()
+        fn = getattr(nrs.execute_wpscan, "fn", None) or getattr(nrs.execute_wpscan, "__wrapped__", None) or nrs.execute_wpscan
+        with mock.patch("capture_routing.agent_capture_routing", return_value=(None, None)), \
+             mock.patch.object(nrs.subprocess, "run", return_value=CompletedProcess(args=[], returncode=0, stdout="{}", stderr="")) as mock_run:
+            fn(args="--url https://wp.example --format json", api_token="secret-wpscan-tok")
 
+        cmd = mock_run.call_args.args[0]
+        env = mock_run.call_args.kwargs["env"]
+        self.assertEqual(cmd[0], "wpscan")
+        self.assertNotIn("secret-wpscan-tok", " ".join(cmd))
+        self.assertNotIn("--api-token", cmd)
+        self.assertEqual(env.get("WPSCAN_API_TOKEN"), "secret-wpscan-tok")
 
-class TestTokenInjectionLogic(unittest.TestCase):
-    """Test the actual token injection logic in isolation."""
+    def test_empty_api_token_omits_env_override(self):
+        nrs = self._import_server()
+        fn = getattr(nrs.execute_wpscan, "fn", None) or getattr(nrs.execute_wpscan, "__wrapped__", None) or nrs.execute_wpscan
+        with mock.patch("capture_routing.agent_capture_routing", return_value=(None, None)), \
+             mock.patch.object(nrs.subprocess, "run", return_value=CompletedProcess(args=[], returncode=0, stdout="{}", stderr="")) as mock_run, \
+             mock.patch.dict(os.environ, {}, clear=True):
+            fn(args="--url https://wp.example", api_token="")
 
-    def test_injection_when_token_set(self):
-        """Token should be prepended when configured and not in args."""
-        token = "abc123"
-        args = "--url http://example.com --enumerate vp,vt"
-        if token and '--api-token' not in args:
-            args = f"--api-token {token} {args}"
-        self.assertEqual(args, "--api-token abc123 --url http://example.com --enumerate vp,vt")
-
-    def test_no_injection_when_already_present(self):
-        """Token should NOT be injected if user already passed --api-token."""
-        token = "abc123"
-        args = "--url http://example.com --api-token USER_TOKEN --enumerate vp,vt"
-        original_args = args
-        if token and '--api-token' not in args:
-            args = f"--api-token {token} {args}"
-        self.assertEqual(args, original_args)
-
-    def test_no_injection_when_no_token(self):
-        """Token should NOT be injected if not configured."""
-        token = ""
-        args = "--url http://example.com"
-        original_args = args
-        if token and '--api-token' not in args:
-            args = f"--api-token {token} {args}"
-        self.assertEqual(args, original_args)
-
-    def test_getattr_fallback(self):
-        """getattr with default '' should work when attribute doesn't exist."""
-        class MockExecutor:
-            pass
-        executor = MockExecutor()
-        result = getattr(executor, '_wpscan_api_token', '')
-        self.assertEqual(result, '')
-
-    def test_getattr_with_token(self):
-        """getattr should return token when attribute exists."""
-        class MockExecutor:
-            _wpscan_api_token = "test_key_123"
-        executor = MockExecutor()
-        result = getattr(executor, '_wpscan_api_token', '')
-        self.assertEqual(result, 'test_key_123')
+        env = mock_run.call_args.kwargs["env"]
+        self.assertNotIn("WPSCAN_API_TOKEN", env)
 
 
 class TestCrossFileConsistencyAPIKey(unittest.TestCase):
@@ -344,7 +401,6 @@ class TestCrossFileConsistencyAPIKey(unittest.TestCase):
             'modal': ('webapp', 'src', 'app', 'graph', 'components', 'AIAssistantDrawer', 'hooks', 'useApiKeyModal.ts'),
             'card': ('webapp', 'src', 'app', 'graph', 'components', 'AIAssistantDrawer', 'ToolExecutionCard.tsx'),
             'tools': ('agentic', 'tools.py'),
-            'orchestrator': ('agentic', 'orchestrator.py'),
         }
         for key, parts in paths.items():
             with open(os.path.join(BASE_DIR, *parts)) as f:

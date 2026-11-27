@@ -353,8 +353,8 @@ def main(argv: list[str]) -> int:
 
     for path, body in targets.items():
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body, encoding="utf-8")
-    ROE_PROMPT_PATH.write_text(_prompt_from(text, write=True), encoding="utf-8")
+        path.write_text(body, encoding="utf-8", newline="\n")
+    ROE_PROMPT_PATH.write_text(_prompt_from(text, write=True), encoding="utf-8", newline="\n")
 
     registry = json.loads(text)
     print(
@@ -401,14 +401,14 @@ def _prompt_from(registry_text: str, *, write: bool) -> str:
 
     if write:
         JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
-        JSON_PATH.write_text(registry_text, encoding="utf-8")
+        JSON_PATH.write_text(registry_text, encoding="utf-8", newline="\n")
         reload_registry()
         return render_module()
 
     previous = os.environ.get("RECON_SETTINGS_REGISTRY")
     with tempfile.TemporaryDirectory() as tmp:
         candidate = Path(tmp) / "registry.json"
-        candidate.write_text(registry_text, encoding="utf-8")
+        candidate.write_text(registry_text, encoding="utf-8", newline="\n")
         os.environ["RECON_SETTINGS_REGISTRY"] = str(candidate)
         try:
             reload_registry()

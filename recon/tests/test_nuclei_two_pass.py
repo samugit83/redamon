@@ -378,7 +378,7 @@ class TestRunVulnScanTwoPass(unittest.TestCase):
             "NUCLEI_CONCURRENCY": 25,
             "NUCLEI_TIMEOUT": 10,
             "NUCLEI_RETRIES": 1,
-            "NUCLEI_TAGS": [],
+            "NUCLEI_TAGS": ["cve"],
             "NUCLEI_EXCLUDE_TAGS": [],
             "NUCLEI_NEW_TEMPLATES_ONLY": False,
             "NUCLEI_HEADLESS": False,
@@ -420,7 +420,6 @@ class TestRunVulnScanTwoPass(unittest.TestCase):
         for p in patches:
             p.stop()
 
-    @pytest.mark.xfail(strict=True, reason="Part H triage (bucket-3): behavior/mapping/shape drifted from this assertion post-refactor; correctness unconfirmed - see green-up report")
     def test_dast_off_runs_only_detection(self):
         from recon.main_recon_modules import vuln_scan as vs
         recon_data = self._recon_data()
@@ -436,7 +435,6 @@ class TestRunVulnScanTwoPass(unittest.TestCase):
         finally:
             self._stop_patches(patches)
 
-    @pytest.mark.xfail(strict=True, reason="Part H triage (bucket-3): behavior/mapping/shape drifted from this assertion post-refactor; correctness unconfirmed - see green-up report")
     def test_dast_on_with_params_runs_two_passes(self):
         from recon.main_recon_modules import vuln_scan as vs
         recon_data = self._recon_data(
@@ -458,7 +456,6 @@ class TestRunVulnScanTwoPass(unittest.TestCase):
         finally:
             self._stop_patches(patches)
 
-    @pytest.mark.xfail(strict=True, reason="Part H triage (bucket-3): behavior/mapping/shape drifted from this assertion post-refactor; correctness unconfirmed - see green-up report")
     def test_dast_on_without_params_falls_back_to_single_pass(self):
         from recon.main_recon_modules import vuln_scan as vs
         recon_data = self._recon_data(dast_urls=[])  # empty
@@ -474,7 +471,6 @@ class TestRunVulnScanTwoPass(unittest.TestCase):
         finally:
             self._stop_patches(patches)
 
-    @pytest.mark.xfail(strict=True, reason="Part H triage (bucket-3): behavior/mapping/shape drifted from this assertion post-refactor; correctness unconfirmed - see green-up report")
     def test_findings_from_both_passes_merged(self):
         from recon.main_recon_modules import vuln_scan as vs
         recon_data = self._recon_data(dast_urls=["https://example.com/api?x=1"])
@@ -504,7 +500,7 @@ class TestRunVulnScanTwoPass(unittest.TestCase):
         patches = self._patch_pipeline()
         self._start_patches(patches)
         try:
-            def fake_exec(cmd, output_file, label):
+            def fake_exec(cmd, output_file, label, runtime_cap=0, container_name=None):
                 if label == "DETECTION":
                     return ([d_finding], [], 1.0, 0)
                 else:
@@ -525,7 +521,6 @@ class TestRunVulnScanTwoPass(unittest.TestCase):
         finally:
             self._stop_patches(patches)
 
-    @pytest.mark.xfail(strict=True, reason="Part H triage (bucket-3): behavior/mapping/shape drifted from this assertion post-refactor; correctness unconfirmed - see green-up report")
     def test_dast_pass_gets_force_dast_pass_flag(self):
         """Confirm pass B's command is built with force_dast_pass=True."""
         from recon.main_recon_modules import vuln_scan as vs
@@ -554,6 +549,23 @@ class TestRunVulnScanTwoPass(unittest.TestCase):
             self.assertFalse(captured["calls"][0].get("force_dast_pass", False))
             # Second call (DAST) MUST have force_dast_pass=True
             self.assertTrue(captured["calls"][1].get("force_dast_pass", False))
+        finally:
+            self._stop_patches(patches)
+
+    def test_empty_tags_with_dast_mode_skips_detection_and_runs_dast(self):
+        """Empty NUCLEI_TAGS omits detection templates so only the DAST pass runs."""
+        from recon.main_recon_modules import vuln_scan as vs
+        recon_data = self._recon_data(dast_urls=["https://example.com/api?id=1"])
+        settings = self._settings(dast_mode=True)
+        settings["NUCLEI_TAGS"] = []
+        patches = self._patch_pipeline()
+        self._start_patches(patches)
+        try:
+            with patch.object(vs, "_execute_nuclei_pass", return_value=([], [], 1.0, 0)) as exec_mock:
+                result = vs.run_vuln_scan(recon_data, output_file=None, settings=settings)
+                self.assertEqual(exec_mock.call_count, 1)
+                self.assertEqual(exec_mock.call_args_list[0].kwargs.get("label"), "DAST")
+                self.assertTrue(result["vuln_scan"]["scan_metadata"]["dast_pass_executed"])
         finally:
             self._stop_patches(patches)
 

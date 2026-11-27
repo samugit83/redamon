@@ -316,7 +316,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     'RESOURCE_ENUM_AI_PATH_CLASSIFIER_ENABLED': True,
     'RESOURCE_ENUM_AI_RAG_PATH_FLAG_ENABLED': True,
     'RESOURCE_ENUM_AI_PARAM_INJECTABLE_FLAG_ENABLED': True,
-    'RESOURCE_ENUM_AI_TOOL_ARG_PATH_ENABLED': True,
     'RESOURCE_ENUM_JEV_TOOL_HEALTH': False,
 
     # AI Surface Recon (central module) — active, protocol-aware AI/LLM/MCP
@@ -1813,7 +1812,6 @@ def fetch_project_settings(project_id: str, webapp_url: str) -> dict[str, Any]:
     settings['RESOURCE_ENUM_AI_PATH_CLASSIFIER_ENABLED'] = project.get('resourceEnumAiPathClassifierEnabled', DEFAULT_SETTINGS['RESOURCE_ENUM_AI_PATH_CLASSIFIER_ENABLED'])
     settings['RESOURCE_ENUM_AI_RAG_PATH_FLAG_ENABLED'] = project.get('resourceEnumAiRagPathFlagEnabled', DEFAULT_SETTINGS['RESOURCE_ENUM_AI_RAG_PATH_FLAG_ENABLED'])
     settings['RESOURCE_ENUM_AI_PARAM_INJECTABLE_FLAG_ENABLED'] = project.get('resourceEnumAiParamInjectableFlagEnabled', DEFAULT_SETTINGS['RESOURCE_ENUM_AI_PARAM_INJECTABLE_FLAG_ENABLED'])
-    settings['RESOURCE_ENUM_AI_TOOL_ARG_PATH_ENABLED'] = project.get('resourceEnumAiToolArgPathEnabled', DEFAULT_SETTINGS['RESOURCE_ENUM_AI_TOOL_ARG_PATH_ENABLED'])
     settings['RESOURCE_ENUM_JEV_TOOL_HEALTH'] = project.get('resourceEnumJevToolHealth', DEFAULT_SETTINGS['RESOURCE_ENUM_JEV_TOOL_HEALTH'])
 
     # AI Surface Recon (central module)

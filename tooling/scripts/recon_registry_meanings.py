@@ -354,6 +354,11 @@ OVERRIDES: dict[str, str] = {
         "skipped re-testing would leave earlier findings unchecked. Closed on every surface, "
         "with no input."
     ),
+    "resourceEnumAiToolArgPathEnabled": (
+        "Retired: nothing reads it. The resource-enum AI tool-arg path resolver never shipped "
+        "(ai_surface_recon resolves Parameter.ai_tool_arg_path from discovered specs instead). "
+        "Closed on every surface, with no input."
+    ),
     "jsReconRegexPatterns": "Additional regular expressions applied to retrieved JavaScript, on top of the shipped set.",
     "kiterunnerMethodDetectionMode": "How kiterunner establishes which HTTP methods a discovered route accepts.",
     "trufflehogIncludeDetectors": "Restricts the run to these detectors. Empty means every detector runs.",

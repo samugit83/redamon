@@ -205,12 +205,14 @@ class TestRunVhostSniPartial(unittest.TestCase):
     # --------------------------------------------------------------
     # include_graph_targets gating
     # --------------------------------------------------------------
-    @pytest.mark.xfail(strict=True, reason="Part H triage (bucket-3): behavior/mapping/shape drifted from this assertion post-refactor; correctness unconfirmed - see green-up report")
     def test_include_graph_targets_true_calls_graph_reader(self):
         mocks = self._run({"domain": "example.com",
                            "include_graph_targets": True,
                            "user_targets": {"subdomains": ["admin.example.com"], "ips": []}})
-        mocks["graph_data"].assert_called_once_with("example.com", "test-user", "test-project")
+        mocks["graph_data"].assert_called_once_with(
+            ["example.com"], "test-user", "test-project",
+            include_root_domain=False, domain_groups=None,
+        )
 
     def test_include_graph_targets_false_skips_graph_reader(self):
         mocks = self._run({"domain": "example.com",

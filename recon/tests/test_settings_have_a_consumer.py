@@ -35,10 +35,7 @@ NOT_CONSUMERS = {"project_settings.py", "roe_parse_prompt.py"}
 
 # Dead toggles found by this test outside the change that added it. Each is a
 # real bug, pinned so fixing it turns the test red until the marker goes.
-KNOWN_UNCONSUMED = {
-    "RESOURCE_ENUM_AI_TOOL_ARG_PATH_ENABLED":
-        "resource_enum.py says the tool-arg-path resolver is a stub; the toggle reaches nothing",
-}
+KNOWN_UNCONSUMED: dict[str, str] = {}
 
 
 def _consumer_text() -> str:
@@ -79,10 +76,10 @@ def test_every_registry_runtime_key_has_a_consumer(key):
 
 @pytest.mark.parametrize("column", [
     "katanaScope", "jsReconStandaloneCrawlDepth", "jsReconStandaloneCrawlScope",
-    "aiSurfaceReconCacheEnabled",
+    "aiSurfaceReconCacheEnabled", "resourceEnumAiToolArgPathEnabled",
 ])
 def test_the_retired_columns_configure_nothing(column):
-    """The four L-17 controls had no consumer and no safe one to give them.
+    """These L-17 controls had no consumer and no safe one to give them.
 
     Their columns stay so an upgrade or a rollback drops no data, but no
     surface offers them: no runtime key, closed on MCP, no form input.

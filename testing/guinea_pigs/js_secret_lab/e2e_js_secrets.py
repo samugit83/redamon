@@ -42,7 +42,7 @@ AI_OFF = [
     "httpProbeAiHeaderScanEnabled", "httpProbeAiFaviconHashEnabled", "httpProbeAiTitleDetectionEnabled",
     "httpProbeAiWappalyzerEnabled", "httpxJevPageType", "resourceEnumAiClassifierEnabled",
     "resourceEnumAiPathClassifierEnabled", "resourceEnumAiRagPathFlagEnabled",
-    "resourceEnumAiParamInjectableFlagEnabled", "resourceEnumAiToolArgPathEnabled", "resourceEnumJevToolHealth",
+    "resourceEnumAiParamInjectableFlagEnabled", "resourceEnumJevToolHealth",
     "domainReconAiTxtHintEnabled", "domainReconAiNsHintEnabled", "ffufAiExtensions", "ffufJevBasePaths",
     "hakrawlerJevSeedOrder", "nucleiAiTags", "nucleiAiResponseFilter", "wafAiClassifier", "takeoverAiClassifier",
     "routeExposureJevAssess", "routeExposureJevRank", "routeExposureJevWallCheck", "serializedScanJevRank",
