@@ -5,7 +5,10 @@
  * `agentic/sandbox_contract.py` (byte-identical), and this file, which carries the
  * constants and types the webapp uses. `tests/test_sandbox_contract.py` reads every
  * `export const` here and fails when one is missing or differs from the Python
- * copies, so change all three together. Prose: docs/readmes/README.KALI_SANDBOX.md.
+ * copies. Edit a value in the orchestrator's file and run
+ * `python3 tooling/scripts/sync_sandbox_contract.py`, which sets the constants here;
+ * a new constant is added below as a placeholder (`export const NAME = 0`) and filled
+ * in by that script. Prose: docs/readmes/README.KALI_SANDBOX.md.
  *
  * Every constant is a plain literal, never an expression, so that test can read it.
  */

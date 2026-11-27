@@ -949,3 +949,74 @@ def test_the_static_checks_find_what_they_look_for():
     assert "webapp/src/app/api/plugin-gateway/v1/data/get/route.ts" in seen
     assert _NOT_SCANNED.match("scanners/gvm_scan/output") and _NOT_SCANNED.match("agentic/agent-workspace")
     assert not _NOT_SCANNED.match("webapp/src/app/api/plugin-gateway/v1/data")
+
+
+# --- the sync script keeps the three copies equal ---------------------------------------
+
+SYNC_PATH = os.path.join(ROOT, "tooling", "scripts", "sync_sandbox_contract.py")
+sync = _load(SYNC_PATH, "_sync_sandbox_contract")
+
+
+def _copies_in(tmp_path):
+    """The canonical contract, its agent mirror and contract.ts, copied to a scratch folder."""
+    out = {}
+    for key, src in (("canonical", ORCH_PATH), ("mirror", AGENT_PATH), ("ts", TS_PATH)):
+        dst = tmp_path / f"{key}_{os.path.basename(src)}"
+        dst.write_bytes(open(src, "rb").read())
+        out[key] = dst
+    return out
+
+
+def test_sync_script_finds_the_repo_copies_up_to_date():
+    assert sync.run(check=True) == []
+    assert sync.main(["--check"]) == 0
+
+
+def test_sync_script_reports_and_repairs_drift(tmp_path):
+    files = _copies_in(tmp_path)
+
+    def check():
+        return sync.run(True, files["canonical"], files["mirror"], files["ts"])
+
+    assert check() == []
+    files["mirror"].write_bytes(files["mirror"].read_bytes() + b"\n")
+    text = files["ts"].read_text(encoding="utf-8")
+    drifted_ts = _edit(text, r"^export const START_TIMEOUT_S = .*$", "export const START_TIMEOUT_S = 1")
+    files["ts"].write_text(drifted_ts, encoding="utf-8", newline="\n")
+    assert sorted(check()) == sorted([str(files["mirror"]), str(files["ts"])])
+    # --check writes nothing
+    assert files["ts"].read_text(encoding="utf-8") == drifted_ts
+
+    sync.run(False, files["canonical"], files["mirror"], files["ts"])
+    assert check() == []
+    assert files["mirror"].read_bytes() == files["canonical"].read_bytes()
+    assert files["ts"].read_text(encoding="utf-8") == text
+
+
+def test_sync_script_fills_a_placeholder_constant_in_the_formatters_style(tmp_path):
+    files = _copies_in(tmp_path)
+    text = files["ts"].read_text(encoding="utf-8")
+    # A constant added by hand as a placeholder is filled in; one of each literal kind.
+    placeholder = text
+    for name in ("HOLD_MAX_NO_USE_S", "ERR_RAM", "MODAL_RAM_BODY", "STOP_REASONS", "VIEWS"):
+        placeholder = _edit(placeholder, rf"^export const {name} =[^\n]*(?:\n(?:  [^\n]*|\]\s*as const))*$",
+                            f"export const {name} = 0")
+    files["ts"].write_text(placeholder, encoding="utf-8", newline="\n")
+    sync.run(False, files["canonical"], files["mirror"], files["ts"])
+    assert files["ts"].read_text(encoding="utf-8") == text
+    assert "export const HOLD_MAX_NO_USE_S = 28_800" in text
+
+
+def test_sync_script_refuses_a_constant_python_does_not_define(tmp_path):
+    files = _copies_in(tmp_path)
+    with open(files["ts"], "a", encoding="utf-8", newline="\n") as f:
+        f.write("\nexport const NOT_IN_PYTHON = 1\n")
+    with pytest.raises(ValueError, match="NOT_IN_PYTHON"):
+        sync.run(True, files["canonical"], files["mirror"], files["ts"])
+
+
+def test_sync_script_treats_line_endings_as_no_drift(tmp_path):
+    files = _copies_in(tmp_path)
+    crlf = files["ts"].read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    files["ts"].write_bytes(crlf)
+    assert sync.run(True, files["canonical"], files["mirror"], files["ts"]) == []

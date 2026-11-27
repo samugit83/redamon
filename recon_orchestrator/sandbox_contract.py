@@ -10,8 +10,9 @@ codes, messages, environment variables and timings. It exists in three copies:
 - ``webapp/src/lib/sandbox/contract.ts``, the constants the webapp uses.
 
 ``tests/test_sandbox_contract.py`` fails when the two Python copies differ by one
-byte or a TypeScript constant differs from this file, so change all three
-together. The prose is ``docs/readmes/README.KALI_SANDBOX.md``.
+byte or a TypeScript constant differs from this file. Edit this file only, then run
+``python3 tooling/scripts/sync_sandbox_contract.py`` to copy it to the agent and set the
+constants of ``contract.ts``. The prose is ``docs/readmes/README.KALI_SANDBOX.md``.
 
 Standard library only, with no Docker and no other RedAmon import, so both
 services and the tests can load it by path. Every function is pure except

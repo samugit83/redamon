@@ -59,8 +59,12 @@ they differ by one byte, when a TypeScript constant is missing or differs from t
 Python value, and when a pure rule (the mount plan, the keys, the environment, the
 subnet pick, the variable parsers) stops keeping persons apart. Some shapes exist
 only in TypeScript and nothing compares them with Python: `SandboxPorts`, the keys
-of an ensure answer's `ports`, must name every key of `PORTS`. Change the copies
-together, and this page with them.
+of an ensure answer's `ports`, must name every key of `PORTS`. Edit a value in
+`recon_orchestrator/sandbox_contract.py` only, then run
+`python3 tooling/scripts/sync_sandbox_contract.py`: it copies the file to the agent and
+rewrites the matching `export const` values of `contract.ts` (`--check` fails on drift,
+and the test runs it). Types and functions of the TypeScript copy are still edited by
+hand, and this page with them.
 
 The Python contract uses the standard library only and imports nothing else from
 RedAmon, so both services and the tests load it by path.
