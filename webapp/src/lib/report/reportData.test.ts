@@ -336,7 +336,7 @@ describe('every finding query in reportData excludes muted findings', () => {
   test('the suppressed count is gathered and returned', () => {
     // Reports exclude muted findings entirely, so without this line the report
     // would misrepresent the assessment's scope by silent omission.
-    expect(SRC).toContain('MATCH (n:Muted {project_id: $pid})')
+    expect(SRC).toContain('MATCH (n:Muted {${tm}})')
     expect(SRC).toMatch(/suppressedCount,/)
   })
 

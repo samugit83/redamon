@@ -100,15 +100,15 @@ function toCount(val: unknown): number {
  * fails: a reader must not take "could not count" for "none".
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function queryJudgedFindings(session: any, pid: string): Promise<JudgedFindingCounts | null> {
+export async function queryJudgedFindings(session: any, pid: string, uid?: string): Promise<JudgedFindingCounts | null> {
   try {
     const res = await session.run(
       `MATCH (n:${MUTEABLE_FINDING_LABELS.join('|')})
-       WHERE n.project_id = $pid AND ${notMuted('n')} AND ${agentCandidateConfirmedOrNA('n')}
+       WHERE ${uid ? 'n.user_id = $uid AND ' : ''}n.project_id = $pid AND ${notMuted('n')} AND ${agentCandidateConfirmedOrNA('n')}
        WITH ${reportBucketCypher('n')} AS bucket
        WHERE bucket <> 'counted'
        RETURN bucket, count(*) AS total`,
-      { pid }
+      uid ? { uid, pid } : { pid }
     )
     const counts: JudgedFindingCounts = { personFalsePositive: 0, resolved: 0, aiFlagged: 0 }
     for (const r of res.records) {

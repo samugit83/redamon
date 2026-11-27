@@ -16,10 +16,10 @@ const ANALYTICS = readFileSync(
 
 function vulnQueries(src: string): string[] {
   // GENERAL :Vulnerability queries: MATCH (v:Vulnerability {project_id: $pid})
-  // with no source scoping. A source-scoped query (inline {source:'x'} or a
+  // (or the {${tm}} tenant form) with no source scoping. A source-scoped query (inline {source:'x'} or a
   // `WHERE v.source IN/=` clause) can never surface a serialized_scan candidate,
   // so §12-D's pending exclusion is only required on the general ones.
-  return [...src.matchAll(/`([^`]*\bMATCH \(v:Vulnerability \{project_id: \$p(?:id|rojectId)\}\)[^`]*)`/g)]
+  return [...src.matchAll(/`([^`]*\bMATCH \(v:Vulnerability \{(?:\$\{[^}]+\}|project_id: \$p(?:id|rojectId))\}\)[^`]*)`/g)]
     .map(m => m[1])
     .filter(q => !/v\.source\s+(IN|=)/.test(q))
 }

@@ -20,10 +20,11 @@ function toNum(val: unknown): number {
   return typeof val === 'number' ? val : 0
 }
 
-/** Binds `$pid`. */
-export function githubSecretCountsCypher(): string {
+/** Binds `$pid` (and `$uid` when given, matching the `(user_id, project_id)` composite index). */
+export function githubSecretCountsCypher(uid?: string): string {
   const pub = publicClientKeyCypher('sec')
-  return `OPTIONAL MATCH (d:Domain {project_id: $pid})-[:HAS_GITHUB_HUNT]->()-[:HAS_REPOSITORY]->(r:GithubRepository)
+  const domainScope = uid ? 'user_id: $uid, project_id: $pid' : 'project_id: $pid'
+  return `OPTIONAL MATCH (d:Domain {${domainScope}})-[:HAS_GITHUB_HUNT]->()-[:HAS_REPOSITORY]->(r:GithubRepository)
      OPTIONAL MATCH (r)-[:HAS_PATH]->()-[:CONTAINS_SECRET]->(sec:GithubSecret)
        WHERE ${notMuted('sec')} AND ${reportCountable('sec')}
      OPTIONAL MATCH (r)-[:HAS_PATH]->()-[:CONTAINS_SENSITIVE_FILE]->(sf:GithubSensitiveFile)
