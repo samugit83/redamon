@@ -5719,6 +5719,8 @@ cmd_help() {
 # The root `tests/` dir is a grab-bag: most files exercise the agent image, but a
 # set of them import recon enrichment modules (recon/main_recon_modules/*) and so
 # must run in the recon image, not the agent image. We route them explicitly.
+source "$SCRIPT_DIR/tooling/coverage-floors.sh"
+
 _ROOT_RECON_TESTS="test_censys_enrich.py,test_criminalip_enrich.py,test_fofa_enrich.py,test_netlas_enrich.py,test_otx_enrich.py,test_uncover_enrich.py,test_virustotal_enrich.py,test_zoomeye_enrich.py,test_gau_parallel.py,test_gau_urlscan_api_key.py,test_recon_mixin_split.py,test_custom_templates_integration.py,test_masscan_integration.py,test_registry_tool_wiring.py"
 
 # Section spec: name|image|workdir|PYTHONPATH|testpaths|covpkg|exclude
@@ -5794,12 +5796,11 @@ _test_run_section() {
     info "=== section: $name  (image: $image, tier: $tier) ==="
     local cov_args=""
     if [[ "$tier" == "coverage" ]]; then
-        cov_args="--cov $covpkg --cov-floor ${REDAMON_COV_FLOOR:-0}"
+        cov_args="--cov $covpkg --cov-floor ${REDAMON_COV_FLOOR:-$(redamon_coverage_floor "$name")}"
         tier="all"
     fi
     [[ -n "$exclude" ]] && cov_args="$cov_args --exclude $exclude"
-    # Ensure pytest is available (baked in the daily images; runtime-installed
-    # for the slim ones), silence git's dubious-ownership guard on the mount.
+    # Transitional: the slim images (orchestrator, broker, plugin runner...) do not bake pytest.
     local prep='python -c "import pytest" 2>/dev/null || pip install -q -r /repo/requirements-test.txt >/dev/null 2>&1; git config --global --add safe.directory "*" 2>/dev/null || true;'
     docker run --rm \
         -v "$SCRIPT_DIR:/repo" \

@@ -182,7 +182,7 @@ flowchart TB
             end
 
             subgraph AgenticContainer["agentic-container"]
-                FastAPI[FastAPI :8090]
+                FastAPI[FastAPI :8080]
                 LangGraph[LangGraph Engine]
                 LLMProvider[LLM Provider<br/>OpenAI · Anthropic · Local · OpenRouter · Bedrock]
             end
@@ -290,7 +290,7 @@ flowchart TB
         Env[.env<br/>Infrastructure Config<br/>Neo4j Credentials]
     end
 
-    subgraph Container["🐳 recon-container (Kali Linux)"]
+    subgraph Container["🐳 recon-container (Python 3.11 / Debian bookworm)"]
         Main[main.py<br/>Pipeline Orchestrator]
 
         subgraph Module1["1️⃣ domain_discovery"]

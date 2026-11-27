@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  webapp:
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+      - run: npm ci && npm run type-check && npm run lint && npm run test
+        working-directory: webapp
+
+  unit-gate:
+    # Requires Docker and builds large images; this job can take a long time.
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      POSTGRES_PASSWORD: ci-placeholder
+      NEO4J_PASSWORD: ci-placeholder
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+      - run: npm ci
+        working-directory: webapp
+      - name: Build section images
+        run: docker compose --profile tools --profile plugins --profile capture build agent recon recon-orchestrator ai-attack-surface capture-proxy docker-broker plugin-runner
+      - name: Add test dependencies to slim images
+        run: |
+          for image in redamon-recon-orchestrator redamon-ai-attack-surface redamon-capture-proxy redamon-docker-broker redamon-plugin-runner; do
+            image_user=$(docker image inspect --format '{{.Config.User}}' "$image:latest")
+            image_user=${image_user:-root}
+            docker build -t "$image:latest" -f - . <<DOCKERFILE
+          FROM $image:latest
+          USER root
+          COPY requirements-test.txt /tmp/requirements-test.txt
+          RUN python -m pip install --no-cache-dir -r /tmp/requirements-test.txt
+          USER $image_user
+          DOCKERFILE
+          done
+      - run: ./redamon.sh test unit
